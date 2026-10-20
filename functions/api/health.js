@@ -12,7 +12,7 @@ export async function onRequestGet({ request, env }) {
     const ctx = await companyContext(db, env, company);
     const out = { company, supabase: true, googleConfigured: !!env.GOOGLE_SA_JSON, impersonate: env.GOOGLE_IMPERSONATE || "", mailFrom: ctx.mailFrom, ordersTo: ctx.ordersTo, accountingTo: ctx.accountingTo, checks: {} };
     // the private documents bucket (storage.buckets is not readable as a member, so a security-definer RPC answers)
-    try { out.checks.docsBucket = await db.rpc("dispatch_docs_bucket_ok"); } catch (e) { out.checks.docsBucket = e.message; }
+    try { out.checks.docsBucket = await db.rpc("dispatch_docs_bucket_ok"); } catch (e) { out.checks.docsBucket = /PGRST202|Could not find the function/.test(e.message) ? "not created yet — apply migration 006_documents.sql" : e.message; }
     // the daily expiry email job (dispatch_cron_status refuses non-admins; this route is admin-only)
     try {
       const rows = await db.rpc("dispatch_cron_status");

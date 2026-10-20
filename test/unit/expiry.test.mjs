@@ -205,6 +205,8 @@ test('health: docsBucket and expiryCron', async () => {
   assert.equal(z.j.checks.docsBucket, 'Bucket not found'); assert.equal(z.j.checks.expiryCron, 'not scheduled');
   const e = await runHealth({ bucket: new Response('{"message":"not allowed"}', { status: 400 }), cron: new Response('{"message":"not allowed"}', { status: 400 }) });
   assert.match(e.j.checks.docsBucket, /not allowed/, 'an RPC error gives its message');
+  const m = await runHealth({ bucket: new Response('{"code":"PGRST202","message":"Could not find the function public.dispatch_docs_bucket_ok without parameters in the schema cache"}', { status: 404 }), cron: new Response('{"code":"PGRST202","message":"Could not find the function"}', { status: 404 }) });
+  assert.equal(m.j.checks.docsBucket, 'not created yet — apply migration 006_documents.sql', 'before 006 the line names the migration'); assert.equal(m.j.checks.expiryCron, 'not scheduled');
   const le = await runHealth({ bucket: ok('ok'), cron: ok([]), log: new Response('{"message":"x"}', { status: 400 }) });
   assert.equal(le.j.lastExpiryEmail, null, 'a failed log read reads never'); assert.equal(e.j.checks.expiryCron, 'not scheduled', 'an RPC error reads not scheduled');
   const off = await runHealth({ bucket: ok('bucket is public'), cron: ok([{ jobname: 'dispatch-expiry-email', schedule: '0 14 * * *', active: false }]) });

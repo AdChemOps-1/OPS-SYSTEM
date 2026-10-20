@@ -30,8 +30,17 @@ const CDB={
   async saveSite(s){ sbErr(await supa.from("dispatch_sites").upsert(Object.assign({},s,{company:state.company,updated_by:state.session.user.id}),{onConflict:"company,site_key"})); },
   // an edit to an existing site: only the changed fields (an upsert would have to carry every NOT NULL column of a feed row)
   async updateSite(siteKey,fields){ sbErr(await supa.from("dispatch_sites").update(Object.assign({},fields,{updated_by:state.session.user.id})).eq("company",state.company).eq("site_key",siteKey)); },
-  async hubNotesFor(siteKey){ return sbErr(await supa.from("dispatch_site_hub_notes").select("*").eq("company",state.company).eq("site_key",siteKey).order("hub")); },
+  // one site key, or an array of them (Today reads every stop's site in one query)
+  async hubNotesFor(siteKey){ var q=supa.from("dispatch_site_hub_notes").select("*").eq("company",state.company);
+    return sbErr(await (Array.isArray(siteKey)?q.in("site_key",siteKey):q.eq("site_key",siteKey)).order("hub")); },
   async saveHubNote(n){ sbErr(await supa.from("dispatch_site_hub_notes").upsert(Object.assign({},n,{company:state.company,updated_by:state.session.user.id,updated_at:new Date().toISOString()}),{onConflict:"company,site_key,hub"})); },
+  // the people to call at a site: receiving and site manager only (never billing, AP or owner), active; one key or an array
+  async contactsForSite(siteKey){ var q=supa.from("dispatch_contacts").select("id,site_key,type,first_name,last_name,phone").eq("company",state.company)
+      .in("type",["receiving","site_manager"]).eq("active",true);
+    return sbErr(await (Array.isArray(siteKey)?q.in("site_key",siteKey):q.eq("site_key",siteKey)).order("type").order("last_name")); },
+  // the signed-in person's own driver notes at these sites, newest first
+  async myDriverNotes(siteKeys){ return sbErr(await supa.from("dispatch_customer_activity").select("id,site_key,summary,status,rejection_reason,occurred_at").eq("company",state.company)
+      .eq("kind","driver_note").eq("logged_by",state.session.user.id).in("site_key",siteKeys).order("occurred_at",{ascending:false})); },
   async contactsFor(customerId){ return sbErr(await supa.from("dispatch_contacts").select("*").eq("company",state.company).eq("customer_id",customerId).order("last_name")); },
   async saveContact(c){
     var uid=state.session.user.id, row=Object.assign({},c,{company:state.company,updated_by:uid,updated_at:new Date().toISOString()});
@@ -361,6 +370,52 @@ async function renderHistory(){
       if(ins&&(d.to==null||d.to==="")) return;
       lines.push('<div class="hist-line" data-table="'+esc(l.table_name||"")+'">'+esc(head)+'<span class="mono">'+esc(k)+"</span>: "+esc(histVal(d.from))+" → "+esc(histVal(d.to))+"</div>"); }); });
   $("histList").innerHTML=lines.join("")||custEmpty("No history yet","Changes to this customer, its sites, contacts and activity show here.");
+}
+
+/* ---------- Today: the site's notes under each stop ----------
+   renderToday (app.js) calls siteNotesHtml(site, hub) per stop from state.todayX, then todayExtras(keys) once per render:
+   one read each of hub notes, site contacts and the driver's own notes for all the stops' sites, re-rendering only if they changed. */
+state.todayX={hubNotes:{},contacts:{},mine:{}};
+var todaySeq=0, todayHold=false;
+function groupByKey(rows){ var by={}; (rows||[]).forEach(function(r){ (by[r.site_key]=by[r.site_key]||[]).push(r); }); return by; }
+async function todayExtras(keys){
+  if(todayHold) return;
+  var seq=++todaySeq, X={hubNotes:{},contacts:{},mine:{}};
+  if(keys.length){
+    try{ var r=await Promise.all([CDB.hubNotesFor(keys),CDB.contactsForSite(keys),CDB.myDriverNotes(keys)]);
+      X={hubNotes:groupByKey(r[0]),contacts:groupByKey(r[1]),mine:groupByKey(r[2])}; }
+    catch(e){ if(seq===todaySeq) banner("warn","Couldn't load the site notes","<div>"+esc(e.message)+"</div>",{autoclose:8000,key:"sitenotes"}); return; }
+  }
+  if(seq!==todaySeq) return;
+  var same=JSON.stringify(X)===JSON.stringify(state.todayX); state.todayX=X;
+  if(!same&&state.tab==="today"){ todayHold=true; try{ renderToday(); } finally{ todayHold=false; } }
+}
+function noteStatusChip(n){ var s=n.status||"pending"; return '<span class="chip '+(s==="approved"?"k-D":s==="rejected"?"st stop":"warn")+'">'+esc(s)+"</span>"; }
+function siteNotesHtml(site,hub){
+  if(!site) return "";
+  var X=state.todayX, k=site.siteKey;
+  var hn=(X.hubNotes[k]||[]).find(function(n){return n.hub===hub;});
+  var lines=[["Gate code",site.gateCode||site.gate],["Receiving hours",site.receivingHours||site.hours],["Parking / unloading",site.parkingUnloading],
+    ["Restrictions",site.hazmatRestrictions],["Containers",site.containerNotes],["Special instructions",site.specialInstructions]];
+  if(hn&&hn.scale_on_route!=null) lines.push(["Scale",hn.scale_on_route?"Scale on the "+hub+" route":"No scale on the "+hub+" route"]);
+  if(hn&&hn.route_notes) lines.push(["Route from "+hub,hn.route_notes]);
+  var h=lines.filter(function(l){return l[1];}).map(function(l){ return '<div class="sn-line"><b>'+esc(l[0])+":</b> "+esc(l[1])+"</div>"; }).join("");
+  h+=(X.contacts[k]||[]).filter(function(c){return c.phone;}).map(function(c){ return '<div class="sn-line"><b>'+esc(c.type==="site_manager"?"Site manager":"Receiving")+":</b> "+esc(contactName(c))+
+    ' <a href="'+esc(telHref(c.phone))+'">'+esc(c.phone)+"</a></div>"; }).join("");
+  var mine=X.mine[k]||[];
+  if(mine.length) h+='<div class="sn-mine">'+mine.map(function(n){ return '<div class="sn-line">'+esc(n.summary)+" "+noteStatusChip(n)+(n.status==="rejected"&&n.rejection_reason?' <span class="hint">'+esc(n.rejection_reason)+"</span>":"")+"</div>"; }).join("")+"</div>";
+  h+=site.customerId?'<div class="sn-act"><button class="btn sm" data-note="'+esc(k)+'">Add note</button><span class="hint">The office checks it before it goes on the site.</span></div>':"";
+  return h?'<div class="site-notes">'+h+"</div>":"";
+}
+async function addDriverNote(siteKey){
+  var site=(state.feed.rows||[]).find(function(r){return r.siteKey===siteKey;});
+  if(!site||!site.customerId) return;
+  var txt=window.prompt("Note for the office about "+site.customer+(site.siteLabel?" — "+site.siteLabel:"")+":","");
+  if(txt==null) return; txt=String(txt).trim(); if(!txt) return;
+  try{ await CDB.addActivity({kind:"driver_note",status:"pending",method:"app",site_key:siteKey,customer_id:site.customerId,summary:txt,logged_by:state.session.user.id});
+    banner("good","Note sent for review","<div>The office sees it on the customer's Activity tab.</div>",{autoclose:5000,key:"drvnote"}); }
+  catch(e){ banner("bad","Note not saved","<div>"+esc(e.message)+"</div>"); return; }
+  if(state.tab==="today") renderToday();
 }
 
 function wireCustomers(){

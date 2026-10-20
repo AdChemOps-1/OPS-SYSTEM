@@ -144,17 +144,45 @@ const flat = s => s.replace(/\s+/g, ' ').trim();
   // print BOL one page
   await page.click('#tab-open'); await page.waitForTimeout(300); await page.click(`[data-bol="${br.id}"]`); await page.waitForTimeout(300);
   await page.emulateMedia({media:'print'}); await page.pdf({path:path.join(__dirname,'bol.pdf'),format:'Letter',printBackground:true,margin:{top:'0.4in',bottom:'0.4in',left:'0.4in',right:'0.4in'}}); await page.emulateMedia({media:'screen'});
+  // site notes for the driver: Type 7's site gets its customer, gate code and hours; a receiving and a billing contact; EB and LA hub notes
+  T.dispatch_customers.push({id:'c-t7',company:'adchem',customer_id:'ADC-0001',name:'Type 7 Manufacturing',account_status:'active',primary_hub:'EB'});
+  Object.assign(T.dispatch_sites.find(s=>s.company==='adchem'&&s.site_key==='Type 7 — Primary'),{customer_id:'c-t7',gate_code:'4321',receiving_hours:'7–11am',parking_unloading:'Back in at dock B',hazmat_restrictions:'',container_notes:'Return empties to the cage',special_instructions:'',last_verified:null});
+  T.dispatch_contacts.push({id:'ct-recv',company:'adchem',customer_id:'c-t7',site_key:'Type 7 — Primary',type:'receiving',first_name:'Sam',last_name:'Ortiz',phone:'(510) 555-0101',email:'',active:true},
+    {id:'ct-bill',company:'adchem',customer_id:'c-t7',site_key:'Type 7 — Primary',type:'billing',first_name:'Pat',last_name:'Lee',phone:'(510) 555-0999',email:'ap@type7.example',active:true});
+  T.dispatch_site_hub_notes.push({company:'adchem',site_key:'Type 7 — Primary',hub:'EB',scale_on_route:true,route_notes:'Scale on 580 — take the 24 bypass'},
+    {company:'adchem',site_key:'Type 7 — Primary',hub:'LA',scale_on_route:false,route_notes:'LA only route note'});
   // mobile driver view
   const m=await newPage(b,base,{viewport:{width:390,height:844},members:[{user_id:'u1',company:'adchem',role:'driver',hub:'EB',active:true}]});
   await m.goto(base+'/'); await m.waitForTimeout(400); await m.fill('#lEmail','driver-eb@adchem.pro'); await m.fill('#lPass','correct-horse'); await m.click('#btnLogin'); await m.waitForTimeout(1000);
   assert.equal(await m.evaluate(()=>state.tab), 'today'); assert.equal(await m.$eval('#tab-new',e=>e.hidden), true, 'new-order tab hidden for driver');
   assert.equal(await m.evaluate(()=>document.documentElement.scrollWidth), 390, 'no horizontal overflow'); assert.equal((await m.$$eval('.stop',e=>e.length)), 3);
   await m.screenshot({path:path.join(__dirname,'shot-driver.png'),fullPage:true});
+  // the Type 7 stop carries the site notes, this hub's route note and the receiving contact — not the billing contact or another hub's note
+  const stop1=()=>m.$eval('#todayList .stop',e=>e.textContent.replace(/\s+/g,' '));
+  const s1=await stop1();
+  assert.match(s1, /Type 7 Manufacturing/); assert.match(s1, /4321/); assert.match(s1, /7–11am/); assert.match(s1, /Scale on 580 — take the 24 bypass/); assert.match(s1, /Back in at dock B/); assert.match(s1, /Return empties to the cage/);
+  assert.doesNotMatch(s1, /LA only route note/); assert.doesNotMatch(s1, /555-0999|ap@type7/);
+  assert.deepEqual(await m.$eval('#todayList .stop',e=>[...e.querySelectorAll('a[href^="tel:"]')].map(a=>a.getAttribute('href'))), ['tel:5105550101']);
+  assert.equal(await m.$eval('#todayList .stop [data-note]',e=>e.getAttribute('data-note')), 'Type 7 — Primary');
+  m.once('dialog', dlg=>dlg.accept('Gate moved to the north side'));
+  await m.click('#todayList .stop [data-note]'); await m.waitForTimeout(800);
+  const dn=T.dispatch_customer_activity.filter(a=>a.kind==='driver_note');
+  assert.deepEqual(dn.map(a=>({kind:a.kind,status:a.status,logged_by:a.logged_by,method:a.method,site_key:a.site_key,customer_id:a.customer_id,summary:a.summary,company:a.company})),
+    [{kind:'driver_note',status:'pending',logged_by:'u1',method:'app',site_key:'Type 7 — Primary',customer_id:'c-t7',summary:'Gate moved to the north side',company:'adchem'}]);
+  assert.match(await stop1(), /Gate moved to the north side.*pending/, 'own note listed with its status');
+  assert.equal(await m.evaluate(()=>document.documentElement.scrollWidth), 390, 'no horizontal overflow with site notes');
   // deposit slip from the driver's phone
   await m.click('#btnDeposit'); await m.waitForTimeout(200); await m.setInputFiles('#depFile','/tmp/fake-bol.jpg'); await m.waitForTimeout(800);
   await m.fill('#depAmount','1240.50'); await m.fill('#depNote','Chase Richmond'); await m.click('#depSend'); await m.waitForTimeout(1200);
   assert.match(flat(await m.textContent('#depStatus')), /^Sent\. The deposit slip went to accounting@adchem\.pro for \$1,240\.50\./);
   assert.deepEqual(calls.filter(c=>c[0]==='deposit').map(c=>({hub:c[1].hub,driver:c[1].driver,amount:c[1].amount,note:c[1].note,photoDir:c[1].photoPath.replace(/[^/]*$/,'')})), [{hub:'EB',driver:'Jamie',amount:1240.5,note:'Chase Richmond',photoDir:'adchem/EB/deposits/'}]);
+  // the same person as a driver at a second company (LA): none of AdChem's EB site notes show
+  T.dispatch_members=[{user_id:'u1',company:'north',role:'driver',hub:'LA',active:true}];
+  await m.reload(); await m.waitForTimeout(800);
+  if(!(await m.$eval('#login',e=>e.hidden))){ await m.fill('#lEmail','driver-eb@adchem.pro'); await m.fill('#lPass','correct-horse'); await m.click('#btnLogin'); await m.waitForTimeout(1000); }
+  assert.equal(await m.evaluate(()=>state.company), 'north');
+  const body2=await m.$eval('body',e=>e.textContent);
+  assert.doesNotMatch(body2, /4321|Scale on 580|555-0101/, 'no AdChem site notes for the Northstar driver');
   // no page errors except the deliberate Gmail 502
   const errs=page.errs.concat(m.errs).filter(e=>!/status of 502/.test(e));
   assert.deepEqual(errs, [], 'unexpected page errors');

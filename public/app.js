@@ -250,7 +250,6 @@ function indexSites(rows){
   fillAccounts();
 }
 async function loadSitesFromDb(){
-  if(!state.canEdit){ state.feed.rows=[]; state.feed.byCust={}; return; }
   try{ indexSites(await DB.sites()); }
   catch(e){ state.feed.error={code:"db",message:"Couldn't load the customer sites: "+e.message}; }
   renderFeedState(); refreshCode();
@@ -909,7 +908,9 @@ function renderToday(){
   renderHubPick();
   var base=$("tDate").value||ymd(new Date()), hubFilter=myHub();
   var d2=new Date(base+"T12:00:00"); d2.setDate(d2.getDate()+1);
-  var days=[base,ymd(d2)], host=$("todayList"), out="";
+  var days=[base,ymd(d2)], host=$("todayList"), out="", siteKeys=[];
+  var siteOf=function(o){ var rows=state.feed.rows||[], k=o.siteKey, c=String(o.customer||"").trim().toLowerCase();
+    return (k&&rows.find(function(r){return r.siteKey===k;}))||rows.find(function(r){return String(r.customer||"").trim().toLowerCase()===c&&r.hub===o.hub;})||null; };
   days.forEach(function(day){
     var dayOrders=state.orders.filter(function(o){return o.date===day&&o.status!=="Cancelled"&&(!hubFilter||o.hub===hubFilter);});
     var label=(day===ymd(new Date()))?"Today":(day===days[1]?"Tomorrow":day);
@@ -937,6 +938,7 @@ function renderToday(){
           else if(o.deposit) moneyLine+=" — <b>"+esc(o.deposit.item||"deposit")+" "+money(o.deposit.amount)+"</b>";
           var due=(k==="COD"?Number(o.codAmount||0):0)+(o.deposit?Number(o.deposit.amount||0):0);
           var fl=orderFlags(o).filter(function(f){return f.k==="stop"||f.k==="warn";});
+          var site=siteOf(o); if(site&&siteKeys.indexOf(site.siteKey)<0) siteKeys.push(site.siteKey);
           var where=o.shipTo?esc(o.shipTo)+(o.addrState==="unconfirmed"?' <span class="chip warn">UNCONFIRMED</span>':""):'<span style="color:var(--amber)">No delivery address</span>';
           return '<div class="stop'+cls+'">'+
             '<div class="qr"><div class="qr-win mono">'+esc(o.window)+"</div>"+
@@ -946,6 +948,7 @@ function renderToday(){
               '<div class="qr-code">'+codeChip(o)+'<div class="qr-codetext">'+esc(k?CODES[k].text:"No code")+"</div>"+(due?'<div class="qr-amt mono">'+money(due)+"</div>":"")+"</div></div>"+
             (moneyLine?'<div class="qr-band'+(k==="COD"?" collect":" dep")+'"><span>'+moneyLine+'</span><span class="mono">'+money(due)+"</span></div>":"")+
             (fl.length?'<div class="qr-flags">'+fl.map(function(f){return '<span class="chip '+(f.k==="stop"?"k-H":"warn")+'" title="'+esc(f.s)+'">'+esc(f.t)+"</span>";}).join(" ")+"</div>":"")+
+            siteNotesHtml(site,hc)+
             '<div class="qr-actions"><button class="btn sm" data-bol2="'+esc(o.id)+'">BOL</button>'+podButton(o)+
               '<button class="btn sm ghost" data-more="'+esc(o.id)+'">Details / Detalles</button></div>'+
             '<div class="qr-more" id="more-'+esc(o.id)+'" hidden>'+
@@ -975,6 +978,8 @@ function renderToday(){
   host.querySelectorAll("[data-pod]").forEach(function(b){
     b.onclick=function(){var o=state.orders.find(function(x){return x.id===b.getAttribute("data-pod");}); if(o) openPod(o);};
   });
+  host.querySelectorAll("[data-note]").forEach(function(b){ b.onclick=function(){ addDriverNote(b.getAttribute("data-note")); }; });
+  todayExtras(siteKeys);
   updatePodQueueNote();
 }
 function updateCounts(){
@@ -1884,7 +1889,9 @@ const DB={
   },
   async sites(){
     var r=await supa.from("dispatch_sites").select("*").eq("company",state.company).order("customer"); var rows=sbErr(r);
-    return rows.map(function(s){return {siteKey:s.site_key,customer:s.customer,codeRaw:s.code_raw,code:s.code,addr:s.addr,unconfirmed:s.unconfirmed,city:s.city,hub:s.hub,contact:s.contact,phone:s.phone,gate:s.gate,hours:s.hours,instr:s.instr,siteLabel:s.site_label,copyTo:s.copy_to,syncedAt:s.synced_at};});
+    return rows.map(function(s){return {siteKey:s.site_key,customer:s.customer,codeRaw:s.code_raw,code:s.code,addr:s.addr,unconfirmed:s.unconfirmed,city:s.city,hub:s.hub,contact:s.contact,phone:s.phone,gate:s.gate,hours:s.hours,instr:s.instr,siteLabel:s.site_label,copyTo:s.copy_to,syncedAt:s.synced_at,
+      customerId:s.customer_id||null,receivingHours:s.receiving_hours||"",gateCode:s.gate_code||"",parkingUnloading:s.parking_unloading||"",hazmatRestrictions:s.hazmat_restrictions||"",
+      containerNotes:s.container_notes||"",specialInstructions:s.special_instructions||"",lastVerified:s.last_verified||null};});
   },
   async saveSiteCopyTo(siteKey,copyTo){ if(!siteKey) return; sbErr(await supa.from("dispatch_sites").update({copy_to:copyTo}).eq("site_key",siteKey).eq("company",state.company)); },
   async saveOrder(o){
@@ -1896,12 +1903,14 @@ const DB={
   async saveSettings(){ sbErr(await supa.from("dispatch_company_settings").upsert({company:state.company,data:state.settings,updated_at:new Date().toISOString()},{onConflict:"company"})); },
   async assignBol(id){ return sbErr(await supa.rpc("dispatch_next_bol",{p_order_id:id,p_company:state.company})); },
   async users(){
-    var mem=sbErr(await supa.from("dispatch_members").select("user_id,role,hub,active,created_at").eq("company",state.company));
+    var mem=sbErr(await supa.from("dispatch_members").select("user_id,role,hub,active,created_at,is_super_admin,permissions").eq("company",state.company));
     var ids=mem.map(function(m){return m.user_id;}); if(!ids.length) return [];
     var us=sbErr(await supa.from("dispatch_users").select("user_id,email,name").in("user_id",ids));
     var by={}; us.forEach(function(u){by[u.user_id]=u;});
-    return mem.map(function(m){var u=by[m.user_id]||{}; return {user_id:m.user_id,email:u.email||"",name:u.name||"",role:m.role,hub:m.hub,active:m.active,created_at:m.created_at};}).sort(function(a,b){return a.email.localeCompare(b.email);});
+    return mem.map(function(m){var u=by[m.user_id]||{}; return {user_id:m.user_id,email:u.email||"",name:u.name||"",role:m.role,hub:m.hub,active:m.active,created_at:m.created_at,isSuper:!!m.is_super_admin,permissions:m.permissions||{}};}).sort(function(a,b){return a.email.localeCompare(b.email);});
   },
+  async setPermissions(userId,perms){ return sbErr(await supa.rpc("dispatch_set_permissions",{p_user:userId,p_company:state.company,p_perms:perms})); },
+  async setSuperAdmin(userId,on){ return sbErr(await supa.rpc("dispatch_set_super_admin",{p_user:userId,p_company:state.company,p_on:!!on})); },
   async invites(){ return sbErr(await supa.from("dispatch_invites").select("email,name,role,hub,invited_at,accepted_at,revoked_at").eq("company",state.company).order("invited_at",{ascending:false})); },
   async grant(email,name,role,hub){ return sbErr(await supa.rpc("dispatch_grant",{p_email:email,p_name:name,p_role:role,p_hub:hub,p_company:state.company})); },
   async revoke(email){ return sbErr(await supa.rpc("dispatch_revoke",{p_email:email,p_company:state.company})); },
@@ -2050,6 +2059,7 @@ function readSegTable(){
 /* ============================================================
    People (admin)
    ============================================================ */
+const MEMBER_PERMS=[["manage_customers","Manage customers"],["approve_driver_notes","Approve driver notes"],["run_imports","Run imports"],["manage_people","Manage people"]];
 async function renderUsers(){
   if(!state.isOwner) return;
   var ph=$("peopleHead"); if(ph) ph.textContent="People at "+coName();
@@ -2059,12 +2069,19 @@ async function renderUsers(){
     var users=await DB.users(), inv=await DB.invites();
     state.users=users; state.invites=inv;
     var pend=inv.filter(function(i){return !i.accepted_at&&!i.revoked_at;});
+    var meSuper=!!(state.me&&state.me.isSuper), canPerm=state.isOwner||meSuper;
+    var permRow=function(u){
+      if(!canPerm||!u.active) return "";
+      var lock=u.isSuper&&!meSuper;   // only a super admin can change a super admin
+      return '<div class="perm-row">'+MEMBER_PERMS.map(function(p){ return '<label class="perm-chk"><input type="checkbox" data-perm="'+esc(u.user_id+":"+p[0])+'"'+(u.permissions[p[0]]?" checked":"")+(lock?" disabled":"")+"> "+esc(p[1])+"</label>"; }).join("")+
+        (meSuper?'<label class="perm-chk"><input type="checkbox" data-super="'+esc(u.user_id)+'"'+(u.isSuper?" checked":"")+(u.user_id===state.session.user.id?' disabled title="You can\'t remove your own super admin"':"")+"> Super admin</label>":"")+"</div>";
+    };
     var rows=users.map(function(u){
       return '<div class="urow"><div><b>'+esc(u.name||u.email)+'</b><div class="hint">'+esc(u.email)+'</div></div>'+
         '<div><span class="chip st'+(u.role==="admin"?" done":"")+'">'+esc(u.role)+'</span> '+(u.hub?'<span class="chip k-DEP">'+esc(u.hub)+'</span>':'<span class="hint">all hubs</span>')+'</div>'+
         '<div>'+(u.active?'<span class="chip k-D">active</span>':'<span class="chip warn">removed</span>')+'</div><div></div>'+
         '<div style="display:flex;gap:6px;justify-content:flex-end">'+(u.active&&u.user_id!==state.session.user.id?'<button class="btn sm danger" data-revoke="'+esc(u.email)+'">Remove</button>':'')+
-        (!u.active?'<button class="btn sm" data-regrant="'+esc(u.email)+'" data-role="'+esc(u.role)+'" data-hub="'+esc(u.hub)+'">Restore</button>':'')+'</div></div>';
+        (!u.active?'<button class="btn sm" data-regrant="'+esc(u.email)+'" data-role="'+esc(u.role)+'" data-hub="'+esc(u.hub)+'">Restore</button>':'')+'</div>'+permRow(u)+'</div>';
     }).join("");
     var prow=pend.map(function(i){
       return '<div class="urow" style="background:var(--amber-soft)"><div><b>'+esc(i.name||i.email)+'</b><div class="hint">'+esc(i.email)+'</div></div>'+
@@ -2075,6 +2092,14 @@ async function renderUsers(){
     $("userList").innerHTML=(rows+prow)||'<div class="empty">No one yet.</div>';
     $("userList").querySelectorAll("[data-revoke]").forEach(function(b){ b.onclick=async function(){ if(!confirm("Remove access for "+b.getAttribute("data-revoke")+"? They lose access on their next page load.")) return; try{ await DB.revoke(b.getAttribute("data-revoke")); banner("good","Access removed","",{autoclose:5000}); }catch(e){ banner("bad","Not removed","<div>"+esc(e.message)+"</div>"); } renderUsers(); }; });
     $("userList").querySelectorAll("[data-regrant]").forEach(function(b){ b.onclick=async function(){ try{ await DB.grant(b.getAttribute("data-regrant"),"",b.getAttribute("data-role"),b.getAttribute("data-hub")); }catch(e){ banner("bad","Not restored","<div>"+esc(e.message)+"</div>"); } renderUsers(); }; });
+    $("userList").querySelectorAll("[data-perm]").forEach(function(c){ c.onchange=async function(){
+      var uid=c.getAttribute("data-perm").split(":")[0], u=users.find(function(x){return x.user_id===uid;})||{permissions:{}};
+      var perms=Object.assign({},u.permissions); $("userList").querySelectorAll("[data-perm]").forEach(function(el){ var a=el.getAttribute("data-perm").split(":"); if(a[0]===uid) perms[a[1]]=el.checked; });
+      try{ await DB.setPermissions(uid,perms); if(uid===state.session.user.id) state.me.perms=perms; }catch(e){ banner("bad","Permissions not changed","<div>"+esc(e.message)+"</div>"); }
+      renderUsers(); }; });
+    $("userList").querySelectorAll("[data-super]").forEach(function(c){ c.onchange=async function(){
+      try{ await DB.setSuperAdmin(c.getAttribute("data-super"),c.checked); }catch(e){ banner("bad","Super admin not changed","<div>"+esc(e.message)+"</div>"); }
+      renderUsers(); }; });
     var log=await DB.log();
     $("userLog").innerHTML=log.map(function(l){return esc(new Date(l.at).toLocaleString([], {month:"numeric",day:"numeric",hour:"numeric",minute:"2-digit"}))+" · "+esc(l.what)+" · "+esc(JSON.stringify(l.detail));}).join("<br>")||"Nothing yet.";
   }catch(e){ $("userList").innerHTML='<div class="empty">'+esc(e.message)+"</div>"; }
@@ -2202,7 +2227,8 @@ async function loadCompanyData(){
   applyAccess();
   fillHubSelects(); state.form.lines=[blankLine()]; renderLines(); onCustomerInput(true); refreshId(); updateCounts();
   if(state.me.role==="driver"&&state.me.hub) lsSet("adchem_myhub",state.me.hub);
-  if(state.canEdit){ await loadSitesFromDb(); await loadCalendars(); }
+  await loadSitesFromDb();   // drivers too: the policy limits them to their hub's sites, which Today's site notes read
+  if(state.canEdit) await loadCalendars();
   closeCustomer(); state.customers=[];
   if(state.canEdit){ try{ state.customers=await CDB.customers(); }catch(e){ banner("bad","Couldn't load customers","<div>"+esc(e.message)+"</div>"); } }
   setConn("ok","Connected");

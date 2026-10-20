@@ -185,6 +185,31 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.match(hist, /active: true → false/, 'contact change in history');
   assert.match(hist, /status: pending → rejected/, 'activity review in history');
   assert.ok(await page.$$eval('#histList .hist-line',e=>e.every(x=>/ · /.test(x.textContent))), 'when · who · change lines');
+  // ---------- People: per-member permissions and super admin, written through the RPCs ----------
+  T.dispatch_users.push({user_id:'u2',email:'casey@adchem.pro',name:'Casey',active:true});
+  T.dispatch_members.push({user_id:'u2',company:'adchem',role:'coordinator',hub:'',active:true,is_super_admin:false,permissions:{}});
+  await page.click('#tab-users'); await page.waitForTimeout(500);
+  assert.match(flat(await page.textContent('#panel-users')), /Drivers: one account per person, with their hub\./);
+  assert.doesNotMatch(flat(await page.textContent('#panel-users')), /one account per hub/);
+  assert.deepEqual(await page.$$eval('[data-perm^="u2:"]',e=>e.map(x=>x.getAttribute('data-perm'))), ['u2:manage_customers','u2:approve_driver_notes','u2:run_imports','u2:manage_people']);
+  assert.equal(await page.$eval('[data-perm="u2:manage_customers"]',e=>e.checked), false);
+  await page.check('[data-perm="u2:manage_customers"]'); await page.waitForTimeout(600);
+  const u2 = () => T.dispatch_members.find(x=>x.user_id==='u2'&&x.company==='adchem');
+  assert.deepEqual(u2().permissions, {manage_customers:true,approve_driver_notes:false,run_imports:false,manage_people:false}, 'permissions written through dispatch_set_permissions');
+  assert.equal(await page.$eval('[data-perm="u2:manage_customers"]',e=>e.checked), true, 're-rendered from the database');
+  assert.equal(await page.$eval('[data-super="u2"]',e=>e.checked), false);
+  await page.check('[data-super="u2"]'); await page.waitForTimeout(600);
+  assert.equal(u2().is_super_admin, true, 'super admin written through dispatch_set_super_admin');
+  assert.equal(await page.$eval('[data-super="u2"]',e=>e.checked), true);
+  assert.equal(await page.$eval('[data-super="u1"]',e=>e.checked), true, 'the signed-in super admin shows as one');
+  // a plain admin: permission switches, no super admin switches
+  { const savedMembers = T.dispatch_members.slice();
+    const pa = await newPage(b, base, {members:[{user_id:'u1',company:'adchem',role:'admin',hub:'',active:true,is_super_admin:false,permissions:{}},
+      {user_id:'u2',company:'adchem',role:'coordinator',hub:'',active:true,is_super_admin:false,permissions:{}}]}); pages.push(pa);
+    await signIn(pa, base); await pa.click('#tab-users'); await pa.waitForTimeout(500);
+    assert.equal(await pa.$$eval('[data-perm="u2:manage_customers"]',e=>e.length), 1, 'admin sees permission switches');
+    assert.equal(await pa.$$eval('[data-super]',e=>e.length), 0, 'no super admin switches for a plain admin');
+    T.dispatch_members = savedMembers; }
   // a pending note for the permission checks below
   T.dispatch_customer_activity.push({id:'a-drv-3',company:'adchem',customer_id:c.id,occurred_at:old,method:'app',summary:'Forklift broken',kind:'driver_note',status:'pending',logged_by:'u2',reviewed_by:null,reviewed_at:null,rejection_reason:null});
   // coordinator without, then with, manage_customers

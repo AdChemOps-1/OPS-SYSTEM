@@ -199,6 +199,10 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.match(flat(await page.textContent('#healthState')), /Customers Out: ok.*Import sheet: ok/, 'the health card lists both Customers Out and the import sheet');
   assert.match(flat(await page.textContent('#healthState')), /Documents bucket: ok.*Expiry email: ok.*Last expiry email: never/, 'the health card lists the documents bucket, the expiry email job and its last run');
   assert.equal(await page.inputValue('#sCustomersOut'), '1COUTseedAAAAAAAAAAAAAA');
+  // before Google is configured the card still shows the Supabase lines, so the migration can be seen landing
+  await page.evaluate(()=>{ const g=API.get; API.get=p=>g(p+(p.indexOf('/api/health')===0?'?nogoogle=1':'')); return renderHealth().then(()=>{ API.get=g; }); });
+  assert.match(flat(await page.textContent('#healthState')), /Google isn't set up on the server yet.*Documents bucket: ok.*Expiry email: ok.*Last expiry email: never/, 'the Supabase lines show under the Google warning');
+  await page.evaluate(()=>renderHealth()); await page.waitForTimeout(200);
   await page.fill('#sCustomersOut','https://docs.google.com/spreadsheets/d/1CustomersOutSheetIdXYZ_abc/edit#gid=0');
   await page.click('#btnSaveCustomersOut'); await page.waitForTimeout(600);
   assert.equal(T.dispatch_company_settings[0].data.customersOutSheetId, '1CustomersOutSheetIdXYZ_abc', 'the ID, not the link, is saved');

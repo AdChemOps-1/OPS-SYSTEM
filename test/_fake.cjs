@@ -251,7 +251,7 @@ function makeFake(seed){
       if(b.send){ T.companies.filter(c=>!company||c.id===company).forEach(c=>{ const st=T.dispatch_company_settings.find(x=>x.company===c.id), to=(st&&st.data.expiryEmailRecipients)||[], n=docsDue(T).filter(d=>d.company===c.id).length;
         if(to.length&&n) sent.push({company:c.id,to,count:n}); else skipped.push({company:c.id,reason:to.length?'nothing_due':'no_recipients'}); }); }
       return send(200,{ok:true,sent,skipped}); }
-    if(u.pathname==='/api/health') return send(200,{googleConfigured:true,impersonate:'ops-system@adchem.pro',mailFrom:'orders@adchem.pro',ordersTo:'orders@adchem.pro',accountingTo:'accounting@adchem.pro',checks:{token:'ok',customersOut:'ok',importSheet:'ok',docsBucket:'ok',expiryCron:'ok'},lastExpiryEmail:null});
+    if(u.pathname==='/api/health') return send(200,{googleConfigured:!u.searchParams.has('nogoogle'),impersonate:'ops-system@adchem.pro',mailFrom:'orders@adchem.pro',ordersTo:'orders@adchem.pro',accountingTo:'accounting@adchem.pro',checks:{token:'ok',customersOut:'ok',importSheet:'ok',docsBucket:'ok',expiryCron:'ok'},lastExpiryEmail:null});
     // static
     const p=path.join(ROOT,u.pathname==='/'?'index.html':u.pathname); if(!fs.existsSync(p)) return send(404,{});
     res.writeHead(200,{'content-type':{'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png','.webmanifest':'application/manifest+json'}[path.extname(p)]||'application/octet-stream'}); fs.createReadStream(p).pipe(res);

@@ -2,7 +2,7 @@
 // search, per-member manage_customers permission, sites + hub notes, contacts, activity + driver-note review, history, phone width. Uses the shared fake (test/_fake.cjs).
 const assert = require('assert/strict');
 const { chromium } = require('playwright');
-const { makeFake, newPage } = require('./_fake.cjs');
+const { makeFake, newPage, SITES } = require('./_fake.cjs');
 const flat = s => (s || '').replace(/\s+/g, ' ').trim();
 
 async function signIn(page, base, email){
@@ -17,7 +17,7 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   T.dispatch_members[0].is_super_admin = true;   // the seeded AdChem admin is the super admin (migration 005 seed)
   T.dispatch_company_settings[0].data.customersOutSheetId = '1COUTseedAAAAAAAAAAAAAA';   // saves report to Customers Out only when a sheet is set
   const coCalls = () => fake.calls.filter(x=>x[0]==='customers-out');
-  const b = await chromium.launch(); const pages = [];
+  const b = await chromium.launch(); const pages = [], fakes = [];
   try {
   const page = await newPage(b, base); pages.push(page);
   await signIn(page, base);
@@ -287,8 +287,59 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.equal(await m.evaluate(()=>document.documentElement.scrollWidth), 390, 'no horizontal overflow with the contact form open');
   await m.click('#ctab-profile'); await m.waitForTimeout(100); assert.equal(await m.$eval('#cpane-profile',e=>e.hidden), false);
   assert.equal(await m.evaluate(()=>document.documentElement.scrollWidth), 390, 'no horizontal overflow after switching tabs');
+  // ---------- Setup: the customer import (its own fake, so the workbook lands on empty customer tables) ----------
+  const fi = makeFake(); const TI = fi.T; const baseI = await fi.start(); fakes.push(fi);
+  TI.dispatch_members[0].is_super_admin = true;
+  // two feed sites for workbook customers: the import links them instead of adding a second site at the same street
+  TI.dispatch_sites = SITES.filter(r=>/^(Type 7|VKGL)/.test(r[0])).map(r=>({company:'adchem',site_key:r[13],customer:r[0],code_raw:r[1],code:r[1].split(' - ')[0],addr:r[2],unconfirmed:false,city:r[3],hub:r[4],contact:r[5],phone:r[6],gate:r[7],hours:r[8],instr:r[11],site_label:r[12],copy_to:'',synced_at:new Date().toISOString()}));
+  const pi = await newPage(b, baseI); pages.push(pi);
+  await signIn(pi, baseI); await pi.click('#tab-setup'); await pi.waitForTimeout(400);
+  assert.equal(await pi.$eval('#importCard',e=>e.hidden), false, 'import card shown to a super admin');
+  assert.equal(await pi.$eval('#btnImportCommit',e=>e.disabled), true, 'nothing to import before a read');
+  await pi.fill('#sImportSheet','https://docs.google.com/spreadsheets/d/1ImportWorkbookXYZ_abc123/edit#gid=0');
+  await pi.click('#btnImportRead'); await pi.waitForTimeout(800);
+  assert.equal(TI.dispatch_company_settings[0].data.importSheetId, '1ImportWorkbookXYZ_abc123', 'the ID, not the link, is saved');
+  const planRows = () => pi.$$eval('#importPlan tbody tr', rs=>rs.map(r=>({text:r.textContent, decision:r.querySelector('select[data-decision]').value})));
+  const pr = await planRows();
+  assert.equal(pr.length, 7, 'one row per Directory/Customers source row (5) + one skip per deferred tab (2)');
+  assert.equal(pr.find(r=>/VKGL Manufacturing - LA/.test(r.text)).decision, 'site', 'VKGL - LA proposed as a site of VKGL LLC');
+  assert.deepEqual(pr.filter(r=>r.decision==='skip').map(r=>/later stage/.test(r.text)), [true, true]);
+  assert.equal(await pi.$eval('#btnImportCommit',e=>e.disabled), false);
+  assert.equal(TI.dispatch_customers.length, 0, 'reading writes nothing');
+  const laSel = await pi.$$eval('#importPlan tbody tr', rs=>rs.find(r=>/VKGL Manufacturing - LA/.test(r.textContent)).querySelector('select').getAttribute('data-decision'));
+  await pi.selectOption(`#importPlan select[data-decision="${laSel}"]`, 'customer'); await pi.waitForTimeout(100);
+  assert.equal((await planRows()).find(r=>/VKGL Manufacturing - LA/.test(r.text)).decision, 'customer', 'decision changed');
+  pi.once('dialog', dlg=>dlg.accept());
+  await pi.click('#btnImportCommit'); await pi.waitForTimeout(1200);
+  assert.equal(TI.dispatch_customers.length, 5);
+  assert.deepEqual(TI.dispatch_customers.map(c=>c.customer_id).sort(), ['ADC-0001','ADC-0002','ADC-0003','ADC-0007','ADC-0008']);
+  assert.ok(TI.dispatch_customers.every(c=>!Object.keys(c).some(k=>/terms|credit|balance|price|fee|deposit/i.test(k))), 'no money columns written');
+  assert.ok(TI.dispatch_sites.length > 0 && TI.dispatch_sites.every(x=>x.customer_id), 'every site linked to a customer');
+  assert.deepEqual(TI.dispatch_sites.map(x=>x.site_key).sort(), ['ADC-0003 — Primary','ADC-0007 — Primary','Type 7 — Primary','VKGL — Primary'], 'feed sites reused, not duplicated');
+  assert.equal(TI.dispatch_sites.find(x=>x.site_key==='Type 7 — Primary').code_raw, 'D - Deliver; no holds', 'the feed code is kept');
+  assert.equal(TI.dispatch_site_hub_notes.length, 1);
+  assert.equal(TI.dispatch_company_settings[0].data.nextCustomerNumber, 9);
+  assert.ok(fi.calls.some(x=>x[0]==='customers-out'&&JSON.stringify(x[1])===JSON.stringify({rebuild:true})), 'Customers Out rebuilt');
+  const ilog = TI.dispatch_log.find(l=>l.what==='import');
+  assert.ok(ilog, 'import logged'); assert.deepEqual([ilog.company, ilog.who, ilog.detail.sheetId, ilog.detail.counts.customers], ['adchem','u1','1ImportWorkbookXYZ_abc123',5]);
+  const costa = TI.dispatch_customers.find(c=>c.customer_id==='ADC-0007'), t7 = TI.dispatch_customers.find(c=>c.customer_id==='ADC-0001');
+  assert.equal(costa.parent_customer_id, t7.id, 'parent linked');
+  assert.match(flat(await pi.textContent('#importResult')), /Import done.*5 customers/);
+  assert.equal(await pi.$eval('#btnImportCommit',e=>e.disabled), true, 'plan cleared after the import');
+  assert.equal(await pi.evaluate(()=>state.settings.nextCustomerNumber), 9, 'settings reloaded, so a later Setup save keeps the number');
+  // without run_imports: no card, and the route refuses
+  const pn = await newPage(b, baseI, {members:[{user_id:'u1',company:'adchem',role:'coordinator',hub:'',active:true,is_super_admin:false,permissions:{manage_customers:true}}]}); pages.push(pn);
+  await signIn(pn, baseI); await pn.click('#tab-setup'); await pn.waitForTimeout(400);
+  assert.equal(await pn.$eval('#importCard',e=>e.hidden), true, 'no import card without run_imports');
+  const denied = await fetch(baseI+'/api/import',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer tok'},body:JSON.stringify({company:'adchem',action:'read'})});
+  assert.equal(denied.status, 403); assert.match((await denied.json()).error.message, /run imports/);
+  TI.dispatch_members = [{user_id:'u1',company:'adchem',role:'coordinator',hub:'',active:true,is_super_admin:false,permissions:{run_imports:true}}];
+  const ok = await fetch(baseI+'/api/import',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({company:'adchem',action:'read'})});
+  assert.equal(ok.status, 200, 'a coordinator with run_imports may read');
+  const noManage = await fetch(baseI+'/api/import',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({company:'adchem',action:'commit',plan:(await ok.json()).plan})});
+  assert.equal(noManage.status, 403, 'committing also needs manage_customers');
   // no page errors except the deliberate Customers Out 502
   assert.deepEqual(pages.flatMap(p=>p.errs).filter(e=>!/status of 502/.test(e)), [], 'unexpected page errors');
   assert.equal(page.errs.filter(e=>/status of 502/.test(e)).length, 1, 'the Customers Out failure case ran');
-  } finally { await b.close(); await fake.stop(); }
+  } finally { await b.close(); await fake.stop(); for (const f of fakes) await f.stop(); }
 })().then(()=>{ console.log('customers.test.cjs: ok'); }, e=>{ console.error(e); process.exit(1); });

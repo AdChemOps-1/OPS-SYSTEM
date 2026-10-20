@@ -1,0 +1,288 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { TABS, HEADERS, readTab, planImport, applyPlan, bindRows } from '../../functions/_lib/importsheet.js';
+
+const WB = JSON.parse(readFileSync(new URL('../fixtures/import-workbook.json', import.meta.url)));
+const clone = (x) => JSON.parse(JSON.stringify(x));
+const NONE = { customers: [], sites: [], contacts: [], hubNotes: [] };
+const MONEY = /terms|credit|balance|price|fee|deposit/i;
+const byName = (plan, name) => plan.items.find(i => i.name === name);
+
+test('TABS and HEADERS name the five tabs and the spec §8 columns', () => {
+  assert.deepEqual(TABS, { directory: 'Customer Directory', customers: 'Customers', licensing: 'Licensing & Entity', delivery: 'Delivery Notes', terms: 'Account Terms' });
+  for (const h of ['Customer (QuickBooks name)', 'Also Known As', 'Legal / Billing Company Name', 'Account Status', 'Primary Hub', 'Same as billing?', 'Delivery same as billing contact?',
+    'Delivery Contact Name', 'Delivery Phone', 'Billing / AP Email', 'CC on Statements (emails)', 'Owner same as billing contact?', 'Best Way to Reach', 'Last Verified', 'Notes', 'Customer ID', 'Parent / Related Account',
+    'BILLING ADDRESS › Street', 'BILLING ADDRESS › ZIP', 'DELIVERY ADDRESS › Street', 'DELIVERY ADDRESS › ZIP', 'BILLING CONTACT › First Name', 'BILLING CONTACT › Phone', 'COMPANY OWNER › Last Name', 'COMPANY OWNER › Email'])
+    assert.ok(HEADERS.directory.includes(h), 'directory header ' + h);
+  assert.deepEqual(HEADERS.customers, ['Customer', 'Also Known As', 'Legal Name', 'Account Status', 'Street', 'City', 'State', 'ZIP', 'Contact', 'Phone', 'Email']);
+  assert.equal(HEADERS.delivery.length, 15); assert.ok(HEADERS.delivery.includes('Cylinder / Container Notes (pigs, dewars, bins, swaps)'));
+  assert.deepEqual(HEADERS.licensing, []); assert.deepEqual(HEADERS.terms, []);
+  for (const t of Object.keys(HEADERS)) assert.ok(!HEADERS[t].some(h => MONEY.test(h)), t + ' reads no money column');
+});
+
+test('readTab: Directory header row found at index 3 (first row with Customer ID); duplicate headers split by group', () => {
+  const r = readTab(WB.directory, undefined, HEADERS.directory);
+  assert.equal(r.headerRow, 3);
+  assert.deepEqual(r.missing, []);
+  assert.equal(r.rows.length, 4);
+  const t7 = r.rows[0];
+  assert.equal(t7['Customer (QuickBooks name)'], 'Type 7 Manufacturing');
+  assert.equal(t7['BILLING ADDRESS › Street'], '1 Billing Way'); assert.equal(t7['DELIVERY ADDRESS › Street'], '100 Main St');
+  assert.equal(t7['BILLING CONTACT › First Name'], 'Pat'); assert.equal(t7['COMPANY OWNER › First Name'], 'Olu');
+  assert.equal(t7['DELIVERY ADDRESS › ZIP'], '94607'); assert.equal(t7['Customer ID'], 'ADC-0001');
+  assert.equal(t7._row, 5, 'sheet row number (1-based)');
+  // header row given explicitly
+  assert.deepEqual(readTab(WB.directory, 3, HEADERS.directory).missing, []);
+});
+
+test('readTab + planImport: a renamed Customer ID column is reported missing and named in problems', () => {
+  const wb = clone(WB); wb.directory[3][30] = 'Cust #';
+  const r = readTab(wb.directory, 3, HEADERS.directory);
+  assert.ok(r.missing.includes('Customer ID'));
+  assert.equal(readTab(wb.directory, undefined, HEADERS.directory).headerRow, 3, 'falls back to the row with the most expected headers');
+  const plan = planImport(wb, NONE);
+  assert.ok(plan.missingHeaders['Customer Directory'].includes('Customer ID'));
+  assert.ok(plan.problems.some(p => p.includes('Customer Directory') && p.includes('Customer ID')), plan.problems.join(' | '));
+  assert.ok(!plan.items.some(i => i.source.tab === 'Customer Directory' && i.action !== 'problem'), 'the Directory is not read with a column missing');
+});
+
+test('planImport: customers, the LA site, parent, Customers-only row, skipped tabs', () => {
+  const plan = planImport(WB, NONE);
+  assert.deepEqual(plan.problems, []);
+  assert.deepEqual(plan.missingHeaders, { 'Customer Directory': [], Customers: [], 'Delivery Notes': [] });
+  const t7 = byName(plan, 'Type 7 Manufacturing'), llc = byName(plan, 'VKGL Manufacturing LLC'), la = byName(plan, 'VKGL Manufacturing - LA'),
+    costa = byName(plan, 'Costa Cannabis'), bio = byName(plan, 'Bio-Rad');
+  assert.deepEqual([t7.action, t7.decision, t7.customer_id, t7.source], ['customer', 'customer', 'ADC-0001', { tab: 'Customer Directory', row: 5 }]);
+  assert.deepEqual([llc.action, llc.customer_id], ['customer', 'ADC-0002']);
+  assert.deepEqual([la.action, la.decision, la.siteOf], ['site', 'site', llc.key], 'same legal name, different delivery address → a site of VKGL LLC');
+  assert.equal(la.fields.site_label, 'LA'); assert.equal(la.fields.delivery_street, '1200 E 7th St');
+  assert.deepEqual([costa.action, costa.parent, costa.customer_id], ['customer', t7.key, 'ADC-0007']);
+  assert.deepEqual([bio.action, bio.source.tab, bio.customer_id, bio.fields.legal_name, bio.fields.billing_city], ['customer', 'Customers', 'ADC-0008', 'Bio-Rad Laboratories, Inc.', 'Hercules'], 'Customers-only row, numbered max+1');
+  assert.ok(bio.contacts.some(c => c.type === 'billing' && c.first_name === 'Dana' && c.email === 'ap@bio-rad.example'));
+  // the Customers-tab duplicate of Type 7 merges (no own item) and fills only blanks: the Directory's AKA "T7" wins
+  assert.equal(plan.items.filter(i => i.name === 'Type 7 Manufacturing').length, 1);
+  assert.equal(t7.fields.also_known_as, 'T7');
+  // one review row per Directory/Customers source row + one skip per deferred tab
+  assert.equal(plan.items.length, 7);
+  const skips = plan.items.filter(i => i.action === 'skip');
+  assert.deepEqual(skips.map(s => [s.source.tab, s.detail, s.decision]), [['Licensing & Entity', 'later stage', 'skip'], ['Account Terms', 'later stage', 'skip']]);
+  // field values
+  assert.deepEqual({ ...t7.fields }, {
+    name: 'Type 7 Manufacturing', also_known_as: 'T7', legal_name: 'Type 7 Manufacturing, Inc.', account_status: 'active', primary_hub: 'EB',
+    billing_street: '1 Billing Way', billing_city: 'Oakland', billing_state: 'CA', billing_zip: '94601', last_verified: '2026-10-01', notes: 'Statements monthly',
+    delivery_street: '100 Main St', delivery_city: 'Oakland', delivery_state: 'CA', delivery_zip: '94607', hub: 'EB', site_label: 'Primary',
+    receiving_hours: 'Mon–Fri 7–11am', gate_code: '', parking_unloading: 'Dock B, liftgate', hazmat_restrictions: 'No smoking on the dock',
+    container_notes: 'Swap pigs at the cage', special_instructions: 'Call 30 min ahead', site_last_verified: '2026-10-02' });
+  assert.deepEqual(llc.fields.delivery_street, '840 W Esther St', 'Same as billing? = Yes copies the billing address');
+  // Delivery Notes
+  assert.deepEqual(t7.hubNotes, [{ hub: 'EB', scale_on_route: true, route_notes: 'Scale on 580 at Grant Line' }]);
+  assert.equal(costa.fields.gate_code, '#4455'); assert.deepEqual(costa.hubNotes, []);
+  // no money anywhere in fields
+  for (const i of plan.items) for (const k of Object.keys(i.fields || {})) assert.ok(!MONEY.test(k), i.name + ' field ' + k);
+  assert.ok(!JSON.stringify(plan).includes('5,000.00') && !JSON.stringify(plan).includes('Net 30') && !JSON.stringify(plan).includes('1,250.00'), 'no money value anywhere in the plan');
+});
+
+test('planImport: contacts from the three blocks, honouring the same-as flags', () => {
+  const plan = planImport(WB, NONE);
+  const t7 = byName(plan, 'Type 7 Manufacturing'), llc = byName(plan, 'VKGL Manufacturing LLC'), costa = byName(plan, 'Costa Cannabis');
+  const types = t7.contacts.map(c => c.type);
+  for (const t of ['receiving', 'billing', 'owner']) assert.ok(types.includes(t), 'Type 7 has a ' + t + ' contact');
+  const rec = t7.contacts.filter(c => c.type === 'receiving');
+  assert.deepEqual(rec.map(c => [c.first_name, c.last_name, c.phone, c.at_site]), [['Sam', 'Ortiz', '(510) 555-0101', true]], 'Delivery Notes site contact merges with the same person');
+  assert.deepEqual(t7.contacts.find(c => c.type === 'owner'), { type: 'owner', first_name: 'Olu', last_name: 'Ade', phone: '(510) 555-0111', email: 'olu@type7.example', preferred_method: null, cc_on_statements: false, at_site: false });
+  assert.deepEqual(t7.contacts.filter(c => c.cc_on_statements).map(c => c.email), ['controller@type7.example']);
+  assert.equal(t7.contacts.find(c => c.type === 'billing' && !c.cc_on_statements).preferred_method, 'email');
+  // VKGL LLC: owner same as billing → one object for both roles; delivery contact same as billing → a receiving copy at the site
+  const both = llc.contacts.filter(c => c.type === 'billing' || c.type === 'owner');
+  assert.equal(both.length, 1);
+  assert.deepEqual([both[0].type, both[0].owner_same, both[0].first_name, both[0].email], ['billing', true, 'Vic', 'ap@vkgl.example']);
+  assert.deepEqual(llc.contacts.filter(c => c.type === 'receiving').map(c => [c.first_name, c.phone, c.at_site]), [['Vic', '(562) 555-0123', true]]);
+  // Costa: billing email only, owner separate
+  assert.deepEqual(costa.contacts.map(c => c.type).sort(), ['billing', 'owner', 'receiving']);
+});
+
+const T7_EXISTING = { id: 'c-t7', company: 'adchem', customer_id: 'ADC-0001', name: 'Type 7 Manufacturing', also_known_as: '', legal_name: 'Type 7 Manufacturing, Inc.', account_status: 'active',
+  primary_hub: 'EB', billing_street: '1 Billing Way', billing_city: 'Oakland', billing_state: 'CA', billing_zip: '94607', last_verified: null, notes: '', updated_by: 'u9', parent_customer_id: null };
+
+test('applyPlan: an app-edited customer keeps its fields; blanks are filled; updated_by kept (Review Focus 3)', () => {
+  const existing = { ...NONE, customers: [T7_EXISTING] };
+  const plan = planImport(WB, existing);
+  const out = applyPlan(plan, existing, 'u1');
+  const t7 = out.customers.find(c => c.customer_id === 'ADC-0001');
+  assert.equal(t7.billing_zip, '94607', 'app-edited billing_zip untouched');
+  assert.equal(t7.also_known_as, 'T7', 'blank also_known_as filled');
+  assert.equal(t7.last_verified, '2026-10-01', 'blank date filled');
+  assert.equal(t7.notes, 'Statements monthly');
+  assert.equal(t7.updated_by, 'u9', 'still counts as app-edited next time');
+  // the same row last written by the importing user is overwritten
+  const mine = applyPlan(planImport(WB, { ...NONE, customers: [{ ...T7_EXISTING, updated_by: 'u1' }] }), { ...NONE, customers: [{ ...T7_EXISTING, updated_by: 'u1' }] }, 'u1');
+  const m7 = mine.customers.find(c => c.customer_id === 'ADC-0001');
+  assert.deepEqual([m7.billing_zip, m7.updated_by], ['94601', 'u1']);
+  // new rows are stamped with the importer and the source; blanks are '' never null
+  const fresh = applyPlan(planImport(WB, NONE), NONE, 'u1');
+  const bio = fresh.customers.find(c => c.customer_id === 'ADC-0008');
+  assert.deepEqual([bio.updated_by, bio.import_source, bio.also_known_as, bio.notes, bio.primary_hub, bio.last_verified], ['u1', { tab: 'Customers', row: 3 }, '', '', '', null]);
+  for (const c of fresh.customers) for (const [k, v] of Object.entries(c)) if (!['last_verified', 'import_source', 'updated_by', 'parent_ref'].includes(k)) assert.equal(typeof v, 'string', c.customer_id + '.' + k);
+});
+
+test('applyPlan: an app-edited site keeps its Ops fields; app-edited hub note kept', () => {
+  const t7 = { ...T7_EXISTING, updated_by: null };
+  const site = { company: 'adchem', site_key: 'ADC-0001 — Primary', customer_id: 'c-t7', customer: 'Type 7 Manufacturing', addr: '100 Main St', city: 'Oakland', hub: 'EB', site_label: 'Primary',
+    code_raw: '', code: null, receiving_hours: '6–9am', gate_code: '', parking_unloading: '', hazmat_restrictions: '', container_notes: '', special_instructions: '', last_verified: null, updated_by: 'u9' };
+  const note = { company: 'adchem', site_key: 'ADC-0001 — Primary', hub: 'EB', scale_on_route: false, route_notes: 'No scale now', updated_by: 'u9' };
+  const existing = { customers: [t7], sites: [site], contacts: [], hubNotes: [note] };
+  const out = applyPlan(planImport(WB, existing), existing, 'u1');
+  const s = out.sites.find(x => x.site_key === 'ADC-0001 — Primary');
+  assert.deepEqual([s.receiving_hours, s.parking_unloading, s.updated_by, s.customer_ref], ['6–9am', 'Dock B, liftgate', 'u9', 'ADC-0001']);
+  assert.equal(out.sites.filter(x => x.customer_ref === 'ADC-0001').length, 1, 'the app-created site is reused, not duplicated');
+  assert.ok(!out.siteHubNotes.some(n => n.site_key === 'ADC-0001 — Primary' && n.hub === 'EB'), 'app-edited hub note left alone');
+});
+
+test('applyPlan: rows, keys, contacts, numbering', () => {
+  const plan = planImport(WB, NONE);
+  const out = applyPlan(plan, NONE, 'u1');
+  assert.deepEqual(out.customers.map(c => c.customer_id), ['ADC-0001', 'ADC-0002', 'ADC-0007', 'ADC-0008'], 'the LA row is a site, not a customer');
+  assert.equal(out.nextCustomerNumber, 9, 'highest imported ID is ADC-0008');
+  assert.equal(out.customers.find(c => c.customer_id === 'ADC-0007').parent_ref, 'ADC-0001');
+  assert.deepEqual(out.sites.map(s => [s.site_key, s.customer_ref, s.addr, s.city, s.hub, s.site_label]), [
+    ['ADC-0001 — Primary', 'ADC-0001', '100 Main St, Oakland CA 94607', 'Oakland', 'EB', 'Primary'],
+    ['ADC-0002 — Primary', 'ADC-0002', '840 W Esther St, Long Beach CA 90813', 'Long Beach', 'LA', 'Primary'],
+    ['ADC-0002 — LA', 'ADC-0002', '1200 E 7th St, Los Angeles CA 90021', 'Los Angeles', 'LA', 'LA'],
+    ['ADC-0007 — Primary', 'ADC-0007', '2330 E Anaheim St, Long Beach CA 90804', 'Long Beach', 'LA', 'Primary']], 'site_key = customer_id — label (Task 5)');
+  const s7 = out.sites[0];
+  assert.deepEqual([s7.code_raw, s7.code, s7.last_verified, s7.gate_code, s7.updated_by, s7.import_source], ['', null, '2026-10-02', '', 'u1', { tab: 'Customer Directory', row: 5 }]);
+  const keys = (rows) => rows.map(r => Object.keys(r).sort().join());
+  for (const t of ['customers', 'sites', 'siteHubNotes', 'contacts']) assert.equal(new Set(keys(out[t])).size, 1, t + ' rows share one key set (PostgREST bulk upsert)');
+  assert.deepEqual(out.siteHubNotes, [{ site_key: 'ADC-0001 — Primary', hub: 'EB', scale_on_route: true, route_notes: 'Scale on 580 at Grant Line', updated_by: 'u1' }]);
+  // contacts: VKGL LA's billing contact is the same person as VKGL LLC's → not duplicated; its receiving contact sits at the LA site
+  const vk = out.contacts.filter(c => c.customer_ref === 'ADC-0002');
+  assert.deepEqual(vk.map(c => [c.type, c.first_name, c.site_key, c.notes]).sort(), [
+    ['billing', 'Vic', null, 'Also the company owner.'], ['receiving', 'Lee', 'ADC-0002 — LA', ''], ['receiving', 'Vic', 'ADC-0002 — Primary', '']].sort());
+  assert.ok(out.contacts.every(c => c.updated_by === 'u1' && c.active === true));
+  for (const t of ['customers', 'sites', 'contacts']) for (const r of out[t]) for (const k of Object.keys(r)) assert.ok(!MONEY.test(k), t + ' ' + k);
+  // re-import against what the first import wrote: nothing duplicated
+  const ids = new Map(out.customers.map((c, i) => [c.customer_id, 'id' + i]));
+  const bound = bindRows(out, ids, 'adchem', '2026-10-20T00:00:00Z');
+  const again = { customers: bound.customers.map(c => ({ ...c, id: ids.get(c.customer_id) })), sites: bound.sites, contacts: bound.contacts, hubNotes: bound.siteHubNotes };
+  const out2 = applyPlan(planImport(WB, again), again, 'u1');
+  assert.equal(out2.contacts.length, 0, 'every contact already exists');
+  assert.deepEqual(out2.sites.map(s => s.site_key), out.sites.map(s => s.site_key), 'same site keys');
+  assert.equal(out2.nextCustomerNumber, 9);
+});
+
+test('applyPlan: decisions — LA as its own customer, skip, related; numbering follows', () => {
+  const plan = planImport(WB, NONE);
+  const la = byName(plan, 'VKGL Manufacturing - LA');
+  la.decision = 'customer';
+  const out = applyPlan(plan, NONE, 'u1');
+  assert.deepEqual(out.customers.map(c => c.customer_id).sort(), ['ADC-0001', 'ADC-0002', 'ADC-0003', 'ADC-0007', 'ADC-0008']);
+  assert.ok(out.sites.some(s => s.site_key === 'ADC-0003 — Primary' && s.customer_ref === 'ADC-0003'));
+  assert.equal(out.nextCustomerNumber, 9);
+  la.decision = 'related';
+  const rel = applyPlan(plan, NONE, 'u1');
+  assert.equal(rel.customers.find(c => c.customer_id === 'ADC-0003').parent_ref, 'ADC-0002');
+  byName(plan, 'Bio-Rad').decision = 'skip'; la.decision = 'skip';
+  const sk = applyPlan(plan, NONE, 'u1');
+  assert.deepEqual(sk.customers.map(c => c.customer_id), ['ADC-0001', 'ADC-0002', 'ADC-0007']);
+  assert.equal(sk.nextCustomerNumber, 8);
+  // a forged field or decision cannot reach another column
+  const forged = planImport(WB, NONE); forged.items[0].fields.credit_limit = '99999'; forged.items[0].fields.balance = '1'; forged.items[0].decision = 'drop table';
+  const f = applyPlan(forged, NONE, 'u1');
+  assert.ok(f.customers.every(c => !('credit_limit' in c) && !('balance' in c)));
+  assert.ok(!f.customers.some(c => c.customer_id === 'ADC-0001'), 'an unknown decision is treated as skip');
+});
+
+test('bindRows: refs become uuids, company and times added', () => {
+  const out = applyPlan(planImport(WB, NONE), NONE, 'u1');
+  const ids = new Map(out.customers.map((c, i) => [c.customer_id, 'uuid-' + i]));
+  const b = bindRows(out, ids, 'adchem', '2026-10-20T00:00:00Z');
+  assert.ok(b.customers.every(c => c.company === 'adchem' && !('parent_ref' in c) && c.updated_at === '2026-10-20T00:00:00Z'));
+  assert.ok(b.sites.every(s => !('customer_ref' in s) && /^uuid-/.test(s.customer_id) && s.synced_at === '2026-10-20T00:00:00Z'));
+  assert.ok(b.contacts.every(c => /^uuid-/.test(c.customer_id) && c.company === 'adchem'));
+  assert.deepEqual(b.parents, [{ customer_id: 'ADC-0007', parent_customer_id: 'uuid-0' }]);
+  assert.ok(b.siteHubNotes.every(n => n.company === 'adchem' && n.updated_at));
+});
+
+// ---------- /api/import against a stubbed Supabase + Google ----------
+import { webcrypto } from 'node:crypto';
+import { onRequestPost } from '../../functions/api/import.js';
+let SA;
+async function serviceAccount() {
+  if (SA) return SA;
+  const kp = await webcrypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']);
+  const der = Buffer.from(await webcrypto.subtle.exportKey('pkcs8', kp.privateKey)).toString('base64');
+  SA = JSON.stringify({ client_email: 'sa@x.iam.gserviceaccount.com', private_key: '-----BEGIN PRIVATE KEY-----\n' + der + '\n-----END PRIVATE KEY-----\n' });
+  return SA;
+}
+const res = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
+async function route(body, member) {
+  const env = { SUPABASE_URL: 'https://sb.example', SUPABASE_ANON_KEY: 'anon', GOOGLE_SA_JSON: await serviceAccount() };
+  const writes = [], gets = [];
+  const db = { dispatch_customers: [] };
+  const settings = { importSheetId: 'https://docs.google.com/spreadsheets/d/1IMPORTworkbookAAAAAAAAAA/edit', nextCustomerNumber: 3, tz: 'America/Los_Angeles' };
+  const tabOf = { 'Customer Directory': 'directory', Customers: 'customers', 'Delivery Notes': 'delivery', 'Account Terms': 'terms' };
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const u = decodeURIComponent(String(url)), method = init.method || 'GET';
+    if (u.startsWith('https://oauth2.googleapis.com/token')) return res({ access_token: 'gt', expires_in: 3600 });
+    if (u.startsWith('https://sheets.googleapis.com/')) {
+      assert.ok(u.includes('/spreadsheets/1IMPORTworkbookAAAAAAAAAA/values/'), u);
+      const title = u.match(/values\/'([^']+)'!A1:AZ2000$/)[1];
+      if (!tabOf[title]) return res({ error: { code: 400, message: `Unable to parse range: '${title}'!A1:AZ2000` } }, 400);
+      return res({ values: WB[tabOf[title]] });
+    }
+    if (u === 'https://sb.example/auth/v1/user') return res({ id: 'u1', email: 'jamie@adchem.pro' });
+    const m = u.match(/^https:\/\/sb\.example\/rest\/v1\/([a-z_]+)(\?.*)?$/); assert.ok(m, u);
+    const t = m[1], body = init.body ? JSON.parse(init.body) : null;
+    if (method === 'GET') {
+      gets.push(u);
+      if (t === 'dispatch_members') return res([member]);
+      if (t === 'dispatch_users') return res([{ email: 'jamie@adchem.pro', name: 'Jamie' }]);
+      if (t === 'dispatch_company_settings') return res([{ data: settings }]);
+      if (t === 'dispatch_customers') return res(db.dispatch_customers);
+      return res([]);
+    }
+    writes.push({ method, t, q: m[2] || '', body });
+    if (t === 'dispatch_customers' && method === 'POST') body.forEach((r, i) => db.dispatch_customers.push({ ...r, id: 'uuid-' + r.customer_id }));
+    return method === 'POST' ? res(body, 201) : new Response(null, { status: 204 });
+  };
+  const request = new Request('https://ops.example/api/import', { method: 'POST', headers: { authorization: 'Bearer tok', 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  try { const r = await onRequestPost({ request, env }); return { status: r.status, json: await r.json(), writes, gets }; }
+  finally { globalThis.fetch = real; }
+}
+const COORD = { company: 'adchem', role: 'coordinator', hub: '', active: true, is_super_admin: false, permissions: { run_imports: true } };
+
+test('/api/import: 403 without run_imports; read returns the plan; a missing tab is just absent', async () => {
+  const no = await route({ company: 'adchem', action: 'read' }, { ...COORD, permissions: { manage_customers: true } });
+  assert.equal(no.status, 403); assert.match(no.json.error.message, /run imports/);
+  assert.equal(no.writes.length, 0);
+  const r = await route({ company: 'adchem', action: 'read' }, COORD);
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(r.json.sheetId, '1IMPORTworkbookAAAAAAAAAA');
+  assert.deepEqual(r.json.plan.items.map(i => [i.name, i.action]), [['Type 7 Manufacturing', 'customer'], ['VKGL Manufacturing LLC', 'customer'], ['VKGL Manufacturing - LA', 'site'],
+    ['Costa Cannabis', 'customer'], ['Bio-Rad', 'customer'], ['Account Terms', 'skip']], 'Licensing & Entity tab absent in this workbook');
+  assert.equal(r.writes.length, 0, 'read writes nothing');
+  const nm = await route({ company: 'adchem', action: 'commit', plan: r.json.plan }, COORD);
+  assert.equal(nm.status, 403, 'commit also needs manage_customers'); assert.match(nm.json.error.message, /manage customers/); assert.equal(nm.writes.length, 0);
+});
+
+test('/api/import commit: customers first, then sites, hub notes, contacts; log; numbering; Customers Out', async () => {
+  const plan = planImport(WB, NONE);
+  const r = await route({ company: 'adchem', action: 'commit', plan }, { ...COORD, is_super_admin: true, permissions: {} });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.deepEqual(r.json.counts, { customers: 4, sites: 4, hubNotes: 1, contacts: 11, skipped: 2 });
+  assert.equal(r.json.nextCustomerNumber, 9);
+  assert.match(r.json.customersOut.skipped, /No Customers Out sheet/, 'Customers Out attempted (best effort)');
+  const order = r.writes.map(w => w.t + (w.q.includes('on_conflict') ? '?' + w.q.split('on_conflict=')[1] : '') + ' ' + w.method);
+  assert.deepEqual(order, ['dispatch_customers?company,customer_id POST', 'dispatch_customers PATCH', 'dispatch_sites?company,site_key POST',
+    'dispatch_site_hub_notes?company,site_key,hub POST', 'dispatch_contacts POST', 'dispatch_log POST', 'dispatch_company_settings?company POST']);
+  const [cust, parent, sites, , contacts, log, settings] = r.writes;
+  assert.ok(cust.body.every(c => c.company === 'adchem' && c.updated_by === 'u1' && c.import_source.sheetId === '1IMPORTworkbookAAAAAAAAAA' && !('id' in c) && !('parent_ref' in c)));
+  assert.match(parent.q, /customer_id=eq\.ADC-0007/); assert.deepEqual(parent.body, { parent_customer_id: 'uuid-ADC-0001' });
+  assert.ok(sites.body.every(s => /^uuid-ADC-/.test(s.customer_id) && s.company === 'adchem'));
+  assert.ok(contacts.body.every(c => /^uuid-ADC-/.test(c.customer_id)));
+  assert.deepEqual(log.body, [{ company: 'adchem', who: 'u1', what: 'import', detail: { counts: r.json.counts, sheetId: '1IMPORTworkbookAAAAAAAAAA' } }]);
+  assert.equal(settings.body[0].data.nextCustomerNumber, 9); assert.equal(settings.body[0].data.tz, 'America/Los_Angeles', 'other settings kept');
+  for (const w of r.writes) assert.ok(!/credit|balance|terms|price|deposit|"fee/i.test(JSON.stringify(w.body)), 'no money in ' + w.t);
+});

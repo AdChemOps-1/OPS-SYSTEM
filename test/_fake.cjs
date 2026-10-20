@@ -1,5 +1,6 @@
 // Shared test fake: an in-memory Supabase (auth + REST + RPC + storage) and the app's /api routes, serving public/.
-// Used by test/*.test.cjs. makeFake(seed) -> { server, T, calls, start(), stop(), setGmailFail(code|null) }; newPage(browser, base, opts) -> page.
+// Used by test/*.test.cjs. makeFake(seed) -> { server, T, calls, start(), stop(), setGmailFail(code|null) }; newPage(browser, base, opts) -> page;
+// permCheck(T, userId, company, roles, perm) is requireUser's role/permission rule, used by the fake /api/import.
 const http = require('http'); const fs = require('fs'); const path = require('path');
 const ROOT = path.join(__dirname, '..', 'public');
 
@@ -75,9 +76,53 @@ function fakeRpc(name,b,T){
     if(name==='dispatch_set_permissions') m.permissions=b.p_perms; else m.is_super_admin=!!b.p_on; return {code:200,body:null}; }
   return {code:404,body:{message:'no fn '+name}}; }
 
+// insert-or-merge on the conflict keys, audited, the way PostgREST's resolution=merge-duplicates does
+function upsertRows(T,t,arr,keys){ if(!T[t]) T[t]=[]; const rows=T[t];
+  arr.forEach(r=>{ if(t==='dispatch_customers'){ const hit=rows.find(x=>keys.every(k=>r[k]!=null&&String(x[k])===String(r[k]))); if(!r.id&&!hit) r.id=uuid(); if(!r.customer_id) r.customer_id=nextCustomerId(T,r.company); }
+    if(t==='dispatch_contacts'){ if(!r.id) r.id=uuid(); if(!r.created_at) r.created_at=new Date().toISOString(); }
+    const i=rows.findIndex(x=>keys.every(k=>r[k]!=null&&String(x[k])===String(r[k]))); if(i>=0){ const was={...rows[i]}; rows[i]={...rows[i],...r}; audit(T,t,was,rows[i]); } else { rows.push(r); audit(T,t,null,r); } }); }
+
+// requireUser(request, env, roles, company, perm) from functions/_lib/auth.js, against the fake's tables: null when allowed, else {status, error}
+function permCheck(T,userId,company,roles,perm){
+  const mem=T.dispatch_members.filter(m=>m.user_id===userId&&m.active);
+  if(!mem.length) return {status:403,error:{code:'no_access',message:'This account has no access to AdChem Ops.'}};
+  const me=mem.find(m=>m.company===(company||mem[0].company));
+  if(!me) return {status:403,error:{code:'no_access',message:'You are not a member of that company.'}};
+  if(roles&&!roles.includes(me.role)) return {status:403,error:{code:'forbidden',message:"Your role can't do that."}};
+  const perms=me.permissions&&typeof me.permissions==='object'?me.permissions:{};
+  if(perm&&!(me.is_super_admin===true||perms[perm]===true)) return {status:403,error:{code:'forbidden',message:"You don't have the "+perm.replace(/_/g,' ')+' permission.'}};
+  return null; }
+
+// /api/import (functions/api/import.js) with the real planner, reading test/fixtures/import-workbook.json in place of the Google workbook
+const WORKBOOK=()=>JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures','import-workbook.json'),'utf8'));
+function fakeImport(T,b,IMP,calls){
+  const co=b.company||'adchem';
+  const denied=permCheck(T,'u1',co,['admin','coordinator'],'run_imports'); if(denied) return {code:denied.status,body:{error:denied.error}};
+  const st=T.dispatch_company_settings.find(x=>x.company===co), sheetId=IMP.sheetIdFrom(st&&st.data.importSheetId);
+  if(!sheetId) return {code:400,body:{error:{code:'config',message:'No import workbook is set. Paste its link on Setup first.'}}};
+  calls.push(['import',{action:b.action,sheetId}]);
+  const mine=t=>(T[t]||[]).filter(r=>r.company===co);
+  const existing={customers:mine('dispatch_customers'),sites:mine('dispatch_sites'),contacts:mine('dispatch_contacts'),hubNotes:mine('dispatch_site_hub_notes')};
+  if(b.action==='read') return {code:200,body:{plan:IMP.planImport(WORKBOOK(),existing),sheetId}};
+  if(b.action!=='commit'||!b.plan||!Array.isArray(b.plan.items)) return {code:400,body:{error:{code:'bad_request',message:'Read the workbook and review the plan first.'}}};
+  if(permCheck(T,'u1',co,null,'manage_customers')) return {code:403,body:{error:{code:'forbidden',message:'Importing writes customers, so it also needs the manage customers permission.'}}};
+  const now=new Date().toISOString(), applied=IMP.applyPlan(b.plan,existing,'u1');
+  const src=r=>({...r,import_source:{...(r.import_source||{}),sheetId,at:now}});
+  upsertRows(T,'dispatch_customers',IMP.bindRows({customers:applied.customers},new Map(),co,now).customers.map(src),['company','customer_id']);
+  const ids=new Map(mine('dispatch_customers').map(c=>[c.customer_id,c.id])), rows=IMP.bindRows(applied,ids,co,now);
+  rows.parents.forEach(p=>{ const c=T.dispatch_customers.find(x=>x.company===co&&x.customer_id===p.customer_id); if(c){ const was={...c}; c.parent_customer_id=p.parent_customer_id; audit(T,'dispatch_customers',was,c); } });
+  upsertRows(T,'dispatch_sites',rows.sites.map(src),['company','site_key']);
+  upsertRows(T,'dispatch_site_hub_notes',rows.siteHubNotes,['company','site_key','hub']);
+  upsertRows(T,'dispatch_contacts',rows.contacts.map(src),['id']);
+  const counts={customers:rows.customers.length,sites:rows.sites.length,hubNotes:rows.siteHubNotes.length,contacts:rows.contacts.length,skipped:b.plan.items.filter(i=>i&&i.decision==='skip').length};
+  T.dispatch_log.push({id:T.dispatch_log.length+1,at:now,company:co,who:'u1',what:'import',detail:{counts,sheetId}});
+  const next=Math.max(Number(st.data.nextCustomerNumber)||1,applied.nextCustomerNumber); st.data={...st.data,nextCustomerNumber:next};
+  calls.push(['customers-out',{rebuild:true}]);
+  return {code:200,body:{ok:true,counts,nextCustomerNumber:next,problems:applied.problems,customersOut:st.data.customersOutSheetId?{ok:true,rebuilt:counts.customers}:{ok:false,skipped:'No Customers Out sheet is set on Setup.'}}}; }
+
 function makeFake(seed){
   const T=seedTables(); if(seed) Object.keys(seed).forEach(k=>{ T[k]=seed[k]; });
-  const calls=[]; const EVENTS={}; let CAL=null, gmailFail=null, server=null;
+  const calls=[]; const EVENTS={}; let CAL=null, IMP=null, gmailFail=null, server=null;
   server=http.createServer(async (req,res)=>{
     const u=new URL(req.url,'http://x'); let body=''; for await (const c of req) body+=c;
     const send=(code,obj,hdr={})=>{res.writeHead(code,{'content-type':'application/json',...hdr});res.end(JSON.stringify(obj));};
@@ -89,9 +134,7 @@ function makeFake(seed){
       if(t==='dispatch_customer_status'){ if(req.method!=='GET') return send(405,{message:'view is read-only'}); let out=orderRows(customerStatus(T).filter(r=>match(r,f)),u.searchParams.get('order')); const lim=parseInt(u.searchParams.get('limit'),10); if(lim>0) out=out.slice(0,lim); if(req.headers.accept&&req.headers.accept.includes('vnd.pgrst.object')) return out.length?send(200,out[0]):send(406,{message:'none'}); return send(200,out); }
       if(!T[t]) T[t]=[]; const rows=T[t];
       if(req.method==='GET'){ let out=orderRows(rows.filter(r=>match(r,f)),u.searchParams.get('order')); const lim=parseInt(u.searchParams.get('limit'),10); if(lim>0) out=out.slice(0,lim); if(req.headers.accept&&req.headers.accept.includes('vnd.pgrst.object')) return out.length?send(200,out[0]):send(406,{message:'none'}); return send(200,out); }
-      if(req.method==='POST'){ const arr=[].concat(JSON.parse(body)); const keys=(u.searchParams.get('on_conflict')||'id').split(',');
-        arr.forEach(r=>{ if(t==='dispatch_customers'){ if(!r.id) r.id=uuid(); if(!r.customer_id) r.customer_id=nextCustomerId(T,r.company); }
-          const i=rows.findIndex(x=>keys.every(k=>r[k]!=null&&String(x[k])===String(r[k]))); if(i>=0){ const was={...rows[i]}; rows[i]={...rows[i],...r}; audit(T,t,was,rows[i]); } else { rows.push(r); audit(T,t,null,r); } }); return send(201,arr); }
+      if(req.method==='POST'){ const arr=[].concat(JSON.parse(body)); upsertRows(T,t,arr,(u.searchParams.get('on_conflict')||'id').split(',')); return send(201,arr); }
       if(req.method==='PATCH'){ const d=JSON.parse(body); rows.filter(r=>match(r,f)).forEach(r=>{ const was={...r}; Object.assign(r,d); audit(T,t,was,r); }); return send(204,{}); }
       if(req.method==='DELETE'){ for(let i=rows.length-1;i>=0;i--) if(match(rows[i],f)){ audit(T,t,rows[i],null); rows.splice(i,1); } return send(204,{}); }
     }
@@ -113,13 +156,15 @@ function makeFake(seed){
     if(u.pathname==='/api/orderlog'){ const b=JSON.parse(body); calls.push(['orderlog',b]); return send(200,b.rebuild?{ok:true,rebuilt:T.dispatch_orders.length}:{ok:true,updated:0,appended:(b.orderIds||[]).length}); }
     if(u.pathname==='/api/customers-out'){ const {company,...b}=JSON.parse(body||'{}'); if(!company) return send(400,{error:{code:'no_company',message:'company required'}}); calls.push(['customers-out',b]);
       return send(200,b.rebuild?{ok:true,rebuilt:T.dispatch_customers.filter(c=>c.company===company).length}:{ok:true,updated:0,appended:(b.customerIds||[]).length}); }
+    if(u.pathname==='/api/import'){ const r=fakeImport(T,JSON.parse(body||'{}'),IMP,calls); return send(r.code,r.body); }
     if(u.pathname==='/api/health') return send(200,{googleConfigured:false,checks:{customersOut:'ok'}});
     // static
     const p=path.join(ROOT,u.pathname==='/'?'index.html':u.pathname); if(!fs.existsSync(p)) return send(404,{});
     res.writeHead(200,{'content-type':{'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png','.webmanifest':'application/manifest+json'}[path.extname(p)]||'application/octet-stream'}); fs.createReadStream(p).pipe(res);
   });
   const fake={ server, T, calls,
-    async start(){ CAL=await import(path.join(__dirname,'..','functions','_lib','calendars.js')); await new Promise(r=>server.listen(0,r)); const base='http://127.0.0.1:'+server.address().port; FAKES.set(base,fake); return base; },
+    async start(){ CAL=await import(path.join(__dirname,'..','functions','_lib','calendars.js'));
+      IMP={...await import(path.join(__dirname,'..','functions','_lib','importsheet.js')),sheetIdFrom:(await import(path.join(__dirname,'..','functions','_lib','orderlog.js'))).sheetIdFrom}; await new Promise(r=>server.listen(0,r)); const base='http://127.0.0.1:'+server.address().port; FAKES.set(base,fake); return base; },
     stop(){ return new Promise(r=>server.close(()=>r())); },
     setGmailFail(code){ gmailFail=code; } };
   return fake; }
@@ -136,4 +181,4 @@ async function newPage(browser,base,opts){ opts=opts||{};
   await page.route('**/config.js',r=>r.fulfill({contentType:'application/javascript',body:`window.ADCHEM_CONFIG={supabaseUrl:"${base}",supabaseAnonKey:"anon",ordersTo:"orders@adchem.pro"};`}));
   return page; }
 
-module.exports={ makeFake, newPage, fakeRpc, SITES };
+module.exports={ makeFake, newPage, fakeRpc, permCheck, SITES };

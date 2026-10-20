@@ -1027,7 +1027,7 @@ function updateCounts(){
    ============================================================ */
 function renderOrdersOutState(){ var el=$("ordersOutState"); if(!el) return; $("sOrdersOut").value=state.settings.ordersOutSheetId||""; el.innerHTML=state.settings.ordersOutSheetId?'<div class="banner good" style="margin:0"><div><b>Orders Out is set.</b><div>Every scheduled, numbered and delivered order is written to it as it changes; Rebuild rewrites the whole sheet from the database.</div></div></div>':'<div class="banner warn" style="margin:0"><div><b>No Orders Out sheet yet.</b><div>Paste the link to the company\'s <i>Dispatch Orders Out</i> sheet. Until then nothing is reported back to the AR Command Center.</div></div></div>'; }
 function renderCustomersOutState(){ var el=$("customersOutState"); if(!el) return; $("sCustomersOut").value=state.settings.customersOutSheetId||""; el.innerHTML=state.settings.customersOutSheetId?'<div class="banner good" style="margin:0"><div><b>Customers Out is set.</b><div>Each customer\'s rows are rewritten whenever the customer, a site or a contact is saved; Rebuild rewrites the whole tab from the database.</div></div></div>':'<div class="banner warn" style="margin:0"><div><b>No Customers Out sheet yet.</b><div>Paste the link to the company\'s <i>Customers Out</i> sheet. Until then the AR Command Center keeps reading its own directory.</div></div></div>'; }
-function renderSetup(){renderShareState();renderFeedState();renderOrdersOutState();renderCustomersOutState();renderBolNumState();renderCalState();renderDriveState();renderHubEditor();renderSegTable();renderHealth();}
+function renderSetup(){renderShareState();renderFeedState();renderOrdersOutState();renderCustomersOutState();renderImportCard();renderBolNumState();renderCalState();renderDriveState();renderHubEditor();renderSegTable();renderHealth();}
 function renderBolNumState(){
   var n=Number(state.settings.nextBol)||0, used=maxBolUsed();
   $("sNextBol").value=n||"";
@@ -1475,7 +1475,7 @@ function clearBanner(k){var el=document.querySelector('[data-bkey="'+k+'"]'); if
 function setConn(kind,text){$("connDot").className="dot"+(kind?" "+kind:"");$("connTxt").textContent=text;}
 function wire(){
   ["new","bol","open","today","setup"].forEach(function(k){ $("tab-"+k).onclick=function(){ if(k==="bol") state.bolOrder=null; setTab(k); }; });
-  wireCustomers();
+  wireCustomers(); wireImport();
   $("fHub").onchange=function(){refreshId();renderLines();scheduleLive();};
   $("fDate").onchange=function(){refreshId();scheduleLive();};
   $("fIdOverride").oninput=function(){refreshId();scheduleLive();};

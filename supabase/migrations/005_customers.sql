@@ -182,11 +182,11 @@ create or replace trigger dispatch_customer_activity_audit after insert or updat
 -- ---------- status view: the 15 must-have fields (spec §5.1). License and PSA are Stage 2, which replaces this view. ----------
 create or replace view public.dispatch_customer_status with (security_invoker = true) as
 select c.company, c.customer_id, c.id,
-  ( (c.name <> '')::int + (c.legal_name <> '')::int + (c.account_status <> '')::int + (c.primary_hub <> '')::int
-  + (c.billing_street <> '')::int + (c.billing_city <> '')::int + (c.billing_state <> '')::int + (c.billing_zip <> '')::int
-  + exists (select 1 from public.dispatch_sites s where s.company = c.company and s.customer_id = c.id and btrim(s.addr) <> '')::int
-  + exists (select 1 from public.dispatch_contacts x where x.company = c.company and x.customer_id = c.id and x.type = 'receiving' and btrim(x.phone) <> '')::int
-  + exists (select 1 from public.dispatch_contacts x where x.company = c.company and x.customer_id = c.id and x.type = 'billing' and btrim(x.email) <> '')::int
+  ( (coalesce(c.name,'') <> '')::int + (coalesce(c.legal_name,'') <> '')::int + (coalesce(c.account_status,'') <> '')::int + (coalesce(c.primary_hub,'') <> '')::int
+  + (coalesce(c.billing_street,'') <> '')::int + (coalesce(c.billing_city,'') <> '')::int + (coalesce(c.billing_state,'') <> '')::int + (coalesce(c.billing_zip,'') <> '')::int
+  + exists (select 1 from public.dispatch_sites s where s.company = c.company and s.customer_id = c.id and btrim(coalesce(s.addr,'')) <> '')::int
+  + exists (select 1 from public.dispatch_contacts x where x.company = c.company and x.customer_id = c.id and x.type = 'receiving' and btrim(coalesce(x.phone,'')) <> '')::int
+  + exists (select 1 from public.dispatch_contacts x where x.company = c.company and x.customer_id = c.id and x.type = 'billing' and btrim(coalesce(x.email,'')) <> '')::int
   + 0 /* license on file */ + 0 /* license expiry */ + 0 /* PSA signed */
   + (c.last_verified is not null)::int ) as profile_complete,
   'missing'::text as license_status, null::date as license_expires, null::text as license_number,
@@ -238,3 +238,5 @@ update public.dispatch_members set is_super_admin = true where company = 'adchem
 -- transaction (supabase/tests/005_policies.sql: NOTICE '005 policies ok'), which the advisor cannot see. Re-run get_advisors
 -- (type security) after the real apply and record the result here. Expected: no new "RLS disabled" or "function callable by anon"
 -- findings for dispatch_* — every new table above enables RLS and every new function revokes execute from anon and public.
+-- View: each text test in dispatch_customer_status is wrapped in coalesce(col,'') (10/20/26, Task 9) so profile_complete stays
+-- non-null even if a text field arrives null; the customer import also writes blank text as '' rather than null.

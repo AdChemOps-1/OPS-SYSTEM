@@ -1,0 +1,67 @@
+{
+  "directory": [
+    ["AdChem Customer Directory"],
+    ["One row per QuickBooks customer. Money lives in Account Terms, not here."],
+    ["CUSTOMER", "", "", "", "", "BILLING ADDRESS", "", "", "", "DELIVERY ADDRESS", "", "", "", "", "DELIVERY CONTACT", "", "", "BILLING CONTACT", "", "", "", "", "COMPANY OWNER", "", "", "", "", "RECORD"],
+    ["Customer (QuickBooks name)", "Also Known As", "Legal / Billing Company Name", "Account Status", "Primary Hub",
+     "Street", "City", "State", "ZIP",
+     "Same as billing?", "Street", "City", "State", "ZIP",
+     "Delivery same as billing contact?", "Delivery Contact Name", "Delivery Phone",
+     "First Name", "Last Name", "Phone", "Billing / AP Email", "CC on Statements (emails)",
+     "Owner same as billing contact?", "First Name", "Last Name", "Phone", "Email",
+     "Best Way to Reach", "Last Verified", "Notes", "Customer ID", "Parent / Related Account"],
+    ["Type 7 Manufacturing", "T7", "Type 7 Manufacturing, Inc.", "Active", "EB",
+     "1 Billing Way", "Oakland", "CA", "94601",
+     "No", "100 Main St", "Oakland", "CA", "94607",
+     "No", "Sam Ortiz", "(510) 555-0101",
+     "Pat", "Ng", "(510) 555-0199", "ap@type7.example", "controller@type7.example",
+     "No", "Olu", "Ade", "(510) 555-0111", "olu@type7.example",
+     "Email", "10/01/2026", "Statements monthly", "ADC-0001", ""],
+    ["VKGL Manufacturing LLC", "VKGL", "VKGL Manufacturing LLC", "Active", "LA",
+     "840 W Esther St", "Long Beach", "CA", "90813",
+     "Yes", "", "", "", "",
+     "Yes", "", "",
+     "Vic", "Kim", "(562) 555-0123", "ap@vkgl.example", "",
+     "Yes", "", "", "", "",
+     "Phone", "09/15/2026", "", "ADC-0002", ""],
+    ["VKGL Manufacturing - LA", "", "VKGL Manufacturing LLC", "Active", "LA",
+     "840 W Esther St", "Long Beach", "CA", "90813",
+     "No", "1200 E 7th St", "Los Angeles", "CA", "90021",
+     "No", "Lee Park", "(213) 555-0177",
+     "Vic", "Kim", "(562) 555-0123", "ap@vkgl.example", "",
+     "Yes", "", "", "", "",
+     "", "09/15/2026", "", "ADC-0003", ""],
+    ["Costa Cannabis", "", "Costa Cannabis Inc.", "Active", "LA",
+     "2325 E Anaheim St", "Long Beach", "CA", "90804",
+     "No", "2330 E Anaheim St", "Long Beach", "CA", "90804",
+     "No", "Ana Ruiz", "(562) 555-0199",
+     "", "", "", "books@costa.example", "",
+     "No", "Rita", "Costa", "(562) 555-0100", "rita@costa.example",
+     "Text", "", "", "ADC-0007", "Type 7 Manufacturing"]
+  ],
+  "customers": [
+    ["Customer", "Also Known As", "Legal Name", "Account Status", "Street", "City", "State", "ZIP", "Contact", "Phone", "Email", "Terms", "Credit Limit", "Balance"],
+    ["Type 7 Manufacturing", "Type Seven", "Type 7 Manufacturing, Inc.", "Active", "1 Billing Way", "Oakland", "CA", "94601", "Pat Ng", "(510) 555-0199", "ap@type7.example", "Net 30", "5,000.00", "1,250.00"],
+    ["Bio-Rad", "", "Bio-Rad Laboratories, Inc.", "Active", "2000 Alfred Nobel Dr", "Hercules", "CA", "94547", "Dana Fox", "(510) 555-0160", "ap@bio-rad.example", "Net 45", "25,000.00", "0.00"]
+  ],
+  "delivery": [
+    ["Delivery Notes — one row per delivery site"],
+    ["Customer", "Serving Hub", "Receiving Days / Hours", "Site Contact", "Site Phone", "Gate / Access Code",
+     "Parking & Unloading (dock, liftgate, forklift)", "Scale on Route? (from East Bay)", "Route / Scale Notes (East Bay)",
+     "Scale on Route? (from SoCal)", "Route / Scale Notes (SoCal)", "Hazmat / Site Restrictions",
+     "Cylinder / Container Notes (pigs, dewars, bins, swaps)", "Special Delivery Instructions", "Last Verified"],
+    ["Type 7 Manufacturing", "EB", "Mon–Fri 7–11am", "Sam Ortiz", "(510) 555-0101", "",
+     "Dock B, liftgate", "Yes", "Scale on 580 at Grant Line", "", "", "No smoking on the dock",
+     "Swap pigs at the cage", "Call 30 min ahead", "10/02/2026"],
+    ["Costa Cannabis", "LA", "", "", "", "#4455",
+     "", "", "", "", "", "", "", "", ""]
+  ],
+  "licensing": [
+    ["Customer", "License #", "License Expires", "Entity Status"],
+    ["Costa Cannabis", "C11-0000001-LIC", "03/31/2027", "Active"]
+  ],
+  "terms": [
+    ["Customer", "Terms", "Credit Limit", "Payment Method", "Credit Status"],
+    ["Type 7 Manufacturing", "Net 30", "5,000.00", "Check", "Good"]
+  ]
+}

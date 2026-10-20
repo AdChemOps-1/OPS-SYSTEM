@@ -923,7 +923,7 @@ function printDriverSheet(){
 function myHub(){return lsGet("adchem_myhub","");}
 function renderHubPick(){
   var cur=myHub();
-  if(state.me&&state.me.role==="driver"&&state.me.hub){ var h=hubBy(state.me.hub); $("hubPick").innerHTML='<span class="chip k-DEP">'+esc(state.me.hub)+(h?" — "+esc(h.name):"")+'</span><span class="hint" style="margin-left:8px">This account is the '+esc(state.me.hub)+' driver account.</span>'; $("tDriver").value=lsGet("adchem_driver",""); return; }
+  if(state.me&&state.me.role==="driver"&&state.me.hub){ var h=hubBy(state.me.hub); $("hubPick").innerHTML='<span class="chip k-DEP">'+esc(state.me.hub)+(h?" — "+esc(h.name):"")+'</span><span class="hint" style="margin-left:8px">Signed in to hub '+esc(state.me.hub)+'.</span>'; $("tDriver").value=lsGet("adchem_driver",""); return; }
   $("hubPick").innerHTML=state.hubs.map(function(h){
     return '<label class="tg"><input type="radio" name="myhub" value="'+esc(h.code)+'"'+(h.code===cur?" checked":"")+'><span>'+esc(h.code)+" — "+esc(h.name.split(" — ").pop())+"</span></label>";
   }).join("")+'<label class="tg"><input type="radio" name="myhub" value=""'+(cur?"":" checked")+'><span>All hubs</span></label>';

@@ -53,7 +53,7 @@ See **`GOOGLE-SETUP.md`**. It starts with the dedicated user `ops-system@adchem.
 
 ### 5. First run
 1. Open the app, sign in with your existing AdChem account.
-2. **Setup → Google connection → Check again** — the lines should read *ok* (Customers Out and Import sheet read *no … sheet set* until steps 5 and 6); the Gmail line should say it can send as orders@adchem.pro. (The calendars line reads *no delivery calendar set* until step 5.)
+2. **Setup → Google connection → Check again** — all eight lines should read *ok* (token, AR Command Center, calendars, Drive, Gmail, Orders Out, Customers Out, Import sheet; the last three read *no … set* until step 4 is done, calendars until step 5); the Gmail line should say it can send as orders@adchem.pro. (The calendars line reads *no delivery calendar set* until step 5.)
 3. **Setup → Customer feed → Refresh the feed now** — reads FEED_ORDERS.
 4. **Setup → Orders Out** — paste the *AdChem Dispatch Orders Out* sheet link, **Save**, then **Rebuild Orders Out**. On the AR Command Center, click **Allow access** on Orders In A8 once.
    - **Setup → Customers Out** — paste the *Customers Out* sheet link, **Save**, then **Rebuild Customers Out**.
@@ -80,16 +80,16 @@ Every `/api` call carries the caller's sign-in token and the company it is actin
 
 ## Local testing
 
-`node test/ui.test.cjs` runs the app in a headless browser against a fake Supabase and fake `/api` routes: sign-in, one order per payment code, BOL numbering, the Today load checks, the per-hub delivery calendars and a product-limited Denver hub in Mountain time (including refusing a read-only calendar and moving an event when an order changes hub), the photo-and-send flow, the deposit slip, People, and switching between two companies. It needs Playwright (`npm i -g playwright`).
+`npm test` runs both UI suites and the unit tests. `node test/ui.test.cjs` runs the app in a headless browser against a fake Supabase and fake `/api` routes: sign-in, one order per payment code, BOL numbering, the Today load checks, the per-hub delivery calendars and a product-limited Denver hub in Mountain time (including refusing a read-only calendar and moving an event when an order changes hub), the photo-and-send flow, the deposit slip, People, and switching between two companies. It needs Playwright (`npm i -g playwright`).
 
 ## Files
 
 ```
-public/            the app (index.html, app.js, styles.css, config.js, icons, vendor/supabase.js)
-functions/api/     feed.js · calendar.js · drive.js · pod.js · deposit.js · orderlog.js · health.js
-functions/_lib/    google.js (service-account token) · auth.js (who is calling, in which company) · orderlog.js (the Orders Out writer) · calendars.js (which calendar a hub's events go on)
+public/            the app (index.html, app.js, customers.js, import.js, styles.css, config.js, icons, vendor/supabase.js)
+functions/api/     feed.js · calendar.js · drive.js · pod.js · deposit.js · orderlog.js · customers-out.js · import.js · health.js
+functions/_lib/    google.js (service-account token) · auth.js (who is calling, in which company) · orderlog.js (the Orders Out writer) · customersout.js (the Customers Out writer) · importsheet.js (the spreadsheet reader) · calendars.js (which calendar a hub's events go on)
 api/               [route].js — adapter so the same server code could run on Vercel; not used by Cloudflare
 supabase/          001_dispatch.sql … 004_hub_time_and_products.sql as applied; 005_customers.sql to be applied
-test/              ui.test.cjs
+test/              ui.test.cjs · customers.test.cjs (headless UI suites) · _fake.cjs (the fake Supabase and /api routes they share) · unit/ · fixtures/ · run.cjs (runs everything)
 GOOGLE-SETUP.md    the Workspace / Google Cloud steps
 ```

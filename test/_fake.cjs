@@ -170,8 +170,9 @@ function fakeDocs(T,b,origin){
     return {code:200,body:{url:origin+'/storage/v1/object/sign/dispatch-docs/'+row.file_path+'?token=fake',expiresIn:300,fileName:row.file_name,fileType:row.file_type}}; }
   if(b.action==='review'){ if(!row) return {code:404,body:{error:{code:'not_found',message:'Document not found.'}}};
     const denied=permCheck(T,'u1',row.company,null,'manage_documents'); if(denied) return {code:denied.status,body:{error:denied.error}};
+    if(b.decision!=='approve'&&b.decision!=='reject') return {code:400,body:{error:{code:'bad_decision',message:'decision must be approve or reject.'}}};
+    if(row.review_status!=='pending_review') return {code:409,body:{error:{code:'not_pending',message:'That capture is no longer pending review.'}}};   // the RPCs raise 'not pending review'
     if(b.decision==='reject'){ row.review_status='rejected'; row.notes=b.reason||''; row.updated_at=new Date().toISOString(); return {code:200,body:{ok:true,id:row.id}}; }
-    if(b.decision!=='approve') return {code:400,body:{error:{code:'bad_request',message:'decision must be approve or reject'}}};
     const f=b.fields||{}; ['doc_type','number','status','issued','expires','title','extra','notes'].forEach(k=>{ if(f[k]!==undefined) row[k]=f[k]; });
     row.review_status='live'; row.checked_on=todayOf(T); row.checked_by='u1'; row.updated_at=new Date().toISOString();
     const old=hasVal(row.number)?T.dispatch_documents.find(d=>d!==row&&d.company===row.company&&d.review_status==='live'&&d.subject_type===row.subject_type&&d.subject_id===row.subject_id&&d.doc_type===row.doc_type&&d.number===row.number):null;

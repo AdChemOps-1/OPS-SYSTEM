@@ -327,3 +327,17 @@ body.role-driver #foot,body.role-driver #todayHint{display:none}
 #docForm input[type=file]{min-width:0;max-width:100%}
 .toolbar #dhSearch{flex:2 1 200px}
 .toolbar #dhPending{width:auto;min-height:0;flex:none;min-width:0;margin:0}
+/* the capture review queue in the hub, and a member's documents on People */
+#dhReview>.pad{padding:13px 13px 9px}
+.rv-item{border-top:1px solid var(--line-2);padding:0 13px;min-width:0}
+.rv-item>summary{cursor:pointer;padding:11px 0;display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;min-width:0;word-break:break-word}
+.rv-item[open]>summary{border-bottom:1px dashed var(--line)}
+.rv-body{padding:11px 0 14px;min-width:0}
+.rv-body:empty{display:none}
+.rv-thumb{display:block;max-width:100%;max-height:340px;height:auto;border:1px solid var(--line-2);border-radius:var(--radius);background:var(--surface-2);margin-bottom:8px}
+.rv-file{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-bottom:11px}
+.rv-btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.pdocs{grid-column:1/-1;min-width:0}
+.pdocs>summary{cursor:pointer;font-size:12.5px;color:var(--ink-2);padding:2px 0}
+.pdocs-body{padding:6px 0 4px;min-width:0}
+.pdocs-body #docForm{margin:8px 0}

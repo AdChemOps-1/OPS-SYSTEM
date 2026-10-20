@@ -2109,9 +2109,11 @@ function readSegTable(){
    ============================================================ */
 // manage_people is still accepted by dispatch_set_permissions (and kept when another switch changes) but has no switch: nothing
 // checks it yet, so offering it would grant nothing
-const MEMBER_PERMS=[["manage_customers","Manage customers"],["approve_driver_notes","Approve driver notes"],["run_imports","Run imports"]];
+const MEMBER_PERMS=[["manage_customers","Manage customers"],["approve_driver_notes","Approve driver notes"],["run_imports","Run imports"],
+  ["view_documents","View documents"],["manage_documents","Manage documents"]];
 async function renderUsers(){
   if(!state.isOwner) return;
+  parkDocForm();   // the document form may sit in a member's Documents section, which is about to be redrawn
   var ph=$("peopleHead"); if(ph) ph.textContent="People at "+coName();
   renderCompanies();
   $("uHub").innerHTML='<option value="">All hubs</option>'+state.hubs.map(function(h){return '<option value="'+esc(h.code)+'">'+esc(h.code)+" — "+esc(h.name)+"</option>";}).join("");
@@ -2131,7 +2133,9 @@ async function renderUsers(){
         '<div><span class="chip st'+(u.role==="admin"?" done":"")+'">'+esc(u.role)+'</span> '+(u.hub?'<span class="chip k-DEP">'+esc(u.hub)+'</span>':'<span class="hint">all hubs</span>')+'</div>'+
         '<div>'+(u.active?'<span class="chip k-D">active</span>':'<span class="chip warn">removed</span>')+'</div><div></div>'+
         '<div style="display:flex;gap:6px;justify-content:flex-end">'+(u.active&&u.user_id!==state.session.user.id?'<button class="btn sm danger" data-revoke="'+esc(u.email)+'">Remove</button>':'')+
-        (!u.active?'<button class="btn sm" data-regrant="'+esc(u.email)+'" data-role="'+esc(u.role)+'" data-hub="'+esc(u.hub)+'">Restore</button>':'')+'</div>'+permRow(u)+'</div>';
+        (!u.active?'<button class="btn sm" data-regrant="'+esc(u.email)+'" data-role="'+esc(u.role)+'" data-hub="'+esc(u.hub)+'">Restore</button>':'')+'</div>'+permRow(u)+
+        // each member's documents (documents.js), loaded when opened
+        (canViewDocs()?'<details class="pdocs" data-pdocs="'+esc(u.user_id)+'"><summary>Documents</summary>'+personDocsHtml(u.user_id)+'</details>':'')+'</div>';
     }).join("");
     var prow=pend.map(function(i){
       return '<div class="urow" style="background:var(--amber-soft)"><div><b>'+esc(i.name||i.email)+'</b><div class="hint">'+esc(i.email)+'</div></div>'+

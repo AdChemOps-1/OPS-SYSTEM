@@ -1,6 +1,7 @@
 // Headless UI test for documents (public/documents.js): the customer page's Documents tab (add a license with a photo, a PSA,
 // a paper-only record, open a file through a signed URL), the license/PSA chips and completeness in the customer header,
-// the Documents hub (filters, pending count, company documents), the view/manage permissions, and phone width.
+// the Documents hub (filters, pending count, company documents), the view/manage permissions, phone width, the capture review
+// queue (approve superseding a live license, reject with a reason, a capture already handled) and People documents.
 // Uses the shared fake (test/_fake.cjs).
 const assert = require('assert/strict');
 const { chromium } = require('playwright');
@@ -246,7 +247,113 @@ const CID = '11111111-1111-4111-8111-111111111111';
   await m.click('#btnAddDoc'); await m.waitForTimeout(150); await m.selectOption('#df_type','psa'); await m.waitForTimeout(50);
   assert.equal(await m.evaluate(()=>document.documentElement.scrollWidth), 390, 'no horizontal overflow with the document form open');
 
-  // the upload failure's 400 and the failed sign's 404 are the only console errors
-  assert.deepEqual(pages.flatMap(p=>p.errs).filter(e=>!/status of (400|404)/.test(e)), [], 'unexpected page errors');
+  // ---------- capture review: approve (supersedes the live license), reject with a reason, a capture already handled ----------
+  const capture = (id, order) => { const fp = 'adchem/capture/'+order+'/'+id+'.jpg'; (T.__objects = T.__objects || []).push(fp); const now = new Date().toISOString();
+    const row = {id,company:'adchem',subject_type:'customer',subject_id:CID,doc_type:'other',title:'Driver capture',number:'',status:'',issued:null,expires:null,checked_on:null,checked_by:null,source:'',
+      notes:'Photo at the dock',extra:{order_id:order},review_status:'pending_review',file_path:fp,file_name:id+'.jpg',file_type:'image/jpeg',file_size:1234,supersedes_id:null,created_by:'u1',created_at:now,updated_by:'u1',updated_at:now};
+    T.dispatch_documents.push(row); return row; };
+  const CAP1 = '22222222-2222-4222-8222-222222222221', CAP2 = '22222222-2222-4222-8222-222222222222', CAP3 = '22222222-2222-4222-8222-222222222223', CAP4 = '22222222-2222-4222-8222-222222222224';
+  const reviewIds = p => p.$$eval('#dhReview [data-review]',e=>e.map(x=>x.getAttribute('data-review')));
+  const signs = () => docPosts.filter(x=>x.action==='sign').length, reviews = () => docPosts.filter(x=>x.action==='review');
+  const cap1 = capture(CAP1, 'EB-261020-01');
+  await page.click('#tab-documents'); await page.waitForTimeout(500);
+  await page.selectOption('#dhSubject',''); await page.selectOption('#dhType',''); await page.waitForTimeout(100);
+  assert.equal(flat(await page.textContent('#dhPendingCount')), '1', 'one capture pending review');
+  assert.equal(await page.$eval('#dhReview',e=>e.hidden), false, 'the pending section is shown');
+  assert.ok(await page.$eval('#dhReview',e=>!!(e.compareDocumentPosition(document.getElementById('dhList'))&Node.DOCUMENT_POSITION_FOLLOWING)), 'pending captures come first in the hub');
+  assert.deepEqual(await reviewIds(page), [CAP1]);
+  assert.match(flat(await page.textContent(`#dhReview [data-review="${CAP1}"]`)), /Costa Cannabis.*Driver capture/);
+  let n0 = signs();
+  assert.equal(await page.$$eval(`#dhReview [data-review="${CAP1}"] img`,e=>e.length), 0, 'no thumbnail until it is expanded');
+  await page.click(`#dhReview [data-review="${CAP1}"] summary`); await page.waitForTimeout(600);
+  assert.equal(signs(), n0+1, 'the thumbnail is signed on expand');
+  assert.match(await page.$eval(`#dhReview [data-review="${CAP1}"] img`,e=>e.src), /object\/sign\/dispatch-docs\/adchem\/capture\/EB-261020-01\//, 'thumbnail from the signed URL');
+  assert.equal(await page.inputValue('#rv_type'), 'cannabis_license', 'a customer capture defaults to a cannabis license');
+  assert.equal(await page.inputValue('#rv_notes'), 'Photo at the dock', 'prefilled from the capture');
+  assert.equal(await page.$eval('#rvLicense',e=>e.hidden), false, 'license fields for a license');
+  const newExp = plusDays(today, 375);
+  await page.fill('#rv_number','C11-0000123-LIC'); await page.fill('#rv_status','Active'); await page.fill('#rv_expires',newExp); await page.fill('#rv_licensee','Costa Cannabis, Inc.');
+  await page.click(`[data-approve="${CAP1}"]`); await page.waitForTimeout(1000);
+  const ap = reviews().pop();
+  assert.deepEqual([ap.id, ap.decision, ap.fields.doc_type, ap.fields.number, ap.fields.expires, ap.fields.extra], [CAP1, 'approve', 'cannabis_license', 'C11-0000123-LIC', newExp, {order_id:'EB-261020-01',licensee_legal_name:'Costa Cannabis, Inc.'}]);
+  const liveLic = T.dispatch_documents.filter(d=>d.company==='adchem'&&d.subject_id===CID&&d.doc_type==='cannabis_license'&&d.review_status==='live');
+  assert.deepEqual(liveLic.map(d=>d.id), [CAP1], 'exactly one live license for the customer: the approved capture');
+  assert.equal(lic.review_status, 'rejected', 'the old license is retired'); assert.match(lic.notes, /superseded/);
+  assert.equal(cap1.supersedes_id, lic.id, 'the new record points at the one it replaced');
+  assert.deepEqual([cap1.number, cap1.status, cap1.expires, cap1.checked_on, cap1.checked_by], ['C11-0000123-LIC', 'Active', newExp, today, 'u1']);
+  assert.match(flat(await page.textContent('#banners')), /Capture approved/);
+  assert.equal(flat(await page.textContent('#dhPendingCount')), '0', 'hub re-read: nothing pending');
+  assert.equal(await page.$eval('#dhReview',e=>e.hidden), true);
+  await page.selectOption('#dhType','cannabis_license'); await page.waitForTimeout(100);
+  assert.deepEqual(await hubIds(), [CAP1], 'the hub shows one live license'); await page.selectOption('#dhType',''); await page.waitForTimeout(100);
+  assert.ok((await page.$$eval('#docList [data-doc].off',e=>e.map(x=>x.getAttribute('data-doc')))).includes(lic.id), 'the open customer pane is re-read: the old license is struck');
+  assert.equal(await page.evaluate(id=>state.custStatus[id].license_expires, CID), newExp, 'the customer status follows the new license');
+  // reject: an empty reason cancels, a reason rejects
+  const cap2 = capture(CAP2, 'EB-261020-02');
+  await page.click('#tab-documents'); await page.waitForTimeout(500);
+  assert.deepEqual(await reviewIds(page), [CAP2]);
+  await page.click(`#dhReview [data-review="${CAP2}"] summary`); await page.waitForTimeout(500);
+  let nr = reviews().length;
+  page.once('dialog', dlg=>dlg.accept('')); await page.click(`[data-reject="${CAP2}"]`); await page.waitForTimeout(400);
+  assert.equal(reviews().length, nr, 'an empty reason cancels'); assert.equal(cap2.review_status, 'pending_review');
+  page.once('dialog', dlg=>dlg.accept('Blurry photo, retake')); await page.click(`[data-reject="${CAP2}"]`); await page.waitForTimeout(900);
+  assert.deepEqual((({id,decision,reason})=>({id,decision,reason}))(reviews().pop()), {id:CAP2,decision:'reject',reason:'Blurry photo, retake'});
+  assert.deepEqual([cap2.review_status, cap2.notes], ['rejected', 'Blurry photo, retake'], 'rejected with the reason');
+  assert.equal(await page.$eval('#dhReview',e=>e.hidden), true); assert.equal(flat(await page.textContent('#dhPendingCount')), '0');
+  assert.deepEqual(T.dispatch_documents.filter(d=>d.subject_id===CID&&d.doc_type==='cannabis_license'&&d.review_status==='live').map(d=>d.id), [CAP1], 'a rejection touches no license');
+  // a capture someone else already handled: the server says 409 and the banner says so
+  const cap3 = capture(CAP3, 'EB-261020-03');
+  await page.click('#tab-documents'); await page.waitForTimeout(500);
+  await page.click(`#dhReview [data-review="${CAP3}"] summary`); await page.waitForTimeout(500);
+  cap3.review_status = 'rejected'; cap3.notes = 'handled elsewhere';
+  await page.click(`[data-approve="${CAP3}"]`); await page.waitForTimeout(900);
+  assert.match(flat(await page.textContent('#banners')), /Capture not approved.*no longer pending review/, '409 not_pending surfaced as a banner');
+  assert.deepEqual([cap3.review_status, cap3.notes], ['rejected', 'handled elsewhere'], 'nothing changed');
+  assert.equal(await page.$eval('#dhReview',e=>e.hidden), true, 'the hub is re-read after the 409');
+  // a driver capture approval is gated in the handler too
+  assert.equal(await page.evaluate(async id=>{ const was = state.me.isSuper; state.me.isSuper = false; try { await reviewCapture(id, 'approve'); } finally { state.me.isSuper = was; } return 'ok'; }, CAP3), 'ok');
+  assert.equal(reviews().filter(r=>r.id===CAP3).length, 1, 'no review call without manage_documents');
+
+  // ---------- People: a person's documents ----------
+  await page.click('#tab-users'); await page.waitForTimeout(600);
+  assert.equal(await page.$$eval('#personDocs-u1',e=>e.length), 1, 'a Documents disclosure per member');
+  assert.equal(await page.$eval('[data-pdocs="u1"]',e=>e.open), false, 'closed until opened');
+  await page.click('[data-pdocs="u1"] summary'); await page.waitForTimeout(500);
+  assert.match(flat(await page.textContent('#personDocs-u1')), /No documents yet/);
+  await page.click('[data-adddoc-person="u1"]'); await page.waitForTimeout(150);
+  assert.ok(await page.$eval('#docForm',e=>!e.hidden&&!!e.closest('#personDocs-u1')), 'the editor opens inside the person\'s documents');
+  assert.equal(await page.inputValue('#df_type'), 'cdl', 'a person document defaults to a CDL');
+  const cdlExp = plusDays(today, 700);
+  await page.fill('#df_number','D7654321'); await page.fill('#df_expires',cdlExp); await page.click('#dfSave'); await page.waitForTimeout(900);
+  const cdl = T.dispatch_documents.find(d=>d.doc_type==='cdl');
+  assert.deepEqual([cdl.company, cdl.subject_type, cdl.subject_id, cdl.number, cdl.expires, cdl.review_status], ['adchem','person','u1','D7654321',cdlExp,'live']);
+  assert.match(flat(await page.textContent(`#personDocs-u1 [data-doc="${cdl.id}"]`)), /CDL.*D7654321.*valid/);
+  assert.equal(await page.$eval('#docForm',e=>e.hidden), true, 'form closes after saving');
+  await page.click('#tab-documents'); await page.waitForTimeout(400); await page.selectOption('#dhSubject','person'); await page.waitForTimeout(100);
+  assert.deepEqual(await hubIds(), [cdl.id]); assert.match(flat(await page.textContent('#dhList')), /Jamie.*CDL/);
+  await page.selectOption('#dhSubject',''); await page.waitForTimeout(100);
+
+  // ---------- phone width with a capture expanded; person names on a fresh load ----------
+  T.dispatch_users.push({user_id:'u2',email:'casey@adchem.pro',name:'Casey',active:true});
+  T.dispatch_documents.push({id:'33333333-3333-4333-8333-333333333333',company:'adchem',subject_type:'person',subject_id:'u2',doc_type:'medical_card',title:'',number:'MC-1',status:'',issued:null,expires:plusDays(today,300),checked_on:null,checked_by:null,
+    source:'',notes:'',extra:{},review_status:'live',file_path:null,file_name:null,file_type:null,file_size:null,supersedes_id:null,created_by:'u1',created_at:new Date().toISOString(),updated_by:'u1',updated_at:new Date().toISOString()});
+  capture(CAP4, 'EB-261020-04');
+  const m2 = await newPage(b, base, {viewport:{width:390,height:844},members:[{user_id:'u1',company:'adchem',role:'admin',hub:'',active:true,is_super_admin:true,permissions:{}},
+    {user_id:'u2',company:'adchem',role:'driver',hub:'EB',active:true,is_super_admin:false,permissions:{}}]}); pages.push(m2);
+  await signIn(m2, base); await m2.click('#tab-documents'); await m2.waitForTimeout(700);
+  assert.match(flat(await m2.textContent('#dhList')), /Casey.*Medical card.*MC-1/, 'person names loaded for the hub');
+  assert.deepEqual(await reviewIds(m2), [CAP4]);
+  await m2.click(`#dhReview [data-review="${CAP4}"] summary`); await m2.waitForTimeout(500);
+  assert.equal(await m2.$eval('#rv_type',e=>!!e.offsetParent), true);
+  assert.equal(await m2.evaluate(()=>document.documentElement.scrollWidth), 390, 'no horizontal overflow with a capture expanded');
+  await m2.click('#tab-users'); await m2.waitForTimeout(600); await m2.click('[data-pdocs="u2"] summary'); await m2.waitForTimeout(500);
+  assert.match(flat(await m2.textContent('#personDocs-u2')), /Medical card.*MC-1/);
+  await m2.click('[data-adddoc-person="u2"]'); await m2.waitForTimeout(150);
+  assert.equal(await m2.evaluate(()=>document.documentElement.scrollWidth), 390, 'no horizontal overflow on People with a person document form open');
+  await m2.click('#dfCancel');
+
+  // the upload failure's 400, the failed sign's 404 and the handled capture's 409 are the only console errors
+  assert.deepEqual(pages.flatMap(p=>p.errs).filter(e=>!/status of (400|404|409)/.test(e)), [], 'unexpected page errors');
+  assert.equal(page.errs.filter(e=>/status of 409/.test(e)).length, 1, 'the 409 case ran');
   } finally { await b.close(); await fake.stop(); }
 })().then(()=>{ console.log('documents.test.cjs: ok'); }, e=>{ console.error(e); process.exit(1); });

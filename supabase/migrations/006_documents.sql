@@ -159,18 +159,40 @@ begin
   if exists (select 1 from unnest(r) e where e is null or e !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$') then raise exception 'recipients must be email addresses'; end if;
   insert into public.dispatch_company_settings (company) values (p_company) on conflict (company) do nothing;
   select data into was from public.dispatch_company_settings where company = p_company for update;
+  perform set_config('dispatch.set_warnings', '1', true);    -- lets dispatch_settings_warnings_guard pass this one write
   update public.dispatch_company_settings
      set data = jsonb_set(jsonb_set(jsonb_set(data, '{warnDays}', to_jsonb(p_warn_days)), '{warnings}', w), '{expiryEmailRecipients}', to_jsonb(r)),
          updated_at = now()
    where company = p_company;
+  perform set_config('dispatch.set_warnings', '', true);
   insert into public.dispatch_log (company, who, what, detail, table_name, row_id, changes) values (p_company, auth.uid(), 'warnings', '{}'::jsonb,
     'dispatch_company_settings', p_company, jsonb_build_object(
       'warnDays', jsonb_build_object('from', was->'warnDays', 'to', to_jsonb(p_warn_days)),
       'warnings', jsonb_build_object('from', was->'warnings', 'to', w),
       'expiryEmailRecipients', jsonb_build_object('from', was->'expiryEmailRecipients', 'to', to_jsonb(r))));
 end $fn$;
+-- dcs_write (002) lets any editor write dispatch_company_settings.data. The three warning keys (they decide who receives the expiry
+-- email and what order entry shows) change only through dispatch_set_warnings, which sets a transaction-local flag around its write.
+-- A whole-object write that carries them back unchanged (DB.saveSettings re-reads them from the server first) passes. An upsert fires
+-- BEFORE INSERT too, so an insert is checked only when the company has no settings row yet.
+create or replace function public.dispatch_settings_warnings_guard() returns trigger language plpgsql security definer set search_path = public as $fn$
+declare k text;
+begin
+  if coalesce(current_setting('dispatch.set_warnings', true), '') = '1' then return new; end if;
+  if tg_op = 'INSERT' then
+    if exists (select 1 from public.dispatch_company_settings s where s.company = new.company) then return new; end if;
+    if coalesce(new.data, '{}'::jsonb) ?| array['warnDays','warnings','expiryEmailRecipients'] then
+      raise exception 'warnings settings change only through dispatch_set_warnings'; end if;
+    return new;
+  end if;
+  foreach k in array array['warnDays','warnings','expiryEmailRecipients'] loop
+    if (old.data->k) is distinct from (new.data->k) then raise exception 'warnings settings change only through dispatch_set_warnings'; end if;
+  end loop;
+  return new;
+end $fn$;
+create or replace trigger dispatch_company_settings_warnings_guard before insert or update on public.dispatch_company_settings for each row execute function public.dispatch_settings_warnings_guard();
 
--- Approve a capture (or any document awaiting review): the reviewer types the fields; the document goes live. A live document of the
+-- Approve a capture (a document awaiting review): the reviewer types the fields; the document goes live. A live document of the
 -- same subject and type with the same (non-empty) number is the one this replaces: it is rejected as superseded.
 create or replace function public.dispatch_approve_capture(p_id uuid, p_fields jsonb) returns uuid language plpgsql security definer set search_path = public as $fn$
 declare d public.dispatch_documents%rowtype; f jsonb := coalesce(p_fields, '{}'::jsonb); old_id uuid;
@@ -178,6 +200,7 @@ begin
   select * into d from public.dispatch_documents where id = p_id;
   if not found then raise exception 'document not found'; end if;
   if not public.dispatch_perm_in(d.company, 'manage_documents') then raise exception 'not allowed'; end if;
+  if d.review_status <> 'pending_review' then raise exception 'not pending review'; end if;
   if jsonb_typeof(f) <> 'object' then raise exception 'fields must be an object'; end if;
   update public.dispatch_documents set
     doc_type = case when f ? 'doc_type' then f->>'doc_type' else doc_type end,
@@ -203,22 +226,25 @@ begin
   return d.id;
 end $fn$;
 create or replace function public.dispatch_reject_capture(p_id uuid, p_reason text) returns void language plpgsql security definer set search_path = public as $fn$
-declare c text;
+declare c text; st text;
 begin
-  select company into c from public.dispatch_documents where id = p_id;
+  select company, review_status into c, st from public.dispatch_documents where id = p_id;
   if not found then raise exception 'document not found'; end if;
   if not public.dispatch_perm_in(c, 'manage_documents') then raise exception 'not allowed'; end if;
+  if st <> 'pending_review' then raise exception 'not pending review'; end if;
   update public.dispatch_documents set review_status = 'rejected', notes = coalesce(p_reason, ''), updated_at = now(), updated_by = auth.uid() where id = p_id;
 end $fn$;
 
 -- ---------- expiry email: pg_cron → pg_net → /api/expiry, with the shared secret in Vault ----------
--- Run by the database owner (SQL editor / MCP, no JWT), the service role, or a super admin. Re-running replaces the job and the secret.
--- 14:00 UTC = 06:00 PST / 07:00 PDT.
+-- The job is global (one per database), so no member may schedule it: only the database owner (SQL editor / MCP) or the service role.
+-- Execute is not granted to authenticated or anon. Inside a security definer function current_user is always the owner, so the check
+-- reads the caller's role from the `role` setting ('none' for a plain owner session, 'service_role' through the API).
+-- Re-running replaces the job and the secret. 14:00 UTC = 06:00 PST / 07:00 PDT.
 create or replace function public.dispatch_schedule_expiry(p_url text, p_secret text) returns bigint language plpgsql security definer set search_path = public as $fn$
 declare sid uuid; j bigint;
 begin
-  if not ((auth.uid() is null and session_user in ('postgres','supabase_admin')) or coalesce(auth.role(), '') = 'service_role'
-          or exists (select 1 from public.dispatch_companies() c where public.dispatch_is_super_in(c))) then raise exception 'not allowed'; end if;
+  if not ((session_user = 'postgres' and current_setting('role', true) in ('none','postgres')) or current_setting('role', true) = 'service_role') then
+    raise exception 'not allowed'; end if;
   if coalesce(p_url, '') !~ '^https://' then raise exception 'url must be https'; end if;
   if coalesce(p_secret, '') = '' then raise exception 'secret is required'; end if;
   select id into sid from vault.secrets where name = 'dispatch_expiry_secret';
@@ -241,12 +267,14 @@ end $fn$;
 -- ---------- execute: RPCs and the view helpers to authenticated; the subject check and trigger functions to no one ----------
 grant execute on function public.dispatch_warn_days(text), public.dispatch_customer_doc_status(text,uuid), public.dispatch_doc_subject_name(text,text,text),
   public.dispatch_set_warnings(text,int,jsonb,text[]), public.dispatch_approve_capture(uuid,jsonb), public.dispatch_reject_capture(uuid,text),
-  public.dispatch_schedule_expiry(text,text), public.dispatch_cron_status() to authenticated;
+  public.dispatch_cron_status() to authenticated;
 grant execute on function public.dispatch_schedule_expiry(text,text) to service_role;
+revoke execute on function public.dispatch_schedule_expiry(text,text) from authenticated;
 revoke execute on function public.dispatch_warn_days(text), public.dispatch_customer_doc_status(text,uuid), public.dispatch_doc_subject_name(text,text,text),
   public.dispatch_set_warnings(text,int,jsonb,text[]), public.dispatch_approve_capture(uuid,jsonb), public.dispatch_reject_capture(uuid,text),
   public.dispatch_schedule_expiry(text,text), public.dispatch_cron_status() from anon, public;
-revoke execute on function public.dispatch_doc_subject_ok(text,text,text), public.dispatch_documents_subject_guard(), public.dispatch_documents_capture_guard()
+revoke execute on function public.dispatch_doc_subject_ok(text,text,text), public.dispatch_documents_subject_guard(), public.dispatch_documents_capture_guard(),
+  public.dispatch_settings_warnings_guard()
   from anon, authenticated, public;
 
 -- ---------- row-level security ----------
@@ -288,8 +316,12 @@ end $$;
 alter policy dl_editor_read on public.dispatch_log using (public.dispatch_can_edit_in(company) and table_name is not null and what = 'change'
   and (table_name <> 'dispatch_documents' or public.dispatch_perm_in(company, 'view_documents')));
 
--- ---------- seed: warnings default off at go-live ----------
-update public.dispatch_company_settings set data = jsonb_set(data, '{warnDays}', '30') where company = 'adchem' and not (data ? 'warnDays');
-update public.dispatch_company_settings set data = jsonb_set(data, '{warnings}',
-  '{"cannabis_license":{"orderTime":false,"note":""},"psa":{"orderTime":false,"note":""},"entity_status":{"orderTime":false,"note":""}}')
-  where company = 'adchem' and not (data ? 'warnings');
+-- ---------- seed: warnings default off at go-live (through the guard's flag, cleared after) ----------
+do $$ begin   -- one statement, so the flag and the writes share a transaction however the file is run
+  perform set_config('dispatch.set_warnings', '1', true);
+  update public.dispatch_company_settings set data = jsonb_set(data, '{warnDays}', '30') where company = 'adchem' and not (data ? 'warnDays');
+  update public.dispatch_company_settings set data = jsonb_set(data, '{warnings}',
+    '{"cannabis_license":{"orderTime":false,"note":""},"psa":{"orderTime":false,"note":""},"entity_status":{"orderTime":false,"note":""}}')
+    where company = 'adchem' and not (data ? 'warnings');
+  perform set_config('dispatch.set_warnings', '', true);
+end $$;

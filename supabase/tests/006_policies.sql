@@ -34,7 +34,10 @@ begin
   update public.dispatch_members set permissions = '{"view_documents":true}' where user_id = co and company = 'adchem';
   update public.dispatch_members set permissions = '{}' where user_id = cn and company = 'adchem';
   update public.dispatch_members set permissions = '{"manage_documents":true,"view_documents":true}' where user_id = nm and company = 'north';
+  update public.dispatch_members set is_super_admin = true where user_id = nm and company = 'north';
+  perform set_config('dispatch.set_warnings', '1', true);   -- the warnings guard's flag (as dispatch_set_warnings sets it)
   update public.dispatch_company_settings set data = jsonb_set(data, '{warnDays}', '30') where company = 'adchem';
+  perform set_config('dispatch.set_warnings', '', true);
   -- 8 of the 15 fields from the customer row itself (no sites, contacts or last_verified)
   insert into public.dispatch_customers (company, customer_id, name, legal_name, primary_hub, billing_street, billing_city, billing_state, billing_zip)
     values ('adchem', 'T006-A', 'T006 Customer', 'T006 Customer LLC', 'EB', '1 Test St', 'Richmond', 'CA', '94801') returning id into cust;
@@ -172,6 +175,15 @@ begin
   -- an empty number supersedes nothing (l3 has none either)
   perform public.dispatch_approve_capture(cap2, '{"doc_type":"cannabis_license","number":""}');
   perform public.dispatch_reject_capture(cap3, 'blurry');
+  -- only documents awaiting review can be approved or rejected
+  ok := false;
+  begin perform public.dispatch_approve_capture(l2, '{"number":"C10-0001"}');
+  exception when others then ok := sqlerrm = 'not pending review'; end;
+  if not ok then raise exception 'approved an already-live document'; end if;
+  ok := false;
+  begin perform public.dispatch_reject_capture(cap, 'x');
+  exception when others then ok := sqlerrm = 'not pending review'; end;
+  if not ok then raise exception 'rejected an already-live document'; end if;
   reset role;
   select * into d from public.dispatch_documents where id = l1;
   if d.review_status <> 'rejected' or d.notes not like '% superseded' then raise exception 'old license is % / %', d.review_status, d.notes; end if;
@@ -203,6 +215,21 @@ begin
   -- ---- warnings: super admin only, validated, logged ----
   perform set_config('request.jwt.claims', json_build_object('sub', co, 'role', 'authenticated')::text, true);
   set local role authenticated;
+  -- an editor's direct settings write (DB.saveSettings' whole-object upsert) cannot change the three keys, but may change the rest
+  ok := false;
+  begin insert into public.dispatch_company_settings (company, data)
+    select 'adchem', jsonb_set(data, '{expiryEmailRecipients}', '["evil@example.test"]') from public.dispatch_company_settings where company = 'adchem'
+    on conflict (company) do update set data = excluded.data;
+  exception when others then ok := sqlerrm = 'warnings settings change only through dispatch_set_warnings'; end;
+  if not ok then raise exception 'co changed expiryEmailRecipients directly'; end if;
+  ok := false;
+  begin update public.dispatch_company_settings set data = data - 'warnDays' where company = 'adchem';
+  exception when others then ok := sqlerrm = 'warnings settings change only through dispatch_set_warnings'; end;
+  if not ok then raise exception 'co removed warnDays directly'; end if;
+  insert into public.dispatch_company_settings (company, data)
+    select 'adchem', data || '{"t006":"saved"}' from public.dispatch_company_settings where company = 'adchem'
+    on conflict (company) do update set data = excluded.data;
+  get diagnostics n = row_count;  if n <> 1 then raise exception 'co whole-object settings save failed'; end if;
   ok := false;
   begin perform public.dispatch_set_warnings('adchem', 30, '{}', '{}');
   exception when others then ok := sqlerrm = 'not allowed'; end;
@@ -224,7 +251,9 @@ begin
   exception when others then ok := sqlerrm = 'each warning needs orderTime true/false and a note'; end;
   if not ok then raise exception 'a non-boolean orderTime was accepted'; end if;
   reset role;
+  if coalesce(current_setting('dispatch.set_warnings', true), '') <> '' then raise exception 'dispatch_set_warnings left its flag set'; end if;
   select data into v from public.dispatch_company_settings where company = 'adchem';
+  if v.data->>'t006' is distinct from 'saved' then raise exception 'co settings save not stored'; end if;
   if (v.data->>'warnDays') <> '45' or (v.data->'warnings'->'cannabis_license'->>'orderTime') <> 'true' or v.data->'expiryEmailRecipients' <> '["ops@example.test"]'::jsonb then
     raise exception 'warnings not written: %', v.data; end if;
   select * into lg from public.dispatch_log where what = 'warnings' and who = sa order by id desc limit 1;
@@ -232,13 +261,18 @@ begin
     raise exception 'warnings log row wrong: %', lg.changes; end if;
   select count(*) into n from public.dispatch_log where what = 'warnings' and who = sa;  if n <> 1 then raise exception 'warnings logged % times (want 1)', n; end if;
 
-  -- ---- expiry cron: only the owner / service role / a super admin schedules; re-running replaces job and secret ----
+  -- ---- expiry cron: the job is global, so no member (not even a super admin) schedules it; the owner does, and re-running replaces it ----
+  foreach dr in array array[co, sa, nm] loop   -- dr reused as a loop variable from here on
+    perform set_config('request.jwt.claims', json_build_object('sub', dr, 'role', 'authenticated')::text, true);
+    set local role authenticated;
+    ok := false;
+    begin perform public.dispatch_schedule_expiry('https://example.test/api/expiry', 'x');
+    exception when insufficient_privilege then ok := true; when others then ok := sqlerrm = 'not allowed'; end;
+    reset role;
+    if not ok then raise exception 'member % scheduled the expiry email', dr; end if;
+  end loop;
   perform set_config('request.jwt.claims', json_build_object('sub', co, 'role', 'authenticated')::text, true);
   set local role authenticated;
-  ok := false;
-  begin perform public.dispatch_schedule_expiry('https://example.test/api/expiry', 'x');
-  exception when others then ok := sqlerrm = 'not allowed'; end;
-  if not ok then raise exception 'co scheduled the expiry email'; end if;
   ok := false;
   begin perform * from public.dispatch_cron_status();
   exception when others then ok := sqlerrm = 'not allowed'; end;
@@ -246,9 +280,9 @@ begin
   reset role;
   perform set_config('request.jwt.claims', '', true);
   perform public.dispatch_schedule_expiry('https://example.test/api/expiry', 't006-secret-1');
+  j := public.dispatch_schedule_expiry('https://example.test/api/expiry', 't006-secret-2');
   perform set_config('request.jwt.claims', json_build_object('sub', sa, 'role', 'authenticated')::text, true);
   set local role authenticated;
-  j := public.dispatch_schedule_expiry('https://example.test/api/expiry', 't006-secret-2');
   select count(*) into n from public.dispatch_cron_status() where schedule = '0 14 * * *' and active;
   if n <> 1 then raise exception 'cron status for sa: % rows', n; end if;
   reset role;

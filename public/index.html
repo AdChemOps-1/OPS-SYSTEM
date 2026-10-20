@@ -50,6 +50,7 @@
       <button class="tab" role="tab" id="tab-setup">Setup <span class="cnt warn" id="cntSetup">0</span></button>
       <button class="tab" role="tab" id="tab-customers" hidden>Customers</button>
       <button class="tab" role="tab" id="tab-documents" hidden>Documents</button>
+      <button class="tab" role="tab" id="tab-mydocs" hidden>My documents</button>
       <button class="tab" role="tab" id="tab-users" hidden>People</button>
     </div>
   </div>
@@ -594,6 +595,15 @@
     <div class="card sec"><div id="dhList"></div></div>
   </section>
 
+  <!-- ================= MY DOCUMENTS (drivers) ================= -->
+  <section id="panel-mydocs" hidden>
+    <div class="card pad sec">
+      <h2 class="sec-h">My documents / Mis documentos</h2>
+      <p class="hint" style="margin:0 0 4px">Your CDL, medical card and other documents the office has on file. / <i>Su licencia CDL, tarjeta médica y otros documentos.</i></p>
+      <div id="myDocsList"></div>
+    </div>
+  </section>
+
   <!-- ================= PEOPLE ================= -->
   <section id="panel-users" hidden>
     <div class="card pad sec">
@@ -653,6 +663,20 @@
       <button class="bigbtn primary" id="depSend" disabled>Send to accounting / Enviar</button>
     </div>
     <div id="depStatus"></div>
+  </div>
+</div>
+
+<div id="capSheet" hidden role="dialog" aria-modal="true" aria-labelledby="capTitle">
+  <div class="sheet">
+    <div style="display:flex;align-items:flex-start;gap:8px">
+      <div style="flex:1"><h2 id="capTitle">Photo of license / document</h2><div class="sub" id="capSub">Foto de licencia o documento.</div></div>
+      <button class="btn sm" id="capClose" aria-label="Close">✕</button>
+    </div>
+    <label class="bigbtn primary" id="capTakeLbl" tabindex="0"><span id="capTakeTxt">📷 Take the photo / Tomar la foto</span><input type="file" id="capFile" accept="image/*" capture="environment"></label>
+    <p class="hint" style="margin:8px 0 0">The customer's license, resale certificate or other document. The office reads it and files it. / <i>La licencia del cliente u otro documento. La oficina lo revisa.</i></p>
+    <img id="capPreview" alt="Photo of the document" hidden style="margin-top:10px">
+    <button class="bigbtn primary" id="capSend" style="margin-top:12px" disabled>Send for review / Enviar</button>
+    <div id="capStatus"></div>
   </div>
 </div>
 

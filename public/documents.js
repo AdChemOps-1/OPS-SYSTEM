@@ -27,7 +27,7 @@ const DOC_MAX=10*1024*1024, DOC_FILE_TYPES=["image/jpeg","image/png","image/webp
 
 function canViewDocs(){ var me=state.me||{}; return !!(me.isSuper||(me.perms||{}).view_documents); }
 function canManageDocs(){ var me=state.me||{}; return !!(me.isSuper||(me.perms||{}).manage_documents); }
-function resetDocs(){ state.docs={}; state.hubDocs=[]; state.docUsersTried=false; closeDocForm(); }   // on a company switch
+function resetDocs(){ state.docs={}; state.hubDocs=[]; state.docUsersTried=false; state.capturedDocs={}; closeDocForm(); }   // on a company switch
 function defaultDocType(subjectType){ return subjectType==="company"?"chp_hazmat_license":subjectType==="person"?"cdl":"cannabis_license"; }
 
 const DDB={
@@ -201,8 +201,9 @@ async function deleteDoc(){
   try{ await DDB.remove(e.id); var where=e.where; closeDocForm(); banner("good","Document deleted","",{autoclose:4000}); await afterDocChange(where,e.subject_type,e.subject_id); }
   catch(err){ banner("bad","Document not deleted","<div>"+esc(err.message)+"</div>"); }
 }
-async function openDocFile(id,btn){
-  if(!canViewDocs()) return;
+// own: a driver opening their own document on My documents (the database lets them read only those)
+async function openDocFile(id,btn,own){
+  if(!canViewDocs()&&!own) return;
   // the tab opens now, inside the click, so a popup blocker lets it through; it is pointed at the signed URL once that comes back
   var w=null; try{ w=window.open("","_blank"); }catch(e){ w=null; }
   if(btn) btn.disabled=true;
@@ -336,8 +337,94 @@ async function renderPersonDocs(uid){
     ||custEmpty("No documents yet",canManageDocs()?"Press Add to record a CDL, medical card or other document.":"Someone with the Manage documents permission can add them.");
 }
 
+/* ---------- Today: a driver photographs a customer's license or other document at the stop ----------
+   The photo goes to dispatch-docs <company>/capture/<order_id>/<document_id>.jpg first, then the row is inserted as a pending
+   customer capture (the database forces review_status, captured_by and captured_at). Upload first, so a failed upload leaves no
+   row; a retry after a failed insert reuses the uploaded file. The driver can't read the row back, so this phone remembers the
+   captures it sent (state.capturedDocs, per order, this session) to show them on the stop. */
+state.capturedDocs={};
+var cap={order:null,site:null,blob:null,url:"",docId:null,uploaded:null,sending:false};
+function captureButtonHtml(orderId){
+  var n=(state.capturedDocs[orderId]||[]).length;
+  return '<button class="btn sm" type="button" data-capture="'+esc(orderId)+'">Photo of license / document</button>'+
+    (n?'<span class="sn-cap">Sent for review / Enviado para revisión'+(n>1?" ("+n+")":"")+"</span>":"");
+}
+function capSay(kind,html){ var el=$("capStatus"); if(!html){ el.innerHTML=""; el.className=""; return; }
+  el.className="banner "+kind; el.style.margin="10px 0 0"; el.innerHTML="<div>"+html+"</div>"; }
+function capReset(){ if(cap.url) URL.revokeObjectURL(cap.url); cap.url=""; cap.blob=null; cap.docId=null; cap.uploaded=null;
+  $("capPreview").hidden=true; $("capPreview").removeAttribute("src"); $("capFile").value="";
+  $("capTakeTxt").textContent="📷 Take the photo / Tomar la foto"; $("capSend").disabled=true; $("capSend").textContent="Send for review / Enviar"; }
+function openCapture(o,site){
+  if(!o||!site||!site.customerId) return;
+  cap.order=o; cap.site=site; cap.sending=false; capReset();
+  $("capSub").textContent=o.customer+(o.siteLabel&&o.siteLabel!=="Primary"?" — "+o.siteLabel:"")+" · "+(o.bolNo?"BOL "+o.bolNo:"Order "+o.id)+" / Foto de licencia o documento.";
+  capSay("",""); $("capSheet").hidden=false; document.body.style.overflow="hidden";
+  setTimeout(function(){ try{ $("capTakeLbl").focus(); }catch(e){} },50);
+}
+function closeCapture(){
+  if(cap.sending) return;
+  $("capSheet").hidden=true; document.body.style.overflow=""; capReset(); cap.order=null; cap.site=null;
+  if(state.tab==="today") renderToday();
+}
+async function onCapFile(ev){
+  var f=ev.target.files&&ev.target.files[0]; ev.target.value="";
+  if(!f||cap.sending) return;
+  if(!/^image\//.test(f.type||"image/")){ capSay("warn","That isn't a photo. Take a picture of the document. / <i>Tome una foto del documento.</i>"); return; }
+  capSay("info","Preparing the photo… / <i>Preparando la foto…</i>");
+  var b=await shrinkPhoto(f);
+  if(b.type!=="image/jpeg"){ capSay("warn","That photo can't be sent. Take it again with the camera. / <i>Tome la foto otra vez con la cámara.</i>"); return; }
+  if(b.size>DOC_MAX){ capSay("warn","The photo is over 10 MB. Take it again. / <i>La foto es muy grande.</i>"); return; }
+  capReset(); cap.blob=b; cap.url=URL.createObjectURL(b); cap.docId=newUuid();   // a new photo is a new document
+  $("capPreview").src=cap.url; $("capPreview").hidden=false; $("capTakeTxt").textContent="Retake / Otra foto"; $("capSend").disabled=false;
+  capSay("info","Check the photo: the whole document, readable, no glare. If not, take another. / <i>Revise que se lea todo el documento.</i>");
+}
+async function capSend(){
+  var o=cap.order, site=cap.site; if(!o||!site||!cap.blob||cap.sending) return;
+  if(navigator.onLine===false){ capSay("warn","<b>No signal.</b> Nothing was sent. Keep this open and press <b>Try again</b> when you have signal. / <i>Sin señal. Intente de nuevo.</i>");
+    $("capSend").textContent="Try again / Reintentar"; return; }
+  var co=state.company, id=cap.docId, path=safeSeg(co)+"/capture/"+safeSeg(o.id)+"/"+id+".jpg";
+  cap.sending=true; $("capSend").disabled=true; $("capSend").textContent="Sending… / Enviando…"; capSay("info","Sending… / <i>Enviando…</i>");
+  try{
+    if(cap.uploaded!==path){
+      var up=await supa.storage.from("dispatch-docs").upload(path,cap.blob,{contentType:"image/jpeg",upsert:false});
+      if(up.error) throw new Error(up.error.message||String(up.error));
+      cap.uploaded=path;
+    }
+    sbErr(await supa.from("dispatch_documents").insert({id:id,company:co,subject_type:"customer",subject_id:String(site.customerId),doc_type:"other",title:"Driver capture",
+      file_path:path,file_name:id+".jpg",file_type:"image/jpeg",file_size:cap.blob.size,review_status:"pending_review",captured_order_id:o.id,
+      extra:{order_id:o.id,site_key:site.siteKey}}));
+  }catch(err){
+    cap.sending=false; $("capSend").disabled=false; $("capSend").textContent="Try again / Reintentar";
+    capSay("bad","<b>Not sent.</b> "+esc(err.message||String(err))+" Press <b>Try again</b>. / <i>No se envió. Intente de nuevo.</i>"); return;
+  }
+  cap.sending=false;
+  if(co===state.company) (state.capturedDocs[o.id]=state.capturedDocs[o.id]||[]).push(id);
+  if(cap.url) URL.revokeObjectURL(cap.url); cap.url=""; cap.blob=null; cap.docId=null; cap.uploaded=null;
+  $("capSend").disabled=true; $("capSend").textContent="Send for review / Enviar"; $("capTakeTxt").textContent="📷 Another photo / Otra foto";
+  capSay("good","<b>Sent for review / Enviado para revisión.</b> The office reads it and files it on the customer. "+'<button class="lnk" id="capDone" type="button">Done</button>');
+  var dn=$("capDone"); if(dn) dn.onclick=closeCapture;
+}
+
+/* ---------- My documents: a driver's own CDL, medical card and other person documents (read-only) ---------- */
+async function renderMyDocs(){
+  var host=$("myDocsList"); if(!host||!state.session) return;
+  var co=state.company, uid=state.session.user.id, rows;
+  host.innerHTML='<div class="hint">Loading… / Cargando…</div>';
+  try{ rows=await DDB.forSubject("person",uid); }
+  catch(err){ if(co===state.company) host.innerHTML=custEmpty("Couldn't load your documents",err.message); return; }
+  if(co!==state.company||state.tab!=="mydocs") return;
+  host.innerHTML=rows.map(function(d){
+    return '<div class="doc-row" data-doc="'+esc(d.id)+'"><div class="doc-name"><b>'+esc(docLabel(d))+"</b>"+(d.number?' <span class="mono">'+esc(d.number)+"</span>":"")+"</div>"+
+      '<div class="doc-meta">'+docChipFor(d)+"</div>"+
+      '<span class="doc-btns">'+(d.file_path?'<button class="btn sm" type="button" data-open="'+esc(d.id)+'">Open file</button>':"")+"</span></div>"; }).join("")
+    ||custEmpty("No documents on file / Sin documentos","The office adds your CDL and medical card here.");
+}
+
 function wireDocuments(){
   $("tab-documents").onclick=function(){ setTab("documents"); };
+  $("capFile").onchange=onCapFile; $("capSend").onclick=capSend; $("capClose").onclick=closeCapture;
+  $("capSheet").addEventListener("keydown",function(e){ if(e.key==="Escape") closeCapture(); });
+  $("myDocsList").onclick=function(ev){ var o=ev.target.closest("[data-open]"); if(o) openDocFile(o.getAttribute("data-open"),o,true); };
   var opts=DOC_TYPES.map(function(t){ return '<option value="'+esc(t[0])+'">'+esc(t[1])+"</option>"; }).join("");
   $("df_type").innerHTML=opts; $("dhType").innerHTML='<option value="">All types</option>'+opts;
   $("df_type").onchange=docTypeFields;

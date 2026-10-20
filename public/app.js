@@ -805,7 +805,7 @@ function fillStatic(){
 }
 function setTab(t){
   state.tab=t;
-  ["new","bol","open","today","setup","customers","documents","users"].forEach(function(k){
+  ["new","bol","open","today","setup","customers","documents","mydocs","users"].forEach(function(k){
     $("tab-"+k).setAttribute("aria-selected",k===t?"true":"false");
     $("panel-"+k).hidden=(k!==t);
   });
@@ -817,6 +817,7 @@ function setTab(t){
   if(t==="users") renderUsers();
   if(t==="customers") renderCustomers();
   if(t==="documents") renderDocsHub();
+  if(t==="mydocs") renderMyDocs();
 }
 function codeChip(o){
   var k=o.effCode||o.code;
@@ -975,7 +976,7 @@ function renderToday(){
               '<div class="qr-code">'+codeChip(o)+'<div class="qr-codetext">'+esc(k?CODES[k].text:"No code")+"</div>"+(due?'<div class="qr-amt mono">'+money(due)+"</div>":"")+"</div></div>"+
             (moneyLine?'<div class="qr-band'+(k==="COD"?" collect":" dep")+'"><span>'+moneyLine+'</span><span class="mono">'+money(due)+"</span></div>":"")+
             (fl.length?'<div class="qr-flags">'+fl.map(function(f){return '<span class="chip '+(f.k==="stop"?"k-H":"warn")+'" title="'+esc(f.s)+'">'+esc(f.t)+"</span>";}).join(" ")+"</div>":"")+
-            siteNotesHtml(site,hc)+
+            siteNotesHtml(site,hc,o.id)+
             '<div class="qr-actions"><button class="btn sm" data-bol2="'+esc(o.id)+'">BOL</button>'+podButton(o)+
               '<button class="btn sm ghost" data-more="'+esc(o.id)+'">Details / Detalles</button></div>'+
             '<div class="qr-more" id="more-'+esc(o.id)+'" hidden>'+
@@ -1006,6 +1007,8 @@ function renderToday(){
     b.onclick=function(){var o=state.orders.find(function(x){return x.id===b.getAttribute("data-pod");}); if(o) openPod(o);};
   });
   host.querySelectorAll("[data-note]").forEach(function(b){ b.onclick=function(){ addDriverNote(b.getAttribute("data-note")); }; });
+  host.querySelectorAll("[data-capture]").forEach(function(b){
+    b.onclick=function(){ var o=state.orders.find(function(x){return x.id===b.getAttribute("data-capture");}); if(o) openCapture(o,siteOf(o)); }; });
   todayExtras(siteKeys);
   updatePodQueueNote();
 }
@@ -1475,7 +1478,7 @@ async function downloadBol(){
 function clearBanner(k){var el=document.querySelector('[data-bkey="'+k+'"]'); if(el) el.remove();}
 function setConn(kind,text){$("connDot").className="dot"+(kind?" "+kind:"");$("connTxt").textContent=text;}
 function wire(){
-  ["new","bol","open","today","setup"].forEach(function(k){ $("tab-"+k).onclick=function(){ if(k==="bol") state.bolOrder=null; setTab(k); }; });
+  ["new","bol","open","today","setup","mydocs"].forEach(function(k){ $("tab-"+k).onclick=function(){ if(k==="bol") state.bolOrder=null; setTab(k); }; });
   wireCustomers(); wireImport(); wireDocuments();
   $("fHub").onchange=function(){refreshId();renderLines();scheduleLive();};
   $("fDate").onchange=function(){refreshId();scheduleLive();};
@@ -2199,7 +2202,8 @@ function applyAccess(){
   $("healthCard").hidden=!state.isOwner;
   ["tab-new","tab-bol","tab-setup","tab-customers"].forEach(function(k){ $(k).hidden=ro; });
   $("tab-documents").hidden=!canViewDocs(); if(state.tab==="documents"&&!canViewDocs()) state.tab=ro?"today":"new";
-  if(ro){ $("btnSubmit").textContent="Drivers cannot create orders"; if(state.tab!=="today"&&state.tab!=="open") setTab("today"); }
+  var drv=state.role==="driver"; $("tab-mydocs").hidden=!drv; if(state.tab==="mydocs"&&!drv) state.tab=ro?"today":"new";   // a driver's own CDL and medical card
+  if(ro){ $("btnSubmit").textContent="Drivers cannot create orders"; if(state.tab!=="today"&&state.tab!=="open"&&state.tab!=="mydocs") setTab("today"); }
 }
 function showLogin(msg,kind){
   $("app").hidden=true; $("login").hidden=false;

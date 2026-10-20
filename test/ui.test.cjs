@@ -205,6 +205,62 @@ const flat = s => s.replace(/\s+/g, ' ').trim();
   await m.fill('#depAmount','1240.50'); await m.fill('#depNote','Chase Richmond'); await m.click('#depSend'); await m.waitForTimeout(1200);
   assert.match(flat(await m.textContent('#depStatus')), /^Sent\. The deposit slip went to accounting@adchem\.pro for \$1,240\.50\./);
   assert.deepEqual(calls.filter(c=>c[0]==='deposit').map(c=>({hub:c[1].hub,driver:c[1].driver,amount:c[1].amount,note:c[1].note,photoDir:c[1].photoPath.replace(/[^/]*$/,'')})), [{hub:'EB',driver:'Jamie',amount:1240.5,note:'Chase Richmond',photoDir:'adchem/EB/deposits/'}]);
+  await m.click('#depClose'); await m.waitForTimeout(200);
+  // photo of a license / document at the stop: only the stop whose site has a customer offers it
+  const t7id=T.dispatch_orders.find(o=>o.company==='adchem'&&o.customer==='Type 7 Manufacturing'&&o.hub==='EB').id;
+  assert.deepEqual(await m.$$eval('#todayList [data-capture]',e=>e.map(x=>x.getAttribute('data-capture'))), [t7id], 'capture offered on the Type 7 stop only');
+  await m.click(`#todayList [data-capture="${t7id}"]`); await m.waitForTimeout(200);
+  assert.equal(await m.$eval('#capSheet',e=>e.hidden), false, 'capture sheet open');
+  assert.match(flat(await m.textContent('#capSheet')), /Photo of license \/ document/);
+  assert.equal(await m.evaluate(()=>document.documentElement.scrollWidth), 390, 'no horizontal overflow with the capture sheet open');
+  // a failed upload writes no row and offers a retry
+  const docsBefore=T.dispatch_documents.length, upBefore=calls.filter(c=>c[0]==='upload').length;
+  await m.route('**/storage/v1/object/dispatch-docs/**', r=>r.fulfill({status:500,contentType:'application/json',body:JSON.stringify({statusCode:'500',error:'down',message:'Storage is down'})}));
+  await m.setInputFiles('#capFile','/tmp/fake-bol.jpg'); await m.waitForTimeout(800);
+  assert.equal(await m.$eval('#capPreview',e=>e.hidden), false, 'preview shown'); assert.equal(await m.$eval('#capSend',e=>e.disabled), false);
+  await m.click('#capSend'); await m.waitForTimeout(800);
+  assert.match(flat(await m.textContent('#capStatus')), /^Not sent\. .*Storage is down/);
+  assert.match(flat(await m.textContent('#capSend')), /Try again/); assert.equal(await m.$eval('#capSend',e=>e.disabled), false);
+  assert.equal(T.dispatch_documents.length, docsBefore, 'no row after a failed upload'); assert.equal(calls.filter(c=>c[0]==='upload').length, upBefore);
+  await m.unroute('**/storage/v1/object/dispatch-docs/**');
+  await m.click('#capSend'); await m.waitForTimeout(1000);
+  assert.match(flat(await m.textContent('#capStatus')), /Sent for review \/ Enviado para revisión/);
+  const caps=T.dispatch_documents.slice(docsBefore);
+  assert.equal(caps.length, 1, 'one capture row'); const cap=caps[0];
+  assert.match(cap.id, /^[0-9a-f-]{36}$/);
+  assert.deepEqual({company:cap.company,subject_type:cap.subject_type,subject_id:cap.subject_id,doc_type:cap.doc_type,title:cap.title,file_path:cap.file_path,file_name:cap.file_name,file_type:cap.file_type,
+    review_status:cap.review_status,captured_by:cap.captured_by,captured_order_id:cap.captured_order_id,extra:cap.extra},
+    {company:'adchem',subject_type:'customer',subject_id:'c-t7',doc_type:'other',title:'Driver capture',file_path:`adchem/capture/${t7id}/${cap.id}.jpg`,file_name:cap.id+'.jpg',file_type:'image/jpeg',
+     review_status:'pending_review',captured_by:'u1',captured_order_id:t7id,extra:{order_id:t7id,site_key:'Type 7 — Primary'}});
+  assert.ok(cap.file_size>0 && cap.captured_at, 'size and capture time recorded');
+  assert.deepEqual(calls.filter(c=>c[0]==='upload').slice(upBefore), [['upload',cap.file_path]], 'the photo uploaded once, to the capture folder');
+  await m.click('#capClose'); await m.waitForTimeout(300);
+  assert.equal(await m.$eval('#capSheet',e=>e.hidden), true);
+  assert.match(await stop1(), /Sent for review \/ Enviado para revisión/, 'the stop shows the capture was sent');
+  // the driver cannot read the capture back: no rows, and /api/docs will not sign it (Review Focus 1)
+  assert.deepEqual(await m.evaluate(()=>DDB.list()), [], 'the driver lists no documents');
+  assert.equal(await m.evaluate(id=>API.post('/api/docs',{action:'sign',id:id}).then(()=>'signed',e=>e.status), cap.id), 404, 'sign refused for the capture');
+  // My documents: the driver's own CDL, expiring in 20 days
+  const ymdOf=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  T.__today=ymdOf(new Date()); const exp=new Date(T.__today+'T12:00:00'); exp.setDate(exp.getDate()+20);
+  const cdlId='0b5e0c9a-7d1e-4c55-9a51-3f2b8f1c0d01';
+  T.dispatch_documents.push({id:cdlId,company:'adchem',subject_type:'person',subject_id:'u1',doc_type:'cdl',title:'',number:'D1234567',status:'',expires:ymdOf(exp),
+    file_path:`adchem/document/person/u1/${cdlId}/cdl.jpg`,file_name:'cdl.jpg',file_type:'image/jpeg',review_status:'live',extra:{},created_at:new Date().toISOString()});
+  assert.equal(await m.$eval('#tab-mydocs',e=>e.hidden), false, 'My documents tab shown to the driver');
+  await m.click('#tab-mydocs'); await m.waitForTimeout(600);
+  assert.equal(await m.$eval('#panel-mydocs',e=>e.hidden), false);
+  const md=flat(await m.textContent('#myDocsList'));
+  assert.match(md, /CDL/); assert.match(md, /D1234567/); assert.doesNotMatch(md, /Driver capture/, 'the capture is not listed');
+  assert.equal(await m.$$eval('#myDocsList [data-doc]',e=>e.length), 1);
+  assert.match(await m.$eval('#myDocsList .chip',e=>e.textContent), /^expiring /);
+  assert.equal(await m.evaluate(()=>document.documentElement.scrollWidth), 390, 'no horizontal overflow on My documents');
+  await m.evaluate(()=>{ window.__opened=[]; window.open=u=>{ window.__opened.push(u); return null; }; });
+  const logM=T.dispatch_log.length;
+  await m.click(`#myDocsList [data-open="${cdlId}"]`); await m.waitForTimeout(600);
+  assert.ok(T.dispatch_log.slice(logM).some(l=>l.what==='file_view'&&l.detail.documentId===cdlId), 'Open file signs the CDL');
+  const mo=await m.evaluate(()=>window.__opened);
+  assert.equal(mo.length, 2); assert.match(mo[1], /object\/sign\/dispatch-docs\/adchem\/document\/person\/u1\//);
+  await m.click('#tab-today'); await m.waitForTimeout(300);
   // the same person is also a driver at a second company (north, LA). North has its own 'Type 7 — Primary' site (same key, other values)
   // and two Type 7 orders at LA — one with the site key, one without (customer + hub fallback). After switching, no AdChem EB extras show, even on the first render.
   T.dispatch_members=[{user_id:'u1',company:'adchem',role:'driver',hub:'EB',active:true},{user_id:'u1',company:'north',role:'driver',hub:'LA',active:true}];
@@ -224,8 +280,10 @@ const flat = s => s.replace(/\s+/g, ' ').trim();
   assert.equal(after.length, 2);
   after.forEach(t=>{ assert.doesNotMatch(t, /4321|Scale on 580|LA only route note|555-0101|Gate moved to the north side/, 'no AdChem site notes for the Northstar driver'); assert.match(t, /9999/); assert.match(t, /North route note/); });
   // no page errors except the deliberate Gmail 502
-  const errs=page.errs.concat(m.errs).filter(e=>!/status of 502/.test(e));
+  // ... and, on the driver's phone, the deliberate failed capture upload (500) and the refused sign (404)
+  const errs=page.errs.filter(e=>!/status of 502/.test(e)).concat(m.errs.filter(e=>!/status of (500|404)/.test(e)));
   assert.deepEqual(errs, [], 'unexpected page errors');
+  assert.deepEqual(['500','404'].map(c=>m.errs.filter(e=>e.includes('status of '+c)).length), [1,1], 'the failed upload and refused sign cases ran');
   assert.equal(page.errs.filter(e=>/status of 502/.test(e)).length, 1, 'the Gmail failure case ran');
   } finally { await b.close(); await fake.stop(); }
 })().then(()=>{ console.log('ui.test.cjs: ok'); }, e=>{ console.error(e); process.exit(1); });

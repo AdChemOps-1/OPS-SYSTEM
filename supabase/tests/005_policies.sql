@@ -139,6 +139,11 @@ begin
      or lg.changes ? 'updated_at' or lg.changes ? 'updated_by' then
     raise exception 'audit row wrong: % % % %', lg.what, lg.table_name, lg.who, lg.changes; end if;
 
+  -- ---- customer numbers past 9999 are not truncated ----
+  update public.dispatch_company_settings set data = jsonb_set(data, '{nextCustomerNumber}', '10000') where company = 'adchem';
+  insert into public.dispatch_customers (company, name) values ('adchem', 'T005 Ten Thousand') returning customer_id into s;
+  if s is distinct from 'ADC-10000' then raise exception 'customer id % (want ADC-10000)', s; end if;
+
   -- ---- a member of `north` only sees nothing of adchem ----
   perform set_config('request.jwt.claims', json_build_object('sub', nm, 'role', 'authenticated')::text, true);
   set local role authenticated;
@@ -148,6 +153,13 @@ begin
     into n;
   if n <> 0 then raise exception 'north member sees % adchem rows', n; end if;
   if public.dispatch_perm_in('adchem', 'manage_customers') or public.dispatch_is_super_in('adchem') then raise exception 'north member has adchem permissions'; end if;
+  reset role;
+
+  -- ---- a deactivated member no longer reads the activity they logged ----
+  update public.dispatch_members set active = false where user_id = dr and company = 'adchem';
+  perform set_config('request.jwt.claims', json_build_object('sub', dr, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  select count(*) into n from public.dispatch_customer_activity;  if n <> 0 then raise exception 'deactivated driver reads % activity rows', n; end if;
   reset role;
 
   raise notice '005 policies ok';

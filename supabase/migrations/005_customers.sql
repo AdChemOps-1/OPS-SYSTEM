@@ -129,7 +129,7 @@ begin
      set data = jsonb_set(data, '{nextCustomerNumber}', to_jsonb(coalesce((data->>'nextCustomerNumber')::int, 1) + 1)), updated_at = now()
    where company = new.company
    returning (data->>'nextCustomerNumber')::int - 1 into n;
-  new.customer_id := 'ADC-' || lpad(n::text, 4, '0');
+  new.customer_id := 'ADC-' || lpad(n::text, greatest(4, length(n::text)), '0');   -- lpad truncates, so widen past 9999
   return new;
 end $fn$;
 create or replace trigger dispatch_customers_assign_id before insert on public.dispatch_customers for each row execute function public.dispatch_assign_customer_id();
@@ -223,9 +223,9 @@ create policy dct_read on public.dispatch_contacts for select using (public.disp
 create policy dct_insert on public.dispatch_contacts for insert with check (public.dispatch_perm_in(company, 'manage_customers'));
 create policy dct_update on public.dispatch_contacts for update using (public.dispatch_can_edit_in(company)) with check (public.dispatch_perm_in(company, 'manage_customers'));
 create policy dct_delete on public.dispatch_contacts for delete using (public.dispatch_perm_in(company, 'manage_customers'));
--- Activity: editors read all, anyone reads what they logged; any member logs (drivers' notes forced pending by the guard);
+-- Activity: editors read all, a current member reads what they logged (a removed member reads nothing); any member logs (drivers' notes forced pending by the guard);
 -- reviewing (update) needs approve_driver_notes. No delete policy: the log is kept.
-create policy dca_read on public.dispatch_customer_activity for select using (public.dispatch_can_edit_in(company) or logged_by = (select auth.uid()));
+create policy dca_read on public.dispatch_customer_activity for select using (public.dispatch_can_edit_in(company) or (public.dispatch_role_in(company) is not null and logged_by = (select auth.uid())));
 create policy dca_insert on public.dispatch_customer_activity for insert with check (public.dispatch_role_in(company) is not null);
 create policy dca_update on public.dispatch_customer_activity for update using (public.dispatch_perm_in(company, 'approve_driver_notes')) with check (public.dispatch_perm_in(company, 'approve_driver_notes'));
 -- dispatch_members: unchanged (dm_read only). is_super_admin and permissions change only through the two RPCs above.

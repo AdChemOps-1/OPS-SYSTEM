@@ -65,7 +65,14 @@ function audit(T,t,before,after){ if(!AUDITED.includes(t)) return; const r=after
   T.dispatch_log.push({id:T.dispatch_log.length+1,at:new Date().toISOString(),company:r.company,who:'u1',what:'change',detail:{op:!before?'insert':!after?'delete':'update'},table_name:t,row_id:row_id==null?null:String(row_id),changes:ch}); }
 
 function uuid(){ return require('crypto').randomUUID(); }
-function nextCustomerId(T,company){ const s=T.dispatch_company_settings.find(x=>x.company===company); if(!s) return null; const n=s.data.nextCustomerNumber||1; s.data.nextCustomerNumber=n+1; return 'ADC-'+String(n).padStart(4,'0'); }
+// mirrors dispatch_assign_customer_id(): the counter, but never at or below the company's highest ADC-n (a stale counter heals)
+function nextCustomerId(T,company){ const s=T.dispatch_company_settings.find(x=>x.company===company); if(!s) return null;
+  const top=Math.max(0,...T.dispatch_customers.filter(c=>c.company===company).map(c=>{ const m=String(c.customer_id||'').match(/^ADC-(\d{1,9})$/); return m?parseInt(m[1],10):0; }));
+  const n=Math.max(s.data.nextCustomerNumber||1,top+1); s.data.nextCustomerNumber=n+1; return 'ADC-'+String(n).padStart(4,'0'); }
+// dispatch_log's select policies (001 dl_admin_read, 005 dl_editor_read) for the signed-in fake user u1: admins read every row,
+// coordinators the change rows (History), drivers nothing
+function logVisible(T,row){ const m=T.dispatch_members.find(x=>x.user_id==='u1'&&x.company===row.company&&x.active); if(!m) return false;
+  if(m.role==='admin') return true; if(m.role==='coordinator') return row.table_name!=null&&row.what==='change'; return false; }
 
 function fakeRpc(name,b,T){
   if(name==='dispatch_next_bol'){ const co=b.p_company||'adchem'; const s=T.dispatch_company_settings.find(x=>x.company===co).data; const o=T.dispatch_orders.find(x=>x.id===b.p_order_id&&x.company===co); if(o&&o.bol_no) return {code:200,body:o.bol_no}; if(!s.nextBol) return {code:200,body:null}; const n=s.nextBol; s.nextBol=n+1; if(o) o.bol_no=n; return {code:200,body:n}; }
@@ -107,7 +114,7 @@ function fakeImport(T,b,IMP,calls){
   if(b.action!=='commit'||!b.plan||!Array.isArray(b.plan.items)) return {code:400,body:{error:{code:'bad_request',message:'Read the workbook and review the plan first.'}}};
   if(permCheck(T,'u1',co,null,'manage_customers')) return {code:403,body:{error:{code:'forbidden',message:'Importing writes customers, so it also needs the manage customers permission.'}}};
   const now=new Date().toISOString(), applied=IMP.applyPlan(b.plan,existing,'u1');
-  const src=r=>({...r,import_source:{...(r.import_source||{}),sheetId,at:now}});
+  const src=r=>({...r,import_source:{...(r.import_source||{}),sheetId,at:(r.import_source&&r.import_source.at)||now}});
   upsertRows(T,'dispatch_customers',IMP.bindRows({customers:applied.customers},new Map(),co,now).customers.map(src),['company','customer_id']);
   const next=Math.max(Number(st.data.nextCustomerNumber)||1,applied.nextCustomerNumber); st.data={...st.data,nextCustomerNumber:next};   // right after the customers, as the route does
   const ids=new Map(mine('dispatch_customers').map(c=>[c.customer_id,c.id])), rows=IMP.bindRows(applied,ids,co,now);
@@ -133,7 +140,7 @@ function makeFake(seed){
     if(u.pathname.startsWith('/rest/v1/')){ const t=u.pathname.split('/')[3]; const f=parseFilters(u.searchParams);
       if(t==='dispatch_customer_status'){ if(req.method!=='GET') return send(405,{message:'view is read-only'}); let out=orderRows(customerStatus(T).filter(r=>match(r,f)),u.searchParams.get('order')); const lim=parseInt(u.searchParams.get('limit'),10); if(lim>0) out=out.slice(0,lim); if(req.headers.accept&&req.headers.accept.includes('vnd.pgrst.object')) return out.length?send(200,out[0]):send(406,{message:'none'}); return send(200,out); }
       if(!T[t]) T[t]=[]; const rows=T[t];
-      if(req.method==='GET'){ let out=orderRows(rows.filter(r=>match(r,f)),u.searchParams.get('order')); const lim=parseInt(u.searchParams.get('limit'),10); if(lim>0) out=out.slice(0,lim); if(req.headers.accept&&req.headers.accept.includes('vnd.pgrst.object')) return out.length?send(200,out[0]):send(406,{message:'none'}); return send(200,out); }
+      if(req.method==='GET'){ let out=orderRows(rows.filter(r=>match(r,f)&&(t!=='dispatch_log'||logVisible(T,r))),u.searchParams.get('order')); const lim=parseInt(u.searchParams.get('limit'),10); if(lim>0) out=out.slice(0,lim); if(req.headers.accept&&req.headers.accept.includes('vnd.pgrst.object')) return out.length?send(200,out[0]):send(406,{message:'none'}); return send(200,out); }
       if(req.method==='POST'){ const arr=[].concat(JSON.parse(body)); upsertRows(T,t,arr,(u.searchParams.get('on_conflict')||'id').split(',')); return send(201,arr); }
       if(req.method==='PATCH'){ const d=JSON.parse(body); rows.filter(r=>match(r,f)).forEach(r=>{ const was={...r}; Object.assign(r,d); audit(T,t,was,r); }); return send(204,{}); }
       if(req.method==='DELETE'){ for(let i=rows.length-1;i>=0;i--) if(match(rows[i],f)){ audit(T,t,rows[i],null); rows.splice(i,1); } return send(204,{}); }

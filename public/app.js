@@ -1541,7 +1541,7 @@ function wire(){
     var n=parseInt($("sNextBol").value,10);
     if(!n||n<1){ banner("warn","Enter a number","<div>One above SmartBOL's last issued BOL number.</div>",{autoclose:7000}); return; }
     if(n<=maxBolUsed()){ banner("bad","That number is already used","<div>This app has issued up to "+maxBolUsed()+". The next number must be higher.</div>"); return; }
-    state.settings.nextBol=n; saveSettings(); renderBolNumState(); updateCounts(); refreshId(); clearBanner("bolnum");
+    state.settings.nextBol=n; saveSettings(["nextBol"]); renderBolNumState(); updateCounts(); refreshId(); clearBanner("bolnum");
     banner("good","BOL numbering set","<div>The next scheduled order takes BOL <b>"+n+"</b>. SmartBOL issues nothing from today.</div>",{autoclose:9000});
   };
   $("btnSaveDrive").onclick=function(){
@@ -1939,7 +1939,13 @@ const DB={
     sbErr(await supa.from("dispatch_orders").upsert(row,{onConflict:"company,id"}));
   },
   async saveHubs(){ sbErr(await supa.from("dispatch_hubs").upsert(state.hubs.map(function(h,i){return {code:h.code,company:state.company,name:h.name,street:h.street||"",city:h.city||"",state:h.state||"",zip:h.zip||"",phone:h.phone||"",emerg:h.emerg||"",settled:!!h.settled,tz:h.tz||"",products:Array.isArray(h.products)?h.products:null,sort:i};}),{onConflict:"company,code"})); },
-  async saveSettings(){ sbErr(await supa.from("dispatch_company_settings").upsert({company:state.company,data:state.settings,updated_at:new Date().toISOString()},{onConflict:"company"})); },
+  // The server owns the counters (the customer-ID trigger and dispatch_next_bol move them), so a save writes them back as the
+  // database has them now, never as this screen loaded them; own lists a counter the caller sets on purpose (Setup's BOL start).
+  async saveSettings(own){
+    var cur=sbErr(await supa.from("dispatch_company_settings").select("data").eq("company",state.company).maybeSingle()), d=(cur&&cur.data)||{};
+    var data=Object.assign({},state.settings);
+    SERVER_COUNTERS.forEach(function(k){ if((own||[]).indexOf(k)>=0) return; if(k in d){ data[k]=d[k]; state.settings[k]=d[k]; } else { delete data[k]; delete state.settings[k]; } });
+    sbErr(await supa.from("dispatch_company_settings").upsert({company:state.company,data:data,updated_at:new Date().toISOString()},{onConflict:"company"})); },
   async assignBol(id){ return sbErr(await supa.rpc("dispatch_next_bol",{p_order_id:id,p_company:state.company})); },
   async users(){
     var mem=sbErr(await supa.from("dispatch_members").select("user_id,role,hub,active,created_at,is_super_admin,permissions").eq("company",state.company));
@@ -1971,7 +1977,8 @@ async function saveOrder(o){
   catch(e){ banner("bad","Order not saved to the shared database","<div>"+esc(e.message)+" — it is only on this screen. Check your connection and try again.</div>",{key:"save"}); throw e; }
 }
 async function saveHubs(){ try{ await DB.saveHubs(); }catch(e){ banner("bad","Hubs not saved","<div>"+esc(e.message)+"</div>"); } }
-async function saveSettings(){ try{ await DB.saveSettings(); }catch(e){ banner("bad","Settings not saved","<div>"+esc(e.message)+"</div>"); } }
+const SERVER_COUNTERS=["nextCustomerNumber","nextBol"];
+async function saveSettings(own){ try{ await DB.saveSettings(own); }catch(e){ banner("bad","Settings not saved","<div>"+esc(e.message)+"</div>"); } }
 
 const API={
   async call(method,path,body){
@@ -2098,7 +2105,9 @@ function readSegTable(){
 /* ============================================================
    People (admin)
    ============================================================ */
-const MEMBER_PERMS=[["manage_customers","Manage customers"],["approve_driver_notes","Approve driver notes"],["run_imports","Run imports"],["manage_people","Manage people"]];
+// manage_people is still accepted by dispatch_set_permissions (and kept when another switch changes) but has no switch: nothing
+// checks it yet, so offering it would grant nothing
+const MEMBER_PERMS=[["manage_customers","Manage customers"],["approve_driver_notes","Approve driver notes"],["run_imports","Run imports"]];
 async function renderUsers(){
   if(!state.isOwner) return;
   var ph=$("peopleHead"); if(ph) ph.textContent="People at "+coName();

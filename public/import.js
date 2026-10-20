@@ -22,8 +22,11 @@ function renderImportPlan(){
   var p=ip.plan, items=p.items||[];
   var probs=(p.problems||[]).length?'<div class="banner bad" style="margin:0 0 9px"><div><b>'+p.problems.length+' problem'+(p.problems.length>1?"s":"")+' in the workbook</b><ul style="margin:4px 0 0 18px;padding:0">'+
     p.problems.map(function(x){return "<li>"+esc(x)+"</li>";}).join("")+"</ul></div></div>":"";
+  var ul=p.unlinkedSites||[];
+  var unl=ul.length?'<div class="banner info" style="margin:0 0 9px"><div><b>'+ul.length+' feed site'+(ul.length>1?"s":"")+' match no customer</b><div>They stay as they are, not linked to a customer; linking them by hand comes in a later stage.</div><ul id="importUnlinked" style="margin:4px 0 0 18px;padding:0">'+
+    ul.map(function(x){return "<li>"+esc(x.customer)+" — "+esc(x.addr||x.site_key)+"</li>";}).join("")+"</ul></div></div>":"";
   var red="color:var(--red)";
-  host.innerHTML=probs+'<div class="hint" style="margin-bottom:6px">'+items.length+' rows from '+esc(ip.sheetId)+'. Change a row\'s action before importing; skipped rows are not written.</div>'+
+  host.innerHTML=probs+unl+'<div class="hint" style="margin-bottom:6px">'+items.length+' rows from '+esc(ip.sheetId)+'. Change a row\'s action before importing; skipped rows are not written.</div>'+
     '<div style="overflow-x:auto"><table class="imp-table" style="border-collapse:collapse;font-size:12px;width:100%">'+
     '<thead><tr><th style="text-align:left;padding:4px 6px">Source</th><th style="text-align:left;padding:4px 6px">Action</th><th style="text-align:left;padding:4px 6px">Name</th><th style="text-align:left;padding:4px 6px">ID</th><th style="text-align:left;padding:4px 6px">Detail</th></tr></thead><tbody>'+
     items.map(function(it){

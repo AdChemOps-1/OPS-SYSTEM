@@ -226,11 +226,12 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   await page.click('#tab-users'); await page.waitForTimeout(500);
   assert.match(flat(await page.textContent('#panel-users')), /Drivers: one account per person, with their hub\./);
   assert.doesNotMatch(flat(await page.textContent('#panel-users')), /one account per hub/);
-  assert.deepEqual(await page.$$eval('[data-perm^="u2:"]',e=>e.map(x=>x.getAttribute('data-perm'))), ['u2:manage_customers','u2:approve_driver_notes','u2:run_imports','u2:manage_people']);
+  assert.deepEqual(await page.$$eval('[data-perm^="u2:"]',e=>e.map(x=>x.getAttribute('data-perm'))), ['u2:manage_customers','u2:approve_driver_notes','u2:run_imports'], 'no Manage people switch (it grants nothing yet)');
+  assert.doesNotMatch(flat(await page.textContent('#userList')), /Manage people/);
   assert.equal(await page.$eval('[data-perm="u2:manage_customers"]',e=>e.checked), false);
   await page.check('[data-perm="u2:manage_customers"]'); await page.waitForTimeout(600);
   const u2 = () => T.dispatch_members.find(x=>x.user_id==='u2'&&x.company==='adchem');
-  assert.deepEqual(u2().permissions, {manage_customers:true,approve_driver_notes:false,run_imports:false,manage_people:false}, 'permissions written through dispatch_set_permissions');
+  assert.deepEqual(u2().permissions, {manage_customers:true,approve_driver_notes:false,run_imports:false}, 'permissions written through dispatch_set_permissions');
   assert.equal(await page.$eval('[data-perm="u2:manage_customers"]',e=>e.checked), true, 're-rendered from the database');
   assert.equal(await page.$eval('[data-super="u2"]',e=>e.checked), false);
   await page.check('[data-super="u2"]'); await page.waitForTimeout(600);
@@ -245,6 +246,7 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
     assert.equal(await pa.$$eval('[data-perm="u2:manage_customers"]',e=>e.length), 1, 'admin sees permission switches');
     assert.equal(await pa.$$eval('[data-super]',e=>e.length), 0, 'no super admin switches for a plain admin');
     T.dispatch_members = savedMembers; }
+  T.dispatch_log.push({id:T.dispatch_log.length+1,at:new Date().toISOString(),company:'adchem',who:'u1',what:'grant',detail:{email:'casey@adchem.pro'},table_name:null,row_id:null,changes:null});
   // a pending note for the permission checks below
   T.dispatch_customer_activity.push({id:'a-drv-3',company:'adchem',customer_id:c.id,occurred_at:old,method:'app',summary:'Forklift broken',kind:'driver_note',status:'pending',logged_by:'u2',reviewed_by:null,reviewed_at:null,rejection_reason:null});
   // coordinator without, then with, manage_customers
@@ -269,6 +271,13 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
     assert.match(flat(await p.textContent('#actList')), /Forklift broken/, 'pending note visible');
     assert.equal(await p.$$eval('#actList [data-approve],#actList [data-reject]',e=>e.length), 0, 'no review buttons without approve_driver_notes');
     assert.equal(await p.$eval('#actAdd button[type=submit]',e=>e.disabled), !enabled, 'add note '+JSON.stringify(perms));
+    // History reads the audit log: a coordinator sees the change rows (I6), the fake applying dispatch_log's select policies
+    await p.click('#ctab-history'); await p.waitForTimeout(600);
+    const ch = flat(await p.textContent('#histList'));
+    assert.match(ch, /special_instructions: (— )?→ Dock B/, 'coordinator History shows the site change '+JSON.stringify(perms));
+    assert.match(ch, /billing_zip: 94601 → 94607/, 'and the customer change');
+    const raw = await p.evaluate(async()=>{ const r=await supa.from('dispatch_log').select('*').eq('company','adchem'); return r.data.map(l=>[l.what,l.table_name]); });
+    assert.ok(raw.length>0 && raw.every(([w,t])=>w==='change'&&t), 'a coordinator reads only change rows of dispatch_log (no grant/invite/permission/import rows)');
   }
   // a driver does not see the tab
   const d = await newPage(b, base, {members:[{user_id:'u1',company:'adchem',role:'driver',hub:'EB',active:true}]}); pages.push(d);
@@ -328,6 +337,27 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.match(flat(await pi.textContent('#importResult')), /Import done.*5 customers/);
   assert.equal(await pi.$eval('#btnImportCommit',e=>e.disabled), true, 'plan cleared after the import');
   assert.equal(await pi.evaluate(()=>state.settings.nextCustomerNumber), 9, 'settings reloaded, so a later Setup save keeps the number');
+  // a feed site linked by the import: address, city, hub and label come from FEED_ORDERS and are read-only; Ops fields stay editable (I8)
+  await pi.click('#tab-customers'); await pi.waitForTimeout(400);
+  await pi.$$eval('#custList .cust-row', rs=>rs.find(r=>/Type 7 Manufacturing/.test(r.textContent)).click()); await pi.waitForTimeout(400);
+  await pi.click('#ctab-sites'); await pi.waitForTimeout(500);
+  const ff = '#siteList form[data-site="Type 7 — Primary"]';
+  assert.deepEqual(await pi.$$eval(ff+' [data-k]', e=>e.filter(x=>x.disabled).map(x=>x.getAttribute('data-k'))), ['site_label','addr','city','hub'], 'feed-owned fields read-only');
+  assert.equal((await pi.$$eval(ff+' .hint', e=>e.filter(x=>/from FEED_ORDERS/.test(x.textContent)).length)), 4, 'each marked from FEED_ORDERS');
+  assert.equal(await pi.$eval(ff+' [data-k=receiving_hours]', e=>e.disabled), false, 'Ops fields editable');
+  assert.equal(await pi.$eval(ff+' [data-save-site]', e=>e.disabled), false);
+  const own = '#siteList form[data-site="ADC-0003 — Primary"]';
+  const feedAddr = TI.dispatch_sites.find(x=>x.site_key==='Type 7 — Primary').addr;
+  await pi.click('#siteList details:has(form[data-site="Type 7 — Primary"]) summary'); await pi.waitForTimeout(100);
+  await pi.fill(ff+' [data-k=receiving_hours]','6–10am'); await pi.click(ff+' [data-save-site]'); await pi.waitForTimeout(700);
+  const t7site = TI.dispatch_sites.find(x=>x.site_key==='Type 7 — Primary');
+  assert.deepEqual([t7site.receiving_hours, t7site.addr], ['6–10am', feedAddr], 'Ops field saved, feed address untouched');
+  assert.ok(t7site.updated_at && t7site.updated_at > t7site.import_source.at, 'a site edit stamps updated_at after the import (the importer\'s edit counts as app-edited)');
+  await pi.click('#btnCloseCustomer'); await pi.waitForTimeout(200);
+  await pi.$$eval('#custList .cust-row', rs=>rs.find(r=>/VKGL Manufacturing - LA/.test(r.textContent)).click()); await pi.waitForTimeout(400);
+  await pi.click('#ctab-sites'); await pi.waitForTimeout(500);
+  assert.equal(await pi.$$eval(own+' [data-k]', e=>e.filter(x=>x.disabled).length), 0, 'a site made by Ops (no feed code) is fully editable');
+  await pi.click('#btnCloseCustomer'); await pi.waitForTimeout(200);
   // without run_imports: no card, and the route refuses
   const pn = await newPage(b, baseI, {members:[{user_id:'u1',company:'adchem',role:'coordinator',hub:'',active:true,is_super_admin:false,permissions:{manage_customers:true}}]}); pages.push(pn);
   await signIn(pn, baseI); await pn.click('#tab-setup'); await pn.waitForTimeout(400);
@@ -339,6 +369,31 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.equal(ok.status, 200, 'a coordinator with run_imports may read');
   const noManage = await fetch(baseI+'/api/import',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({company:'adchem',action:'commit',plan:(await ok.json()).plan})});
   assert.equal(noManage.status, 403, 'committing also needs manage_customers');
+  // ---------- a Setup save never rolls the customer counter back (C1) ----------
+  { const fc = makeFake(); const TC = fc.T; const baseC = await fc.start(); fakes.push(fc);
+    TC.dispatch_members[0].is_super_admin = true;
+    const pc = await newPage(b, baseC); pages.push(pc); await signIn(pc, baseC);
+    const addCustomer = async (name) => { await pc.click('#tab-customers'); await pc.waitForTimeout(300); await pc.click('#btnNewCustomer'); await pc.waitForTimeout(200);
+      await pc.fill('#cName', name); await pc.click('#btnSaveCustomer'); await pc.waitForTimeout(700); await pc.click('#btnCloseCustomer'); await pc.waitForTimeout(200); };
+    await addCustomer('First Co');
+    assert.equal(TC.dispatch_customers[0].customer_id, 'ADC-0001'); assert.equal(TC.dispatch_company_settings[0].data.nextCustomerNumber, 2);
+    assert.equal(await pc.evaluate(()=>state.settings.nextCustomerNumber), 1, 'the page still holds the number it loaded');
+    await pc.click('#tab-setup'); await pc.waitForTimeout(400);
+    await pc.selectOption('#sTz','America/Denver'); await pc.waitForTimeout(600);
+    assert.equal(TC.dispatch_company_settings[0].data.tz, 'America/Denver', 'the Setup change is saved');
+    assert.equal(TC.dispatch_company_settings[0].data.nextCustomerNumber, 2, 'and the counter is not written back stale');
+    assert.equal(TC.dispatch_company_settings[0].data.nextBol, 9450, 'nor is nextBol');
+    assert.equal(await pc.evaluate(()=>state.settings.nextCustomerNumber), 2, 'the page takes the server\'s counter');
+    await addCustomer('Second Co');
+    assert.deepEqual(TC.dispatch_customers.map(c=>c.customer_id), ['ADC-0001','ADC-0002']);
+    // the BOL starting number is the one counter Setup sets on purpose
+    await pc.click('#tab-setup'); await pc.waitForTimeout(300);
+    TC.dispatch_company_settings[0].data.nextBol = 9500;   // the server moved it meanwhile
+    await pc.selectOption('#sTz','America/Los_Angeles'); await pc.waitForTimeout(600);
+    assert.equal(TC.dispatch_company_settings[0].data.nextBol, 9500, 'an unrelated save keeps the server\'s nextBol');
+    await pc.fill('#sNextBol','9600'); await pc.click('#btnSaveBol'); await pc.waitForTimeout(600);
+    assert.equal(TC.dispatch_company_settings[0].data.nextBol, 9600, 'BOL numbering on Setup still sets it');
+  }
   // no page errors except the deliberate Customers Out 502
   assert.deepEqual(pages.flatMap(p=>p.errs).filter(e=>!/status of 502/.test(e)), [], 'unexpected page errors');
   assert.equal(page.errs.filter(e=>/status of 502/.test(e)).length, 1, 'the Customers Out failure case ran');

@@ -27,9 +27,9 @@ const CDB={
     return await CDB.customer(c.id);
   },
   async sitesFor(customerId){ return sbErr(await supa.from("dispatch_sites").select("*").eq("company",state.company).eq("customer_id",customerId).order("site_label")); },
-  async saveSite(s){ sbErr(await supa.from("dispatch_sites").upsert(Object.assign({},s,{company:state.company,updated_by:state.session.user.id}),{onConflict:"company,site_key"})); },
+  async saveSite(s){ sbErr(await supa.from("dispatch_sites").upsert(Object.assign({},s,{company:state.company,updated_by:state.session.user.id,updated_at:new Date().toISOString()}),{onConflict:"company,site_key"})); },
   // an edit to an existing site: only the changed fields (an upsert would have to carry every NOT NULL column of a feed row)
-  async updateSite(siteKey,fields){ sbErr(await supa.from("dispatch_sites").update(Object.assign({},fields,{updated_by:state.session.user.id})).eq("company",state.company).eq("site_key",siteKey)); },
+  async updateSite(siteKey,fields){ sbErr(await supa.from("dispatch_sites").update(Object.assign({},fields,{updated_by:state.session.user.id,updated_at:new Date().toISOString()})).eq("company",state.company).eq("site_key",siteKey)); },
   // one site key, or an array of them (Today reads every stop's site in one query)
   async hubNotesFor(siteKey){ var q=supa.from("dispatch_site_hub_notes").select("*").eq("company",state.company);
     return sbErr(await (Array.isArray(siteKey)?q.in("site_key",siteKey):q.eq("site_key",siteKey)).order("hub")); },
@@ -198,9 +198,13 @@ async function loadCustPane(t){
 }
 
 /* sites */
+// A feed site (code_raw set) gets its address, city, hub and label from FEED_ORDERS on every sync, so those are read-only here
+// (an edit would be undone); the Ops fields and route notes stay editable.
+const FEED_OWNED={addr:true,city:true,hub:true,site_label:true};
 function siteForm(s,notes,isNew){
-  var dis=canManageCustomers()?"":" disabled", key=isNew?"":s.site_key, pre=isNew?"s_new":"s_"+siteHash(key);
-  var field=function(f){ var k=f[0], v=s[k]==null?"":String(s[k]), id=pre+"_"+k, lab='<label class="f'+(k==="special_instructions"?" spanall":"")+'" for="'+esc(id)+'">'+esc(f[1]);
+  var ro=canManageCustomers()?"":" disabled", key=isNew?"":s.site_key, pre=isNew?"s_new":"s_"+siteHash(key), feed=!isNew&&!!s.code_raw, dis=ro;
+  var field=function(f){ var k=f[0], v=s[k]==null?"":String(s[k]), id=pre+"_"+k, fo=feed&&FEED_OWNED[k], dis=fo?" disabled data-feed":ro,
+    lab='<label class="f'+(k==="special_instructions"?" spanall":"")+'" for="'+esc(id)+'">'+esc(f[1])+(fo?' <span class="hint">from FEED_ORDERS</span>':"");
     if(k==="hub"){ var codes=state.hubs.map(function(h){return h.code;}); if(v&&codes.indexOf(v)<0) codes.push(v);
       return lab+'<select id="'+esc(id)+'" data-k="hub"'+dis+'><option value="">— none —</option>'+codes.map(function(c){return '<option value="'+esc(c)+'"'+(c===v?" selected":"")+">"+esc(c)+"</option>";}).join("")+"</select></label>"; }
     if(k==="special_instructions") return lab+'<textarea id="'+esc(id)+'" data-k="'+k+'"'+dis+">"+esc(v)+"</textarea></label>";

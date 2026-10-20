@@ -2219,6 +2219,7 @@ function renderCompanyPick(){
   sel.onchange=async function(){ pickCompany(sel.value); lsSet("adchem_myhub",""); await loadCompanyData(); };
 }
 async function loadCompanyData(){
+  state.todayX=emptyTodayX(); todaySeq++;   // Today's site-note cache belongs to the company just left
   setConn("","Loading…");
   try{
     var r=await Promise.all([DB.hubs(),DB.settings(),DB.orders()]);

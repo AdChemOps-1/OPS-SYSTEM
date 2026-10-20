@@ -176,13 +176,24 @@ const flat = s => s.replace(/\s+/g, ' ').trim();
   await m.fill('#depAmount','1240.50'); await m.fill('#depNote','Chase Richmond'); await m.click('#depSend'); await m.waitForTimeout(1200);
   assert.match(flat(await m.textContent('#depStatus')), /^Sent\. The deposit slip went to accounting@adchem\.pro for \$1,240\.50\./);
   assert.deepEqual(calls.filter(c=>c[0]==='deposit').map(c=>({hub:c[1].hub,driver:c[1].driver,amount:c[1].amount,note:c[1].note,photoDir:c[1].photoPath.replace(/[^/]*$/,'')})), [{hub:'EB',driver:'Jamie',amount:1240.5,note:'Chase Richmond',photoDir:'adchem/EB/deposits/'}]);
-  // the same person as a driver at a second company (LA): none of AdChem's EB site notes show
-  T.dispatch_members=[{user_id:'u1',company:'north',role:'driver',hub:'LA',active:true}];
-  await m.reload(); await m.waitForTimeout(800);
-  if(!(await m.$eval('#login',e=>e.hidden))){ await m.fill('#lEmail','driver-eb@adchem.pro'); await m.fill('#lPass','correct-horse'); await m.click('#btnLogin'); await m.waitForTimeout(1000); }
-  assert.equal(await m.evaluate(()=>state.company), 'north');
-  const body2=await m.$eval('body',e=>e.textContent);
-  assert.doesNotMatch(body2, /4321|Scale on 580|555-0101/, 'no AdChem site notes for the Northstar driver');
+  // the same person is also a driver at a second company (north, LA). North has its own 'Type 7 — Primary' site (same key, other values)
+  // and two Type 7 orders at LA — one with the site key, one without (customer + hub fallback). After switching, no AdChem EB extras show, even on the first render.
+  T.dispatch_members=[{user_id:'u1',company:'adchem',role:'driver',hub:'EB',active:true},{user_id:'u1',company:'north',role:'driver',hub:'LA',active:true}];
+  T.dispatch_sites.push({company:'north',site_key:'Type 7 — Primary',customer:'Type 7 Manufacturing',code_raw:'D - Deliver; no holds',code:'D',addr:'9 North Rd, Long Beach CA 90813',city:'Long Beach',hub:'LA',site_label:'Primary',customer_id:'c-n7',gate_code:'9999',receiving_hours:'1–3pm',synced_at:new Date().toISOString()});
+  T.dispatch_site_hub_notes.push({company:'north',site_key:'Type 7 — Primary',hub:'LA',scale_on_route:false,route_notes:'North route note'});
+  const t7row=T.dispatch_orders.find(o=>o.company==='adchem'&&o.customer==='Type 7 Manufacturing'&&o.hub==='EB');
+  [['LA-261020-91','Type 7 — Primary'],['LA-261020-92','']].forEach(([id,sk])=>T.dispatch_orders.push({...t7row,id,company:'north',hub:'LA',bol_no:null,status:'Scheduled',
+    data:{...JSON.parse(JSON.stringify(t7row.data)),id,hub:'LA',status:'Scheduled',siteKey:sk,notes:'',contact:'',contactPhone:'',bolNo:null,pod:null}}));
+  await m.reload(); await m.waitForTimeout(1200);
+  assert.equal(await m.evaluate(()=>state.company), 'adchem');
+  assert.match(await stop1(), /555-0101/, 'AdChem extras cached before the switch');
+  const first=await m.evaluate(async()=>{ pickCompany('north'); await loadCompanyData(); return {company:state.company,stops:[...document.querySelectorAll('#todayList .stop')].map(e=>e.textContent)}; });
+  assert.equal(first.company, 'north'); assert.equal(first.stops.length, 2, 'both north stops render');
+  first.stops.forEach(t=>{ assert.doesNotMatch(t, /4321|Scale on 580|LA only route note|555-0101|Gate moved to the north side/, 'first render after the switch: no AdChem extras'); assert.match(t, /9999/); });
+  await m.waitForTimeout(800);
+  const after=await m.$$eval('#todayList .stop',e=>e.map(x=>x.textContent.replace(/\s+/g,' ')));
+  assert.equal(after.length, 2);
+  after.forEach(t=>{ assert.doesNotMatch(t, /4321|Scale on 580|LA only route note|555-0101|Gate moved to the north side/, 'no AdChem site notes for the Northstar driver'); assert.match(t, /9999/); assert.match(t, /North route note/); });
   // no page errors except the deliberate Gmail 502
   const errs=page.errs.concat(m.errs).filter(e=>!/status of 502/.test(e));
   assert.deepEqual(errs, [], 'unexpected page errors');

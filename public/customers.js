@@ -375,25 +375,27 @@ async function renderHistory(){
 /* ---------- Today: the site's notes under each stop ----------
    renderToday (app.js) calls siteNotesHtml(site, hub) per stop from state.todayX, then todayExtras(keys) once per render:
    one read each of hub notes, site contacts and the driver's own notes for all the stops' sites, re-rendering only if they changed. */
-state.todayX={hubNotes:{},contacts:{},mine:{}};
+// keyed by company: a site_key is unique only within one company
+function emptyTodayX(){ return {company:state.company,hubNotes:{},contacts:{},mine:{}}; }
+state.todayX=emptyTodayX();
 var todaySeq=0, todayHold=false;
 function groupByKey(rows){ var by={}; (rows||[]).forEach(function(r){ (by[r.site_key]=by[r.site_key]||[]).push(r); }); return by; }
 async function todayExtras(keys){
   if(todayHold) return;
-  var seq=++todaySeq, X={hubNotes:{},contacts:{},mine:{}};
+  var seq=++todaySeq, co=state.company, X=emptyTodayX();
   if(keys.length){
     try{ var r=await Promise.all([CDB.hubNotesFor(keys),CDB.contactsForSite(keys),CDB.myDriverNotes(keys)]);
-      X={hubNotes:groupByKey(r[0]),contacts:groupByKey(r[1]),mine:groupByKey(r[2])}; }
-    catch(e){ if(seq===todaySeq) banner("warn","Couldn't load the site notes","<div>"+esc(e.message)+"</div>",{autoclose:8000,key:"sitenotes"}); return; }
+      X={company:co,hubNotes:groupByKey(r[0]),contacts:groupByKey(r[1]),mine:groupByKey(r[2])}; }
+    catch(e){ if(seq===todaySeq) banner("warn","Couldn't load the site notes","<div>"+esc(e.message)+"</div>",{autoclose:8000,key:"sitenotes"}); X=emptyTodayX(); }   // render none rather than stale ones
   }
-  if(seq!==todaySeq) return;
+  if(seq!==todaySeq||co!==state.company) return;
   var same=JSON.stringify(X)===JSON.stringify(state.todayX); state.todayX=X;
   if(!same&&state.tab==="today"){ todayHold=true; try{ renderToday(); } finally{ todayHold=false; } }
 }
 function noteStatusChip(n){ var s=n.status||"pending"; return '<span class="chip '+(s==="approved"?"k-D":s==="rejected"?"st stop":"warn")+'">'+esc(s)+"</span>"; }
 function siteNotesHtml(site,hub){
   if(!site) return "";
-  var X=state.todayX, k=site.siteKey;
+  var X=state.todayX.company===state.company?state.todayX:emptyTodayX(), k=site.siteKey;
   var hn=(X.hubNotes[k]||[]).find(function(n){return n.hub===hub;});
   var lines=[["Gate code",site.gateCode||site.gate],["Receiving hours",site.receivingHours||site.hours],["Parking / unloading",site.parkingUnloading],
     ["Restrictions",site.hazmatRestrictions],["Containers",site.containerNotes],["Special instructions",site.specialInstructions]];

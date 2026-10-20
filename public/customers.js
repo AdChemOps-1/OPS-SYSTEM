@@ -7,7 +7,7 @@ state.customers=state.customers||[]; state.customer=null; state.custStatus={}; s
 const CUST_FIELDS=[["cName","name"],["cAka","also_known_as"],["cLegal","legal_name"],["cStatus","account_status"],["cHub","primary_hub"],["cParent","parent_customer_id"],
   ["cBillStreet","billing_street"],["cBillCity","billing_city"],["cBillState","billing_state"],["cBillZip","billing_zip"],["cVerified","last_verified"],["cNotes","notes"]];
 const CUST_NULLABLE={parent_customer_id:true,last_verified:true};
-const CUST_TABS=["profile","sites","contacts","activity","history"];
+const CUST_TABS=["profile","sites","contacts","activity","documents","history"];
 const CUST_MUST=15;
 
 function canManageCustomers(){ var me=state.me||{}; return !!(me.isSuper||(me.perms||{}).manage_customers); }
@@ -65,7 +65,7 @@ const CDB={
     return out.sort(function(a,b){ return String(b.at||"").localeCompare(String(a.at||"")); });
   },
   async statusFor(customerId){ return sbErr(await supa.from("dispatch_customer_status").select("*").eq("company",state.company).eq("id",customerId).maybeSingle()); },
-  async statuses(){ return sbErr(await supa.from("dispatch_customer_status").select("id,customer_id,profile_complete").eq("company",state.company)); }
+  async statuses(){ return sbErr(await supa.from("dispatch_customer_status").select("*").eq("company",state.company)); }
 };
 
 /* ---------- list ---------- */
@@ -113,6 +113,8 @@ function custHeader(){
   $("custIdChip").textContent=c.customer_id||"new";
   var sc=$("custStatusChip"); sc.className=custStatusCls(c.account_status||"active"); sc.textContent=c.account_status||"active";
   var n=c.id&&!c._new?custComplete(c):0; $("custComplete").textContent=n+" of "+CUST_MUST; $("custComplete").classList.toggle("full",n>=CUST_MUST);
+  // license and PSA chips from the derived status (documents.js); every editor sees them, records need view_documents
+  $("custDocChips").innerHTML=c.id&&!c._new&&typeof custDocChipsHtml==="function"?custDocChipsHtml(state.custStatus[c.id]):"";
 }
 async function openCustomer(id){
   var c=id?state.customers.find(function(x){return x.id===id;}):null;
@@ -193,7 +195,7 @@ async function refreshComplete(){ if(!custSaved()) return;
   catch(e){ banner("warn","Couldn't refresh profile completeness","<div>"+esc(e.message)+"</div>",{autoclose:6000}); } }
 async function loadCustPane(t){
   if(!state.customer) return;
-  try{ if(t==="sites") await renderSites(); else if(t==="contacts") await renderContacts(); else if(t==="activity") await renderActivity(); else if(t==="history") await renderHistory(); }
+  try{ if(t==="sites") await renderSites(); else if(t==="contacts") await renderContacts(); else if(t==="activity") await renderActivity(); else if(t==="documents") await renderCustDocs(); else if(t==="history") await renderHistory(); }
   catch(e){ banner("bad","Couldn't load "+esc(t),"<div>"+esc(e.message)+"</div>"); }
 }
 

@@ -805,7 +805,7 @@ function fillStatic(){
 }
 function setTab(t){
   state.tab=t;
-  ["new","bol","open","today","setup","customers","users"].forEach(function(k){
+  ["new","bol","open","today","setup","customers","documents","users"].forEach(function(k){
     $("tab-"+k).setAttribute("aria-selected",k===t?"true":"false");
     $("panel-"+k).hidden=(k!==t);
   });
@@ -816,6 +816,7 @@ function setTab(t){
   if(t==="setup") renderSetup();
   if(t==="users") renderUsers();
   if(t==="customers") renderCustomers();
+  if(t==="documents") renderDocsHub();
 }
 function codeChip(o){
   var k=o.effCode||o.code;
@@ -1475,7 +1476,7 @@ function clearBanner(k){var el=document.querySelector('[data-bkey="'+k+'"]'); if
 function setConn(kind,text){$("connDot").className="dot"+(kind?" "+kind:"");$("connTxt").textContent=text;}
 function wire(){
   ["new","bol","open","today","setup"].forEach(function(k){ $("tab-"+k).onclick=function(){ if(k==="bol") state.bolOrder=null; setTab(k); }; });
-  wireCustomers(); wireImport();
+  wireCustomers(); wireImport(); wireDocuments();
   $("fHub").onchange=function(){refreshId();renderLines();scheduleLive();};
   $("fDate").onchange=function(){refreshId();scheduleLive();};
   $("fIdOverride").oninput=function(){refreshId();scheduleLive();};
@@ -1977,7 +1978,8 @@ async function saveOrder(o){
   catch(e){ banner("bad","Order not saved to the shared database","<div>"+esc(e.message)+" — it is only on this screen. Check your connection and try again.</div>",{key:"save"}); throw e; }
 }
 async function saveHubs(){ try{ await DB.saveHubs(); }catch(e){ banner("bad","Hubs not saved","<div>"+esc(e.message)+"</div>"); } }
-const SERVER_COUNTERS=["nextCustomerNumber","nextBol"];
+// plus the document warning keys: written only through dispatch_set_warnings (super admin), so a save carries the database's values
+const SERVER_COUNTERS=["nextCustomerNumber","nextBol","warnDays","warnings","expiryEmailRecipients"];
 async function saveSettings(own){ try{ await DB.saveSettings(own); }catch(e){ banner("bad","Settings not saved","<div>"+esc(e.message)+"</div>"); } }
 
 const API={
@@ -2192,6 +2194,7 @@ function applyAccess(){
   $("tab-users").hidden=!state.isOwner;
   $("healthCard").hidden=!state.isOwner;
   ["tab-new","tab-bol","tab-setup","tab-customers"].forEach(function(k){ $(k).hidden=ro; });
+  $("tab-documents").hidden=!canViewDocs(); if(state.tab==="documents"&&!canViewDocs()) state.tab=ro?"today":"new";
   if(ro){ $("btnSubmit").textContent="Drivers cannot create orders"; if(state.tab!=="today"&&state.tab!=="open") setTab("today"); }
 }
 function showLogin(msg,kind){
@@ -2278,7 +2281,7 @@ async function loadCompanyData(){
   if(state.me.role==="driver"&&state.me.hub) lsSet("adchem_myhub",state.me.hub);
   await loadSitesFromDb();   // drivers too: the policy limits them to their hub's sites, which Today's site notes read
   if(state.canEdit) await loadCalendars();
-  closeCustomer(); state.customers=[];
+  closeCustomer(); state.customers=[]; resetDocs();
   if(state.canEdit){ try{ state.customers=await CDB.customers(); }catch(e){ banner("bad","Couldn't load customers","<div>"+esc(e.message)+"</div>"); } }
   fillAccounts();
   setConn("ok","Connected");

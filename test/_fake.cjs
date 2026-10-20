@@ -53,8 +53,8 @@ function fakeRpc(name,b,T){
   if(name==='dispatch_grant'){ T.dispatch_invites.push({email:b.p_email,name:b.p_name,role:b.p_role,hub:b.p_hub,company:b.p_company,invited_at:new Date().toISOString()}); return {code:200,body:'invited'}; }
   if(name==='dispatch_add_company'){ T.companies.push({id:b.p_id,name:b.p_name,short_name:b.p_short,active:true,data:{}}); T.dispatch_members.push({user_id:'u1',company:b.p_id,role:'admin',hub:'',active:true}); T.dispatch_company_settings.push({company:b.p_id,data:{}}); return {code:200,body:null}; }
   if(name==='dispatch_revoke'){ const u=T.dispatch_users.find(x=>x.email===b.p_email); if(u) T.dispatch_members.forEach(m=>{if(m.user_id===u.user_id&&m.company===b.p_company)m.active=false;}); return {code:200,body:null}; }
-  if(name==='dispatch_set_permissions'){ const u=T.dispatch_users.find(x=>x.email===b.p_email); const m=u&&T.dispatch_members.find(x=>x.user_id===u.user_id&&x.company===b.p_company); if(m) m.permissions=b.p_permissions; return {code:200,body:null}; }
-  if(name==='dispatch_set_super_admin'){ const u=T.dispatch_users.find(x=>x.email===b.p_email); if(u) u.super_admin=!!b.p_value; return {code:200,body:null}; }
+  if(name==='dispatch_set_permissions'||name==='dispatch_set_super_admin'){ const u=T.dispatch_users.find(x=>x.user_id===b.p_user||x.email===b.p_user); const m=T.dispatch_members.find(x=>x.company===b.p_company&&(x.user_id===b.p_user||(u&&x.user_id===u.user_id))); if(!m) return {code:404,body:{message:'no member'}};
+    if(name==='dispatch_set_permissions') m.permissions=b.p_perms; else m.is_super_admin=!!b.p_on; return {code:200,body:null}; }
   return {code:404,body:{message:'no fn '+name}}; }
 
 function makeFake(seed){

@@ -41,6 +41,8 @@ The dedicated user reaches them through its group membership, so share with the 
 2. **Delivery calendars** — each one the app writes to: *Deliveries — East Bay*, *Deliveries — SoCal*, *Deliveries — Denver*, and the default calendar if you keep one. For each: Google Calendar → the calendar's **Settings and sharing** → Share with specific people → `orders@adchem.pro` → **Make changes to events**. On the same page, under **Integrate calendar**, copy the **Calendar ID** — you paste it on the app's **Setup → Delivery calendars** at first run (README, First run step 5). A calendar shared to a group does not always appear in the server's calendar list, which is why the ID is the reliable route.
 3. **BOL folder** (or its shared drive) → `orders@adchem.pro` → **Editor** (Content manager on a shared drive).
 4. **AdChem Dispatch Orders Out** sheet → `orders@adchem.pro` → **Editor**. This is the one the return flow writes to.
+5. **The import spreadsheet** (the one with the *Customer Directory*, *Customers* and *Delivery Notes* tabs) → `orders@adchem.pro` → **Viewer**. The import only reads it.
+6. **AdChem Customers Out** sheet → `orders@adchem.pro` → **Editor**. The app writes each customer's rows here.
 
 ## E. Tell the server (Cloudflare Pages → the project → Settings → Variables and Secrets)
 

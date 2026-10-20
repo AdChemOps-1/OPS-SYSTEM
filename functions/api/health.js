@@ -45,6 +45,14 @@ export async function onRequestGet({ request, env }) {
     const co = sheetIdFrom(ctx.settings.customersOutSheetId);
     if (co) { try { const r = await gfetch(env, `https://sheets.googleapis.com/v4/spreadsheets/${co}/values/${encodeURIComponent("'" + CUSTOMERS_TAB + "'!A1:AG1")}`); out.checks.customersOut = (r && r.values && r.values[0] && r.values[0][0] === "Customer ID") ? "ok" : "tab found but the header row is not the Customers Out columns (press Rebuild Customers Out on Setup)"; } catch (e) { out.checks.customersOut = e.message; } }
     else out.checks.customersOut = "no Customers Out sheet set on Setup";
+    const im = sheetIdFrom(ctx.settings.importSheetId);
+    if (im) {
+      try {
+        const r = await gfetch(env, `https://sheets.googleapis.com/v4/spreadsheets/${im}/values/${encodeURIComponent("'Customer Directory'!A1:AZ6")}`);
+        const found = ((r && r.values) || []).some(row => (row || []).some(c => String(c).trim() === "Customer ID"));
+        out.checks.importSheet = found ? "ok" : "tab found but no Customer ID header in its first rows";
+      } catch (e) { out.checks.importSheet = e.message; }
+    } else out.checks.importSheet = "no import sheet set on Setup";
     return json(out);
   });
 }

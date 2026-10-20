@@ -196,6 +196,7 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   // ---------- Setup: Customers Out card — save the link, rebuild; a failed write warns but never blocks the save ----------
   await page.click('#tab-setup'); await page.waitForTimeout(400);
   assert.match(flat(await page.textContent('#customersOutState')), /Customers Out is set/);
+  assert.match(flat(await page.textContent('#healthState')), /Customers Out: ok.*Import sheet: ok/, 'the health card lists both Customers Out and the import sheet');
   assert.equal(await page.inputValue('#sCustomersOut'), '1COUTseedAAAAAAAAAAAAAA');
   await page.fill('#sCustomersOut','https://docs.google.com/spreadsheets/d/1CustomersOutSheetIdXYZ_abc/edit#gid=0');
   await page.click('#btnSaveCustomersOut'); await page.waitForTimeout(600);

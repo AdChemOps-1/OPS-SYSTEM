@@ -157,7 +157,7 @@ function makeFake(seed){
     if(u.pathname==='/api/customers-out'){ const {company,...b}=JSON.parse(body||'{}'); if(!company) return send(400,{error:{code:'no_company',message:'company required'}}); calls.push(['customers-out',b]);
       return send(200,b.rebuild?{ok:true,rebuilt:T.dispatch_customers.filter(c=>c.company===company).length}:{ok:true,updated:0,appended:(b.customerIds||[]).length}); }
     if(u.pathname==='/api/import'){ const r=fakeImport(T,JSON.parse(body||'{}'),IMP,calls); return send(r.code,r.body); }
-    if(u.pathname==='/api/health') return send(200,{googleConfigured:false,checks:{customersOut:'ok'}});
+    if(u.pathname==='/api/health') return send(200,{googleConfigured:true,impersonate:'ops-system@adchem.pro',mailFrom:'orders@adchem.pro',ordersTo:'orders@adchem.pro',accountingTo:'accounting@adchem.pro',checks:{token:'ok',customersOut:'ok',importSheet:'ok'}});
     // static
     const p=path.join(ROOT,u.pathname==='/'?'index.html':u.pathname); if(!fs.existsSync(p)) return send(404,{});
     res.writeHead(200,{'content-type':{'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png','.webmanifest':'application/manifest+json'}[path.extname(p)]||'application/octet-stream'}); fs.createReadStream(p).pipe(res);

@@ -2227,7 +2227,7 @@ async function renderHealth(){
     if(!h.googleConfigured){ host.innerHTML='<div class="banner warn" style="margin:0"><div><b>Google isn\'t set up on the server yet</b><div>Add the service account (GOOGLE_SA_JSON) and the Workspace user it acts as (GOOGLE_IMPERSONATE) in Cloudflare Pages → Settings → Variables and Secrets, then redeploy. See the README.</div></div></div>'; return; }
     var c=h.checks||{}, ok=function(v){return typeof v==="string"&&(v==="ok"||v.indexOf("ok ")===0||v.indexOf("ok —")===0);};
     host.innerHTML='<div class="banner '+(Object.values(c).every(ok)?"good":"warn")+'" style="margin:0"><div><b>Acting as '+esc(h.impersonate||"(no user set)")+' · mail goes out as '+esc(h.mailFrom)+' · BOLs to '+esc(h.ordersTo)+' · deposit slips to '+esc(h.accountingTo)+'</b>'+
-      '<div>Token: '+esc(c.token||"—")+'<br>AR Command Center: '+esc(c.sheet||"—")+'<br>Calendars: '+esc(c.calendar||"—")+'<br>Drive: '+esc(c.drive||"—")+'<br>Gmail: '+esc(c.gmail||"—")+'<br>Orders Out: '+esc(c.ordersOut||"—")+'<br>Customers Out: '+esc(c.customersOut||"—")+'</div></div></div>';
+      '<div>Token: '+esc(c.token||"—")+'<br>AR Command Center: '+esc(c.sheet||"—")+'<br>Calendars: '+esc(c.calendar||"—")+'<br>Drive: '+esc(c.drive||"—")+'<br>Gmail: '+esc(c.gmail||"—")+'<br>Orders Out: '+esc(c.ordersOut||"—")+'<br>Customers Out: '+esc(c.customersOut||"—")+'<br>Import sheet: '+esc(c.importSheet||"—")+'</div></div></div>';
   }catch(e){ host.innerHTML='<div class="banner bad" style="margin:0"><div><b>Server check failed</b><div>'+esc(e.message)+'</div></div></div>'; }
 }
 function wireAuth(){

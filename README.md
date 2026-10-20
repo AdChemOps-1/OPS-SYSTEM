@@ -15,10 +15,22 @@ Every row — customers, orders, BOLs, hubs, settings, photos — belongs to a c
 | Role | Can |
 |---|---|
 | **admin** | Everything, plus **People** (add and remove users, add a company), the compatibility table and the server health check |
-| **coordinator** | Take and edit orders, issue BOLs, print the Morning Driver Sheet (the paper backup of Today), Setup (feed, Orders Out, delivery calendars, Drive, BOL numbering, hubs) |
-| **driver** | See their hub's routes on Today, open BOLs, photograph and send the signed BOL, photograph and send bank deposit slips. One driver account per hub (e.g. `driver-eb@adchem.pro`), signed in on that hub's phones |
+| **coordinator** | Take and edit orders, issue BOLs, print the Morning Driver Sheet (the paper backup of Today), Setup (feed, Orders Out, Customers Out, delivery calendars, Drive, BOL numbering, hubs) |
+| **driver** | See their hub's routes on Today, with each site's notes and receiving contact, add a note on a stop, open BOLs, photograph and send the signed BOL, photograph and send bank deposit slips. One account per person (e.g. `maria@adchem.pro`), with their hub set on People |
+| **super admin** | A switch on top of a role, set on People by another super admin (you cannot remove your own). Holds every permission below and is the only one who can change a super admin |
 
-Drivers never see billing contacts, balances, terms or prices. The server reads only the 14 FEED_ORDERS columns from the AR Command Center.
+Four permissions are switched per person on **People**: **Manage customers** (create and edit customers, sites and contacts; log activity), **Approve driver notes** (review the notes drivers add from Today), **Run imports** (read and commit the spreadsheet import on Setup) and **Manage people**. Everyone who can take orders can see Customers; without Manage customers it is read-only.
+
+Drivers never see billing contacts, balances, terms or prices. The server reads only the 14 FEED_ORDERS columns from the AR Command Center, and the import never reads a money column.
+
+## Customers
+
+The **Customers** tab is the customer master: a list with search, and a profile per customer with its sites (each with an address and per-hub route notes), contacts, activity (calls, emails, visits and driver notes — a driver's note waits for someone with Approve driver notes before it shows) and a history of every change. Orders link to the customer here, and Today shows the site's notes and receiving contact to the driver. Customer numbers come from the `nextCustomerNumber` setting.
+
+Two Setup cards connect it to the spreadsheets:
+
+- **Customers Out** — the company's *Customers Out* sheet. Each customer's rows are rewritten whenever the customer, a site or a contact is saved (`/api/customers-out`); **Rebuild Customers Out** rewrites the whole tab. A failed write shows a banner; the change is still saved.
+- **Import** — reads the existing spreadsheet's *Customer Directory*, *Customers* and *Delivery Notes* tabs (`/api/import`, needs Run imports). It shows a review of what would be created, changed or skipped; nothing is written until you commit. Licensing & Entity and Account Terms are left for a later stage.
 
 ## Deploy (first time)
 
@@ -34,20 +46,22 @@ Create a repository under the **AdChemOps-1** account (e.g. `Ops`) and upload th
 ### 3. Supabase — one setting
 Supabase dashboard → project **adchem-hours** → **Authentication → URL Configuration → Redirect URLs**: add the app's address (the `pages.dev` URL and, later, the custom domain). The Site URL can stay as AdChem Time's.
 
-The database objects are already created (`supabase/migrations/` is the record). The existing admin account already holds admin for AdChem.
+The database objects through `004` are already created (`supabase/migrations/` is the record). **`005_customers.sql` is to be applied; then re-run the security advisor.** The existing admin account already holds admin for AdChem.
 
 ### 4. Google setup (Workspace admin, about 25 minutes)
 See **`GOOGLE-SETUP.md`**. It starts with the dedicated user `ops-system@adchem.pro`.
 
 ### 5. First run
 1. Open the app, sign in with your existing AdChem account.
-2. **Setup → Google connection → Check again** — six lines should read *ok*; the Gmail line should say it can send as orders@adchem.pro. (The calendars line reads *no delivery calendar set* until step 5.)
+2. **Setup → Google connection → Check again** — the lines should read *ok* (Customers Out and Import sheet read *no … sheet set* until steps 5 and 6); the Gmail line should say it can send as orders@adchem.pro. (The calendars line reads *no delivery calendar set* until step 5.)
 3. **Setup → Customer feed → Refresh the feed now** — reads FEED_ORDERS.
 4. **Setup → Orders Out** — paste the *AdChem Dispatch Orders Out* sheet link, **Save**, then **Rebuild Orders Out**. On the AR Command Center, click **Allow access** on Orders In A8 once.
+   - **Setup → Customers Out** — paste the *Customers Out* sheet link, **Save**, then **Rebuild Customers Out**.
+   - **Setup → Import** — share the spreadsheet to orders@adchem.pro as **Viewer**, paste its link, **Read the workbook**, review the plan, then **Import the reviewed rows**.
 5. **Setup → Delivery calendars** — for each hub, pick its calendar from the list or paste its Calendar ID (EB → *Deliveries — East Bay*, LA → *Deliveries — SoCal*, CO → *Deliveries — Denver*). A default is optional and covers any hub left on *Same as default*; a hub with neither saves its orders but gets no events, and Setup says so. **Check and confirm** — the server tests that it can write to every one before anything is written.
 6. **Setup → Drive folder** — paste the shared BOL folder link, **Save**, **Send a test file**.
 7. **Setup → BOL numbering** — on the day SmartBOL stops, enter its last number plus one.
-8. **People** — add coordinators and one driver account per hub.
+8. **People** — set the super admins, grant each person's permissions, and add each driver individually (one account per person, with their hub).
 
 ## Hubs
 
@@ -75,7 +89,7 @@ public/            the app (index.html, app.js, styles.css, config.js, icons, ve
 functions/api/     feed.js · calendar.js · drive.js · pod.js · deposit.js · orderlog.js · health.js
 functions/_lib/    google.js (service-account token) · auth.js (who is calling, in which company) · orderlog.js (the Orders Out writer) · calendars.js (which calendar a hub's events go on)
 api/               [route].js — adapter so the same server code could run on Vercel; not used by Cloudflare
-supabase/          001_dispatch.sql, 002_companies.sql, 003_photo_scoping.sql, 004_hub_time_and_products.sql — the schema as applied
+supabase/          001_dispatch.sql … 004_hub_time_and_products.sql as applied; 005_customers.sql to be applied
 test/              ui.test.cjs
 GOOGLE-SETUP.md    the Workspace / Google Cloud steps
 ```

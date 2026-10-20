@@ -128,7 +128,7 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.equal(await page.inputValue(sf+' [data-hubnote=EB] [data-n=route_notes]'), 'Scale on 580', 'first site unaffected');
   // contacts: receiving with phone, billing with email
   await page.click('#ctab-contacts'); await page.waitForTimeout(400);
-  const b0 = await badge();
+  const b0 = await badge(); const coBeforeContacts = coCalls().length;
   await page.click('#btnAddContact'); await page.waitForTimeout(100);
   await page.selectOption('#cf_type','receiving'); await page.fill('#cf_first','Sam'); await page.fill('#cf_last','Ortiz'); await page.fill('#cf_phone','(510) 555-0101');
   await page.selectOption('#cf_method','phone'); await page.selectOption('#cf_site','ADC-0001 — Primary');
@@ -138,7 +138,7 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   await page.selectOption('#cf_type','billing'); await page.fill('#cf_first','Pat'); await page.fill('#cf_email','ap@type7.example'); await page.check('#cf_cc'); await page.fill('#cf_notes','Statements monthly');
   await page.click('#cfSave'); await page.waitForTimeout(700);
   assert.equal(T.dispatch_contacts.length, 2);
-  assert.ok(coCalls().slice(-2).every(x=>JSON.stringify(x)===JSON.stringify(['customers-out',{customerIds:[c.id]}])), 'each contact save rewrites the customer\'s rows');
+  assert.deepEqual(coCalls().slice(coBeforeContacts), [['customers-out',{customerIds:[c.id]}],['customers-out',{customerIds:[c.id]}]], 'each contact save rewrites the customer\'s rows, once');
   const sam = T.dispatch_contacts.find(x=>x.first_name==='Sam'), pat = T.dispatch_contacts.find(x=>x.first_name==='Pat');
   assert.deepEqual({company:sam.company,customer_id:sam.customer_id,type:sam.type,last:sam.last_name,phone:sam.phone,method:sam.preferred_method,site:sam.site_key,active:sam.active,cc:sam.cc_on_statements},
     {company:'adchem',customer_id:c.id,type:'receiving',last:'Ortiz',phone:'(510) 555-0101',method:'phone',site:'ADC-0001 — Primary',active:true,cc:false});
@@ -149,7 +149,9 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.deepEqual(await page.$$eval('#contactList [data-ctype]',e=>e.map(x=>x.getAttribute('data-ctype'))), ['receiving','billing'], 'grouped by type in order');
   assert.match(flat(await page.textContent('#contactList')), /Sam Ortiz.*Pat/);
   assert.equal(await badge(), b0+2, 'receiving phone and billing email each count');
+  const coBeforeToggle = coCalls().length;
   await page.click(`#contactList [data-deact="${pat.id}"]`); await page.waitForTimeout(600);
+  assert.deepEqual(coCalls().slice(coBeforeToggle), [['customers-out',{customerIds:[c.id]}]], 'deactivating a contact rewrites the customer\'s rows');
   assert.equal(pat.active, false, 'deactivated'); assert.match(flat(await page.textContent(`#contactList [data-contact="${pat.id}"]`)), /inactive/);
   await page.click(`#contactList [data-deact="${pat.id}"]`); await page.waitForTimeout(600);
   assert.equal(pat.active, true, 'reactivated');

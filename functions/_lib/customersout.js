@@ -3,7 +3,7 @@
 // column A (Customer ID) + column L (Delivery Street). Derived from the database and rebuildable at any time; never hand-edited.
 // Never carries balances, terms, prices, files, notes, activity or assets.
 import { gfetch } from "./google.js";
-import { sheetIdFrom, stampIn } from "./orderlog.js";
+import { sheetIdFrom } from "./orderlog.js";
 
 export const TAB = "Customers Out";
 export const HEADER = ["Customer ID","Customer","Also Known As","Legal Name","Account Status","Primary Hub","Parent Account",
@@ -16,11 +16,22 @@ const LAST = "AG";          // column 33
 
 const s = (v) => v == null ? "" : String(v).trim();
 const name = (x) => x ? [s(x.first_name), s(x.last_name)].filter(Boolean).join(" ") : "";
-// a date column (YYYY-MM-DD from Postgres) as MM/DD/YYYY, without a time-zone shift
-function mdy(v) {
+// Date columns are written as Sheets serial numbers (days since 1899-12-30) so the office's date formulas, sorting and
+// conditional formatting work; Rebuild gives those columns an mm/dd/yyyy display format. Blank stays "".
+const EPOCH_DAYS = 25569;   // 1970-01-01 as a Sheets serial
+// a date column (YYYY-MM-DD from Postgres) → whole serial, no time-zone shift
+export function dateSerial(v) {
   const m = s(v).match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return m ? `${m[2]}/${m[3]}/${m[1]}` : s(v);
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000 + EPOCH_DAYS : "";
 }
+// a moment → fractional serial of its wall-clock time in the company's time zone (minute precision)
+export function stampSerial(d, tz) {
+  let p;
+  try { p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz || "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(d).map(x => [x.type, x.value])); }
+  catch (e) { p = { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate(), hour: d.getUTCHours(), minute: d.getUTCMinutes() }; }
+  return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute) / 86400000 + EPOCH_DAYS;
+}
+export const DATE_COLUMNS = { 26: "mm/dd/yyyy", 29: "mm/dd/yyyy", 31: "mm/dd/yyyy", 32: "mm/dd/yyyy hh:mm" };   // License Expires, PSA Effective, Last Verified, Updated At
 // A site's delivery address. App-entered sites carry street and city separately; feed sites carry the whole address in addr
 // ("100 Main St, Oakland CA 94607"), which is split so the key street is the same whichever way the site was written.
 function deliveryOf(site) {
@@ -31,7 +42,7 @@ function deliveryOf(site) {
   return [addr, s(site.city), s(site.state), s(site.zip)];
 }
 
-// The sheet rows for one customer. `c.parent_name` is the parent account's name (the writer looks it up); `status` is the
+// The sheet rows for one customer (text cells as strings, the four date cells as serial numbers or ""). `c.parent_name` is the parent account's name (the writer looks it up); `status` is the
 // customer's dispatch_customer_status row (license/PSA are 'missing' until Stage 2).
 export function rowsFor(c, sites, contacts, status, tz, now) {
   const st = status || {};
@@ -46,7 +57,7 @@ export function rowsFor(c, sites, contacts, status, tz, now) {
   const list = (sites || []).slice();
   const pi = list.findIndex(x => x.site_label === "Primary");
   const ordered = list.length ? [list[pi >= 0 ? pi : 0]].concat(list.filter((_, i) => i !== (pi >= 0 ? pi : 0))) : [null];
-  const stamp = stampIn(now || new Date(), tz);
+  const stamp = stampSerial(now || new Date(), tz);
   return ordered.map(site => {
     const recv = (site && receiving.find(x => x.site_key === site.site_key)) || receiving.find(x => !x.site_key) || receiving[0] || null;
     return [
@@ -55,9 +66,9 @@ export function rowsFor(c, sites, contacts, status, tz, now) {
       ...deliveryOf(site), name(recv), s(recv && recv.phone),
       name(billing), s(billing && billing.phone), s(billing && billing.email), cc,
       name(owner), s(owner && owner.phone), s(owner && owner.email),
-      s(st.license_status) || "missing", s(st.license_number), mdy(st.license_expires), s(st.entity_status) || "missing",
-      s(st.psa_status) || "missing", mdy(st.psa_effective),
-      `${Number(st.profile_complete) || 0} of ${MUST}`, mdy(c.last_verified), stamp,
+      s(st.license_status) || "missing", s(st.license_number), dateSerial(st.license_expires), s(st.entity_status) || "missing",
+      s(st.psa_status) || "missing", dateSerial(st.psa_effective),
+      `${Number(st.profile_complete) || 0} of ${MUST}`, dateSerial(c.last_verified), stamp,
     ];
   });
 }
@@ -96,10 +107,22 @@ export async function writeCustomersOut(env, db, ctx, company, customerIds, rebu
   const now = new Date();
   const rowsOf = (c) => rowsFor({ ...c, parent_name: names.get(c.parent_customer_id) || "" }, sites.get(c.id), contacts.get(c.id), status.get(c.id), tz, now);
 
+  // the tab's numeric sheetId (gid), for row deletes and formats
+  const tabId = async () => {
+    const meta = await gfetch(env, `${base}?fields=sheets.properties`);
+    const tab = (meta && meta.sheets || []).map(x => x.properties || {}).find(p => p.title === TAB);
+    if (!tab) throw new Error(`no "${TAB}" tab in the Customers Out sheet`);
+    return tab.sheetId;
+  };
   if (rebuild) {
     const rows = customers.flatMap(rowsOf);
     await gfetch(env, `${base}/values/${rng(`A2:${LAST}`)}:clear`, json({}));
     await gfetch(env, `${base}/values/${rng(`A1:${LAST}`)}?valueInputOption=RAW`, { ...json({ values: [HEADER, ...rows] }), method: "PUT" });
+    // the four date columns display as dates (whole column below the header, so appended rows inherit it)
+    const gid = await tabId();
+    await gfetch(env, `${base}:batchUpdate`, json({ requests: Object.entries(DATE_COLUMNS).map(([c, pattern]) => ({ repeatCell: {
+      range: { sheetId: gid, startRowIndex: 1, startColumnIndex: +c, endColumnIndex: +c + 1 },
+      cell: { userEnteredFormat: { numberFormat: { type: c === "32" ? "DATE_TIME" : "DATE", pattern } } }, fields: "userEnteredFormat.numberFormat" } })) }));
     return { ok: true, rebuilt: rows.length };
   }
 
@@ -120,10 +143,8 @@ export async function writeCustomersOut(env, db, ctx, company, customerIds, rebu
   const stale = [...index.values()].flat().sort((a, b) => b - a);   // bottom-up so earlier deletes don't shift later ones
   if (updates.length) await gfetch(env, `${base}/values:batchUpdate`, json({ valueInputOption: "RAW", data: updates }));
   if (stale.length) {
-    const meta = await gfetch(env, `${base}?fields=sheets.properties`);
-    const tab = (meta && meta.sheets || []).map(x => x.properties || {}).find(p => p.title === TAB);
-    if (!tab) throw new Error(`no "${TAB}" tab in the Customers Out sheet`);
-    await gfetch(env, `${base}:batchUpdate`, json({ requests: stale.map(r => ({ deleteDimension: { range: { sheetId: tab.sheetId, dimension: "ROWS", startIndex: r - 1, endIndex: r } } })) }));
+    const gid = await tabId();
+    await gfetch(env, `${base}:batchUpdate`, json({ requests: stale.map(r => ({ deleteDimension: { range: { sheetId: gid, dimension: "ROWS", startIndex: r - 1, endIndex: r } } })) }));
   }
   if (appends.length) await gfetch(env, `${base}/values/${rng(`A2:${LAST}`)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, json({ values: appends }));
   return { ok: true, updated: updates.length, appended: appends.length, deleted: stale.length };

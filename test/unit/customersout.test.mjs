@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
-import { TAB, HEADER, rowsFor, writeCustomersOut, tryWriteCustomersOut } from '../../functions/_lib/customersout.js';
+import { TAB, HEADER, rowsFor, writeCustomersOut, tryWriteCustomersOut, dateSerial, stampSerial } from '../../functions/_lib/customersout.js';
 
 const col = (name, nth = 1) => { let seen = 0; for (let i = 0; i < HEADER.length; i++) if (HEADER[i] === name && ++seen === nth) return i; return -1; };
 const DS = col('Delivery Street'), DCITY = col('City', 2), DSTATE = col('State', 2), DZIP = col('ZIP', 2);
@@ -23,6 +23,7 @@ const CONTACTS = [
 ];
 const STATUS = { id: 'c1000000-0000-4000-8000-000000000001', customer_id: 'ADC-0007', profile_complete: 9, license_status: 'missing', license_expires: null, license_number: null, psa_status: 'missing', entity_status: null };
 const NOW = new Date('2026-10-20T17:05:00Z');
+const near = (a, b, m) => assert.ok(typeof a === 'number' && Math.abs(a - b) < 1e-9, `${m}: ${a} vs ${b}`);   // serials are floats
 
 test('HEADER is the 33 spec §9 columns in order', () => {
   assert.equal(HEADER.length, 33);
@@ -45,10 +46,10 @@ test('rowsFor: one row for the Primary site, one per additional site, contacts b
     assert.equal(get(r, 'Billing Contact'), 'Pat Ng'); assert.equal(get(r, 'Billing Phone'), '(510) 555-0199'); assert.equal(get(r, 'Billing Email'), 'pat@type7.example');
     assert.equal(get(r, 'CC Emails'), 'ap@type7.example', 'active cc billing contacts only, not the main billing email');
     assert.deepEqual([get(r, 'Owner Name'), get(r, 'Owner Phone'), get(r, 'Owner Email')], ['Olu Ade', '(510) 555-0111', 'olu@type7.example']);
-    assert.deepEqual([get(r, 'License Status'), get(r, 'License #'), get(r, 'License Expires'), get(r, 'Entity Status'), get(r, 'PSA Status'), get(r, 'PSA Effective')], ['missing', '', '', 'missing', 'missing', '']);
+    assert.deepEqual([get(r, 'License Status'), get(r, 'License #'), get(r, 'License Expires'), get(r, 'Entity Status'), get(r, 'PSA Status'), get(r, 'PSA Effective')], ['missing', '', '', 'missing', 'missing', ''], 'blank dates stay blank');
     assert.equal(get(r, 'Profile Complete'), '9 of 15');
-    assert.equal(get(r, 'Last Verified'), '10/01/2026');
-    assert.equal(get(r, 'Updated At'), '10/20/2026, 10:05');
+    assert.equal(get(r, 'Last Verified'), 46296, '2026-10-01 as a Sheets serial number');
+    near(get(r, 'Updated At'), 46315 + (10 * 60 + 5) / 1440, '10/20/2026 10:05 Los Angeles time (17:05Z) as a fractional serial');
   }
   // row 1 = Primary site (even though it is listed second), row 2 = the plant, parsed from a feed-style address
   assert.deepEqual([r1[DS], r1[DCITY], r1[DSTATE], r1[DZIP]], ['100 Main St', 'Oakland', '', '']);
@@ -57,6 +58,17 @@ test('rowsFor: one row for the Primary site, one per additional site, contacts b
   assert.deepEqual([get(r2, 'Delivery Contact'), get(r2, 'Delivery Phone')], ['Rae Lin', '(510) 555-0144'], 'receiving contact of that site');
   // no money columns ever
   assert.ok(!HEADER.some(h => /balance|terms|credit|price|deposit|fee/i.test(h)));
+});
+
+test('date cells are serial numbers; text cells stay strings (ZIP leading zero, "=" names never formulas under RAW)', () => {
+  assert.equal(dateSerial('2026-10-01'), 46296); assert.equal(dateSerial('1899-12-31'), 1); assert.equal(dateSerial(null), '');
+  near(stampSerial(new Date('2026-01-15T20:30:00Z'), 'America/Los_Angeles'), dateSerial('2026-01-15') + (12 * 60 + 30) / 1440, 'PST');
+  near(stampSerial(new Date('2026-10-21T02:00:00Z'), 'America/Los_Angeles'), dateSerial('2026-10-20') + 19 / 24, 'the company-tz day, not the UTC day');
+  const [r] = rowsFor({ ...C, name: '=HYPERLINK("x")', billing_zip: '02134', last_verified: null }, [], [], { license_expires: '2027-03-31', psa_effective: '2026-01-02' }, 'America/Los_Angeles', NOW);
+  assert.equal(r[col('Customer')], '=HYPERLINK("x")'); assert.equal(r[col('ZIP')], '02134');
+  assert.deepEqual([r[col('License Expires')], r[col('PSA Effective')], r[col('Last Verified')]], [dateSerial('2027-03-31'), dateSerial('2026-01-02'), '']);
+  const dateCols = new Set([col('License Expires'), col('PSA Effective'), col('Last Verified'), col('Updated At')]);
+  r.forEach((v, i) => assert.equal(typeof v, dateCols.has(i) && v !== '' ? 'number' : 'string', HEADER[i] + ' type'));
 });
 
 test('rowsFor: a customer with no sites still gets one row; no Primary label → first site', () => {
@@ -117,6 +129,14 @@ test('rebuild clears A2:AG then writes every row under the header', async () => 
   assert.ok(vals.slice(1).every(v => v.length === 33));
   assert.ok(!vals.some(v => v[0] === 'ADC-0099'), 'a customer that no longer exists is gone after rebuild');
   assert.ok(!seen.some(s => s.url.includes(':append')), 'rebuild never appends');
+  const fmt = seen.findIndex(s => s.url.endsWith(':batchUpdate') && s.body && s.body.requests);
+  assert.ok(fmt > put, 'date formats applied after the write');
+  assert.deepEqual(seen[fmt].body.requests.map(q => [q.repeatCell.range, q.repeatCell.cell.userEnteredFormat.numberFormat, q.repeatCell.fields]), [
+    [{ sheetId: 777, startRowIndex: 1, startColumnIndex: 26, endColumnIndex: 27 }, { type: 'DATE', pattern: 'mm/dd/yyyy' }, 'userEnteredFormat.numberFormat'],
+    [{ sheetId: 777, startRowIndex: 1, startColumnIndex: 29, endColumnIndex: 30 }, { type: 'DATE', pattern: 'mm/dd/yyyy' }, 'userEnteredFormat.numberFormat'],
+    [{ sheetId: 777, startRowIndex: 1, startColumnIndex: 31, endColumnIndex: 32 }, { type: 'DATE', pattern: 'mm/dd/yyyy' }, 'userEnteredFormat.numberFormat'],
+    [{ sheetId: 777, startRowIndex: 1, startColumnIndex: 32, endColumnIndex: 33 }, { type: 'DATE_TIME', pattern: 'mm/dd/yyyy hh:mm' }, 'userEnteredFormat.numberFormat']]);
+  assert.equal(typeof vals[1][31], 'number', 'Last Verified written as a number');
 });
 
 test('incremental: an existing (Customer ID, Delivery Street) row is rewritten in place, never duplicated', async () => {

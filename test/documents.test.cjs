@@ -103,7 +103,21 @@ const CID = '11111111-1111-4111-8111-111111111111';
   assert.deepEqual(docPosts.filter(x=>x.action==='sign'), [{company:'adchem',action:'sign',id:lic.id}], 'one /api/docs sign call');
   assert.ok(T.dispatch_log.slice(logN).some(l=>l.what==='file_view'&&l.detail.documentId===lic.id), 'the file view is logged by the server');
   const opened = await page.evaluate(()=>window.__opened);
-  assert.equal(opened.length, 1); assert.match(opened[0], /object\/sign\/dispatch-docs\/adchem\/document\/customer\//, 'window.open got the signed URL');
+  assert.deepEqual(opened.map(u=>u===''?'':'url'), ['','url'], 'a blank tab opened in the click; the stub returns null, so the signed URL is opened after the sign');
+  assert.match(opened[1], /object\/sign\/dispatch-docs\/adchem\/document\/customer\//, 'window.open got the signed URL');
+  // a real browser returns the tab: it is pointed at the signed URL, and closed again when the sign fails
+  await page.evaluate(()=>{ window.__tabs=[]; window.open=(u)=>{ const t={opened:u,location:null,closed:false,close(){ this.closed=true; }}; window.__tabs.push(t); return t; }; });
+  await page.click(`${licRow} [data-open="${lic.id}"]`); await page.waitForTimeout(600);
+  const tabs1 = await page.evaluate(()=>window.__tabs.map(t=>({opened:t.opened,location:String(t.location),closed:t.closed})));
+  assert.equal(tabs1.length, 1, 'one tab, opened in the click'); assert.equal(tabs1[0].opened, '');
+  assert.match(tabs1[0].location, /object\/sign\/dispatch-docs\/adchem\/document\/customer\//, 'the tab is sent to the signed URL'); assert.equal(tabs1[0].closed, false);
+  await page.route('**/api/docs', r=>r.fulfill({status:404,contentType:'application/json',body:JSON.stringify({error:{code:'not_found',message:'Document not found.'}})}));
+  await page.click(`${licRow} [data-open="${lic.id}"]`); await page.waitForTimeout(600);
+  const tabs2 = await page.evaluate(()=>window.__tabs.map(t=>({location:t.location,closed:t.closed})));
+  assert.deepEqual(tabs2[1], {location:null,closed:true}, 'a failed sign closes the blank tab');
+  assert.match(flat(await page.textContent('#banners')), /Couldn't open the file.*Document not found/);
+  await page.unroute('**/api/docs');
+  await page.evaluate(()=>{ window.open=(u)=>{ window.__opened.push(u); return null; }; });
   // a resale certificate typed from paper: no file, still a real record with a status
   const rsExp = plusDays(today, 120);
   await page.click('#btnAddDoc'); await page.waitForTimeout(150);
@@ -232,7 +246,7 @@ const CID = '11111111-1111-4111-8111-111111111111';
   await m.click('#btnAddDoc'); await m.waitForTimeout(150); await m.selectOption('#df_type','psa'); await m.waitForTimeout(50);
   assert.equal(await m.evaluate(()=>document.documentElement.scrollWidth), 390, 'no horizontal overflow with the document form open');
 
-  // the upload failure's 400 is the only console error
-  assert.deepEqual(pages.flatMap(p=>p.errs).filter(e=>!/status of 400/.test(e)), [], 'unexpected page errors');
+  // the upload failure's 400 and the failed sign's 404 are the only console errors
+  assert.deepEqual(pages.flatMap(p=>p.errs).filter(e=>!/status of (400|404)/.test(e)), [], 'unexpected page errors');
   } finally { await b.close(); await fake.stop(); }
 })().then(()=>{ console.log('documents.test.cjs: ok'); }, e=>{ console.error(e); process.exit(1); });

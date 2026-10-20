@@ -189,9 +189,12 @@ async function deleteDoc(){
 }
 async function openDocFile(id,btn){
   if(!canViewDocs()) return;
+  // the tab opens now, inside the click, so a popup blocker lets it through; it is pointed at the signed URL once that comes back
+  var w=null; try{ w=window.open("","_blank"); }catch(e){ w=null; }
   if(btn) btn.disabled=true;
-  try{ var r=await DDB.sign(id); if(!r||!r.url) throw new Error("No link came back for the file."); window.open(r.url,"_blank"); }
-  catch(err){ banner("bad","Couldn't open the file","<div>"+esc(err.message)+"</div>"); }
+  try{ var r=await DDB.sign(id); if(!r||!r.url) throw new Error("No link came back for the file.");
+    if(w) w.location=r.url; else window.open(r.url,"_blank"); }
+  catch(err){ if(w) try{ w.close(); }catch(e){} banner("bad","Couldn't open the file","<div>"+esc(err.message)+"</div>"); }
   if(btn) btn.disabled=false;
 }
 

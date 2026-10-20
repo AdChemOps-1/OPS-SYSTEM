@@ -339,3 +339,8 @@ do $$ begin   -- one statement, so the flag and the writes share a transaction h
     where company = 'adchem' and not (data ? 'warnings');
   perform set_config('dispatch.set_warnings', '', true);
 end $$;
+
+-- Applied: pending — run the security advisor after the real apply and record the result here. Development branches are not
+-- available on this project, so this file was tested only inside a rolled-back transaction (supabase/tests/006_policies.sql),
+-- which the advisor cannot see. Expected: no new "RLS disabled" or "function callable by anon" findings for dispatch_* — every new
+-- table above enables RLS and every new function revokes execute from anon and public.

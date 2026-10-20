@@ -294,3 +294,7 @@ update public.dispatch_members set is_super_admin = true where company = 'adchem
 -- findings for dispatch_* — every new table above enables RLS and every new function revokes execute from anon and public.
 -- View: each text test in dispatch_customer_status is wrapped in coalesce(col,'') (10/20/26, Task 9) so profile_complete stays
 -- non-null even if a text field arrives null; the customer import also writes blank text as '' rather than null.
+-- Applied to adchem-hours 10/20/26 17:01 UTC (migration version 20261020170155). Security advisor run right after: no findings on any
+-- dispatch_* table, function or view. Remaining warnings are the eight AdChem Time functions callable by anon (open item 9 in the
+-- project notes, untouched here), the informational "signed-in users can execute SECURITY DEFINER function" list (the intended
+-- RPCs and helpers), and leaked-password protection (a dashboard toggle, deploy step 3).

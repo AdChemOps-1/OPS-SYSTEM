@@ -441,10 +441,50 @@
           <span class="hint" id="custSaveHint"></span>
         </div>
       </div>
-      <div id="cpane-sites" class="card pad sec" hidden><p class="hint" style="margin:0">Delivery sites for this customer.</p></div>
-      <div id="cpane-contacts" class="card pad sec" hidden><p class="hint" style="margin:0">Contacts for this customer.</p></div>
-      <div id="cpane-activity" class="card pad sec" hidden><p class="hint" style="margin:0">Calls, emails, visits and drivers' notes.</p></div>
-      <div id="cpane-history" class="card pad sec" hidden><p class="hint" style="margin:0">Every change to this customer, field by field.</p></div>
+      <div id="cpane-sites" class="card pad sec" hidden>
+        <div class="cpane-head"><p class="hint" style="margin:0">Delivery sites for this customer. Open a site to edit its receiving details and per-hub route notes.</p>
+          <button class="btn primary sm" id="btnAddSite" type="button">Add site</button></div>
+        <div id="siteNew" class="site-new" hidden></div>
+        <div id="siteList"></div>
+      </div>
+      <div id="cpane-contacts" class="card pad sec" hidden>
+        <div class="cpane-head"><p class="hint" style="margin:0">Contacts for this customer, grouped by role.</p>
+          <button class="btn primary sm" id="btnAddContact" type="button">Add contact</button></div>
+        <div id="contactForm" class="site-new" hidden>
+          <div class="grid three">
+            <label class="f">Type<select id="cf_type"><option value="receiving">Receiving</option><option value="site_manager">Site manager</option><option value="ordering">Ordering</option><option value="safety">Safety</option><option value="billing">Billing</option><option value="ap">Accounts payable</option><option value="owner">Owner</option><option value="other">Other</option></select></label>
+            <label class="f">First name<input id="cf_first" autocomplete="off"></label>
+            <label class="f">Last name<input id="cf_last" autocomplete="off"></label>
+          </div>
+          <div class="grid three" style="margin-top:11px">
+            <label class="f">Phone<input id="cf_phone" type="tel" autocomplete="off"></label>
+            <label class="f">Email<input id="cf_email" type="email" autocomplete="off"></label>
+            <label class="f">Preferred method<select id="cf_method"><option value="">— any —</option><option value="phone">Phone</option><option value="email">Email</option><option value="text">Text</option></select></label>
+          </div>
+          <div class="grid two" style="margin-top:11px">
+            <label class="f">Site<select id="cf_site"><option value="">— the customer as a whole —</option></select></label>
+            <label class="cust-chk" style="align-self:end;min-height:42px"><input id="cf_cc" type="checkbox"> CC on statements</label>
+          </div>
+          <label class="f" style="margin-top:11px">Notes<textarea id="cf_notes"></textarea></label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn primary" id="cfSave" type="button">Save contact</button><button class="btn" id="cfCancel" type="button">Cancel</button></div>
+        </div>
+        <div id="contactList"></div>
+      </div>
+      <div id="cpane-activity" class="card pad sec" hidden>
+        <form id="actAdd" class="site-new" autocomplete="off">
+          <div class="grid two">
+            <label class="f">Method<select id="act_method"><option value="call">Call</option><option value="email">Email</option><option value="text">Text</option><option value="in_person">In person</option></select></label>
+            <label class="f">Contact<select id="act_contact"><option value="">— none —</option></select></label>
+          </div>
+          <label class="f" style="margin-top:11px">What happened<textarea id="act_summary" placeholder="Called receiving to confirm Tuesday's delivery window"></textarea></label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px"><button class="btn primary" type="submit">Log activity</button><span class="hint" id="actHint"></span></div>
+        </form>
+        <div id="actList"></div>
+      </div>
+      <div id="cpane-history" class="card pad sec" hidden>
+        <p class="hint" style="margin:0 0 10px">Every change to this customer, its sites, contacts and activity, field by field. Newest first.</p>
+        <div id="histList"></div>
+      </div>
     </div>
   </section>
 

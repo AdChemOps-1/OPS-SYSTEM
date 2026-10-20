@@ -1,4 +1,4 @@
-/* AdChem Ops — Customers screen: list, new customer, profile (tabs profile|sites|contacts|activity|history).
+/* AdChem Ops — Customers screen: list, new customer, customer page (tabs profile|sites|contacts|activity|history).
    Loaded after app.js and uses its globals (state, $, esc, banner, supa, sbErr, hubBy). Every query is scoped by state.company.
    Writes need the manage_customers permission (or super admin); the database enforces it and the buttons follow canManageCustomers(). */
 
@@ -28,6 +28,8 @@ const CDB={
   },
   async sitesFor(customerId){ return sbErr(await supa.from("dispatch_sites").select("*").eq("company",state.company).eq("customer_id",customerId).order("site_label")); },
   async saveSite(s){ sbErr(await supa.from("dispatch_sites").upsert(Object.assign({},s,{company:state.company,updated_by:state.session.user.id}),{onConflict:"company,site_key"})); },
+  // an edit to an existing site: only the changed fields (an upsert would have to carry every NOT NULL column of a feed row)
+  async updateSite(siteKey,fields){ sbErr(await supa.from("dispatch_sites").update(Object.assign({},fields,{updated_by:state.session.user.id})).eq("company",state.company).eq("site_key",siteKey)); },
   async hubNotesFor(siteKey){ return sbErr(await supa.from("dispatch_site_hub_notes").select("*").eq("company",state.company).eq("site_key",siteKey).order("hub")); },
   async saveHubNote(n){ sbErr(await supa.from("dispatch_site_hub_notes").upsert(Object.assign({},n,{company:state.company,updated_by:state.session.user.id,updated_at:new Date().toISOString()}),{onConflict:"company,site_key,hub"})); },
   async contactsFor(customerId){ return sbErr(await supa.from("dispatch_contacts").select("*").eq("company",state.company).eq("customer_id",customerId).order("last_name")); },
@@ -94,7 +96,8 @@ function drawCustomers(){
 
 /* ---------- customer page ---------- */
 function setCustTab(t){ state.custTab=t;
-  CUST_TABS.forEach(function(k){ $("ctab-"+k).setAttribute("aria-selected",k===t?"true":"false"); $("cpane-"+k).hidden=(k!==t); }); }
+  CUST_TABS.forEach(function(k){ $("ctab-"+k).setAttribute("aria-selected",k===t?"true":"false"); $("cpane-"+k).hidden=(k!==t); });
+  if(t!=="profile") loadCustPane(t); }
 function custHeader(){
   var c=state.customer||{};
   $("custTitle").textContent=c.name||"New customer";
@@ -116,6 +119,7 @@ async function openCustomer(id){
   $("btnSaveCustomer").disabled=ro;
   $("custSaveHint").textContent=ro?"You can view this customer. Changing it needs the Manage customers permission.":"";
   $("custToolbar").hidden=true; $("custList").closest(".card").hidden=true; $("custPage").hidden=false;
+  state.openSite=null; $("siteNew").hidden=true; $("siteNew").innerHTML=""; $("contactForm").hidden=true; state.cfEdit=null;
   setCustTab("profile"); custHeader();
   if(state.customer.id&&!state.customer._new){ try{ var s=await CDB.statusFor(state.customer.id); if(s){ state.custStatus[s.id]=s; custHeader(); } }catch(e){} }
   window.scrollTo(0,0);
@@ -147,6 +151,218 @@ async function saveCustomer(){
   }catch(e){ banner("bad","Customer not saved","<div>"+esc(e.message)+"</div>"); }
   btn.textContent="Save customer"; btn.disabled=!canManageCustomers();
 }
+
+/* ---------- panes: sites, contacts, activity, history (each reloads when its tab is opened) ---------- */
+const SITE_FIELDS=[["site_label","Label"],["addr","Street address"],["city","City"],["hub","Hub"],["receiving_hours","Receiving hours"],["gate_code","Gate code"],
+  ["parking_unloading","Parking / unloading"],["hazmat_restrictions","Hazmat restrictions"],["container_notes","Container notes"],["special_instructions","Special instructions"],["last_verified","Last verified"]];
+const CONTACT_TYPES=[["receiving","Receiving"],["site_manager","Site manager"],["ordering","Ordering"],["safety","Safety"],["billing","Billing"],["ap","Accounts payable"],["owner","Owner"],["other","Other"]];
+const ACT_METHODS={call:"Call",email:"Email",text:"Text",in_person:"In person",app:"Driver app"};
+const HIST_SKIP={company:true,id:true,created_at:true,created_by:true,customer_id:true};
+state.custSites=[]; state.custHubNotes={}; state.custContacts=[]; state.custActs=[]; state.openSite=null; state.cfEdit=null;
+
+function custSaved(){ var c=state.customer; return !!(c&&c.id&&!c._new); }
+function custStill(c){ return !!(state.customer&&state.customer.id===c.id); }
+function canApproveNotes(){ var me=state.me||{}; return !!(me.isSuper||(me.perms||{}).approve_driver_notes); }
+function siteHash(k){ var h=5381; for(var i=0;i<k.length;i++) h=((h*33)^k.charCodeAt(i))>>>0; return h.toString(36); }
+function custEmpty(t,b){ return '<div class="empty"><b>'+esc(t)+"</b>"+esc(b)+"</div>"; }
+function notSavedYet(){ return custEmpty("Save the customer first","Sites, contacts and activity can be added once the customer has an ID."); }
+function whoName(uid){ if(!uid) return "—";
+  var u=(state.users||[]).find(function(x){return x.user_id===uid;}); if(u) return u.name||u.email||uid;
+  if(state.session&&uid===state.session.user.id) return (state.me&&(state.me.name||state.me.email))||"you";
+  return String(uid).slice(0,8); }
+function fmtWhen(t){ if(!t) return ""; var d=new Date(t); return isNaN(d)?String(t):d.toLocaleString([], {month:"numeric",day:"numeric",year:"2-digit",hour:"numeric",minute:"2-digit"}); }
+function contactName(x){ return [x.first_name,x.last_name].filter(Boolean).join(" ")||"(no name)"; }
+function telHref(p){ return "tel:"+String(p||"").replace(/[^0-9+]/g,""); }
+async function refreshComplete(){ if(!custSaved()) return;
+  try{ var s=await CDB.statusFor(state.customer.id); if(s){ state.custStatus[s.id]=s; custHeader(); } }
+  catch(e){ banner("warn","Couldn't refresh profile completeness","<div>"+esc(e.message)+"</div>",{autoclose:6000}); } }
+async function loadCustPane(t){
+  if(!state.customer) return;
+  try{ if(t==="sites") await renderSites(); else if(t==="contacts") await renderContacts(); else if(t==="activity") await renderActivity(); else if(t==="history") await renderHistory(); }
+  catch(e){ banner("bad","Couldn't load "+esc(t),"<div>"+esc(e.message)+"</div>"); }
+}
+
+/* sites */
+function siteForm(s,notes,isNew){
+  var dis=canManageCustomers()?"":" disabled", key=isNew?"":s.site_key, pre=isNew?"s_new":"s_"+siteHash(key);
+  var field=function(f){ var k=f[0], v=s[k]==null?"":String(s[k]), id=pre+"_"+k, lab='<label class="f'+(k==="special_instructions"?" spanall":"")+'" for="'+esc(id)+'">'+esc(f[1]);
+    if(k==="hub"){ var codes=state.hubs.map(function(h){return h.code;}); if(v&&codes.indexOf(v)<0) codes.push(v);
+      return lab+'<select id="'+esc(id)+'" data-k="hub"'+dis+'><option value="">— none —</option>'+codes.map(function(c){return '<option value="'+esc(c)+'"'+(c===v?" selected":"")+">"+esc(c)+"</option>";}).join("")+"</select></label>"; }
+    if(k==="special_instructions") return lab+'<textarea id="'+esc(id)+'" data-k="'+k+'"'+dis+">"+esc(v)+"</textarea></label>";
+    return lab+'<input id="'+esc(id)+'" data-k="'+k+'" value="'+esc(v)+'" autocomplete="off"'+(k==="last_verified"?' type="date"':"")+dis+"></label>"; };
+  var byHub={}; (notes||[]).forEach(function(n){ byHub[n.hub]=n; });
+  var hubRows=state.hubs.map(function(h){ var n=byHub[h.code]||{}, sv=n.scale_on_route===true?"yes":n.scale_on_route===false?"no":"";
+    var opt=function(v,t){ return '<option value="'+v+'"'+(v===sv?" selected":"")+">"+t+"</option>"; };
+    return '<div class="hubnote" data-hubnote="'+esc(h.code)+'"><b class="mono">'+esc(h.code)+"</b>"+
+      '<select data-n="scale_on_route" aria-label="Scale on the route from '+esc(h.code)+'"'+dis+">"+opt("","Scale: unknown")+opt("yes","Scale: yes")+opt("no","Scale: no")+"</select>"+
+      '<input data-n="route_notes" aria-label="Route notes from '+esc(h.code)+'" placeholder="Route notes from '+esc(h.code)+'" value="'+esc(n.route_notes||"")+'"'+dis+"></div>"; }).join("");
+  return '<form id="'+esc(pre)+'" data-site="'+esc(key)+'" autocomplete="off">'+
+    (isNew?'<div style="display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin-bottom:10px"><b>New site</b><label class="cust-chk"><input id="sSameAsBilling" type="checkbox"> Same as billing address</label></div>':
+      '<div class="hint" style="margin-bottom:8px">'+esc(key)+(s.code_raw?" · feed code "+esc(s.code_raw):"")+"</div>")+
+    '<div class="grid three">'+SITE_FIELDS.map(field).join("")+"</div>"+
+    '<h3 class="sec-h" style="margin-top:14px">Route notes by hub</h3>'+hubRows+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn primary" type="button" data-save-site'+dis+">Save site</button>"+
+    (isNew?'<button class="btn" type="button" data-cancel-site>Cancel</button>':"")+"</div></form>";
+}
+async function renderSites(){
+  var c=state.customer, ro=!canManageCustomers();
+  $("btnAddSite").disabled=ro||!custSaved();
+  if(!custSaved()){ $("siteNew").hidden=true; $("siteList").innerHTML=notSavedYet(); return; }
+  var sites=await CDB.sitesFor(c.id)||[]; if(!custStill(c)) return;
+  var notes=await Promise.all(sites.map(function(s){ return CDB.hubNotesFor(s.site_key); })); if(!custStill(c)) return;
+  state.custSites=sites; state.custHubNotes={}; sites.forEach(function(s,i){ state.custHubNotes[s.site_key]=notes[i]||[]; });
+  $("siteList").innerHTML=sites.length?sites.map(function(s){
+    return '<details class="site-card"'+(state.openSite===s.site_key?" open":"")+"><summary><b>"+esc(s.site_label||s.site_key)+'</b><span class="chip k-none">'+esc(s.hub||"no hub")+"</span>"+
+      '<span class="hint">'+esc([s.addr,s.city].filter(Boolean).join(", ")||"no address")+"</span></summary>"+siteForm(s,state.custHubNotes[s.site_key],false)+"</details>"; }).join("")
+    :custEmpty("No sites yet",ro?"Someone with the Manage customers permission can add them.":"Press Add site to add the first delivery site.");
+}
+function openNewSite(){
+  if(!canManageCustomers()||!custSaved()) return;
+  var h=$("siteNew"); h.innerHTML=siteForm({hub:state.customer.primary_hub||""},[],true); h.hidden=false; $("s_new_site_label").focus();
+}
+function closeNewSite(){ $("siteNew").hidden=true; $("siteNew").innerHTML=""; }
+function readSiteForm(form){
+  var f={}; form.querySelectorAll("[data-k]").forEach(function(el){ f[el.getAttribute("data-k")]=el.value.trim(); }); f.last_verified=f.last_verified||null;
+  var notes=[]; form.querySelectorAll("[data-hubnote]").forEach(function(r){ var sv=r.querySelector('[data-n="scale_on_route"]').value;
+    notes.push({hub:r.getAttribute("data-hubnote"),scale_on_route:sv==="yes"?true:sv==="no"?false:null,route_notes:r.querySelector('[data-n="route_notes"]').value.trim()}); });
+  return {fields:f,notes:notes};
+}
+async function saveSiteForm(form,btn){
+  if(!canManageCustomers()||!custSaved()||!form) return;
+  var c=state.customer, key=form.getAttribute("data-site"), isNew=!key, v=readSiteForm(form);
+  if(isNew){
+    if(!v.fields.site_label){ banner("warn","Label the site first","<div>A label such as <b>Primary</b> or <b>Plant 2</b> names the site.</div>",{autoclose:6000}); form.querySelector('[data-k="site_label"]').focus(); return; }
+    key=c.customer_id+" — "+v.fields.site_label.replace(/,/g," ").replace(/\s+/g," ").trim();   // keys stay comma-free (they go through in.(…) filters)
+    if(state.custSites.some(function(s){return s.site_key===key;})){ banner("warn","That site already exists","<div>"+esc(key)+" is already one of this customer's sites. Pick another label.</div>",{autoclose:6000}); return; }
+  }
+  btn.disabled=true; btn.textContent="Saving…";
+  try{
+    if(isNew) await CDB.saveSite(Object.assign({},v.fields,{site_key:key,customer:c.name,customer_id:c.id,code_raw:"",code:null,synced_at:new Date().toISOString()}));
+    else { var was=state.custSites.find(function(s){return s.site_key===key;})||{}, ch={};
+      Object.keys(v.fields).forEach(function(k){ if((was[k]==null?"":String(was[k]))!==(v.fields[k]==null?"":String(v.fields[k]))) ch[k]=v.fields[k]; });
+      if(Object.keys(ch).length) await CDB.updateSite(key,ch); }
+    var old=isNew?[]:(state.custHubNotes[key]||[]);
+    for(var i=0;i<v.notes.length;i++){ var n=v.notes[i], o=old.find(function(x){return x.hub===n.hub;});
+      var changed=o?(o.scale_on_route!==n.scale_on_route||(o.route_notes||"")!==n.route_notes):(n.scale_on_route!==null||!!n.route_notes);
+      if(changed) await CDB.saveHubNote(Object.assign({site_key:key},n)); }
+    state.openSite=key; if(isNew) closeNewSite();
+    banner("good","Site saved","<div>"+esc(key)+"</div>",{autoclose:4000});
+    await renderSites(); await refreshComplete();
+  }catch(e){ banner("bad","Site not saved","<div>"+esc(e.message)+"</div>"); btn.disabled=false; btn.textContent="Save site"; }
+}
+
+/* contacts */
+function fillSelect(id,opts,first){ var el=$(id), cur=el.value; el.innerHTML='<option value="">'+esc(first)+"</option>"+opts.map(function(o){return '<option value="'+esc(o[0])+'">'+esc(o[1])+"</option>";}).join("");
+  if(opts.some(function(o){return o[0]===cur;})) el.value=cur; }
+async function renderContacts(){
+  var c=state.customer, ro=!canManageCustomers();
+  $("btnAddContact").disabled=ro||!custSaved();
+  if(!custSaved()){ $("contactForm").hidden=true; $("contactList").innerHTML=notSavedYet(); return; }
+  var r=await Promise.all([CDB.contactsFor(c.id),CDB.sitesFor(c.id)]); if(!custStill(c)) return;
+  state.custContacts=r[0]||[]; state.custSites=r[1]||[];
+  fillSelect("cf_site",state.custSites.map(function(s){return [s.site_key,s.site_label||s.site_key];}),"— the customer as a whole —");
+  drawContacts();
+}
+function drawContacts(){
+  var ro=!canManageCustomers(), list=state.custContacts, sites={}; state.custSites.forEach(function(s){ sites[s.site_key]=s.site_label||s.site_key; });
+  var row=function(x){ var off=x.active===false;
+    return '<div class="ct-row" data-contact="'+esc(x.id)+'"'+(off?' style="opacity:.6"':"")+'><div class="ct-name"><b>'+esc(contactName(x))+"</b>"+(off?' <span class="chip st stop">inactive</span>':"")+
+      (x.cc_on_statements?' <span class="chip k-none">cc statements</span>':"")+(x.site_key?' <span class="hint">· '+esc(sites[x.site_key]||x.site_key)+"</span>":"")+
+      (x.notes?'<div class="hint">'+esc(x.notes)+"</div>":"")+"</div>"+
+      (x.phone?'<a href="'+esc(telHref(x.phone))+'">'+esc(x.phone)+"</a>":"")+(x.email?'<a href="mailto:'+esc(x.email)+'">'+esc(x.email)+"</a>":"")+
+      (x.preferred_method?'<span class="hint">prefers '+esc(x.preferred_method)+"</span>":"")+
+      (ro?"":'<span style="display:flex;gap:6px"><button class="btn sm" type="button" data-edit-contact="'+esc(x.id)+'">Edit</button><button class="btn sm" type="button" data-deact="'+esc(x.id)+'">'+(off?"Reactivate":"Deactivate")+"</button></span>")+"</div>"; };
+  var html=CONTACT_TYPES.map(function(t){ var g=list.filter(function(x){return (x.type||"other")===t[0];}); if(!g.length) return "";
+    return '<div class="ct-group" data-ctype="'+esc(t[0])+'">'+esc(t[1])+"</div>"+g.map(row).join(""); }).join("");
+  $("contactList").innerHTML=html||custEmpty("No contacts yet",ro?"Someone with the Manage customers permission can add them.":"Press Add contact to add receiving, billing and other contacts.");
+}
+function openContactForm(x){
+  if(!canManageCustomers()||!custSaved()) return;
+  state.cfEdit=x?x.id:null; x=x||{};
+  $("cf_type").value=x.type||"receiving"; $("cf_first").value=x.first_name||""; $("cf_last").value=x.last_name||""; $("cf_phone").value=x.phone||""; $("cf_email").value=x.email||"";
+  $("cf_method").value=x.preferred_method||""; $("cf_site").value=x.site_key||""; $("cf_cc").checked=!!x.cc_on_statements; $("cf_notes").value=x.notes||"";
+  $("cfSave").textContent=x.id?"Save changes":"Save contact"; $("contactForm").hidden=false; $("cf_first").focus();
+}
+async function saveContactForm(){
+  if(!canManageCustomers()||!custSaved()) return;
+  var v=function(id){ return $(id).value.trim(); };
+  var row={customer_id:state.customer.id,type:$("cf_type").value,first_name:v("cf_first"),last_name:v("cf_last"),phone:v("cf_phone"),email:v("cf_email"),
+    preferred_method:$("cf_method").value||null,site_key:$("cf_site").value||null,cc_on_statements:$("cf_cc").checked,notes:v("cf_notes")};
+  if(!row.first_name&&!row.last_name&&!row.phone&&!row.email){ banner("warn","Add a name, phone or email","<div>A contact needs at least one way to identify or reach them.</div>",{autoclose:6000}); $("cf_first").focus(); return; }
+  if(state.cfEdit) row.id=state.cfEdit; else row.active=true;
+  var btn=$("cfSave"); btn.disabled=true;
+  try{ await CDB.saveContact(row); $("contactForm").hidden=true; state.cfEdit=null;
+    banner("good","Contact saved","<div>"+esc(contactName(row))+"</div>",{autoclose:4000});
+    await renderContacts(); await refreshComplete(); }
+  catch(e){ banner("bad","Contact not saved","<div>"+esc(e.message)+"</div>"); }
+  btn.disabled=false;
+}
+async function toggleContact(id){
+  if(!canManageCustomers()) return; var x=state.custContacts.find(function(c){return c.id===id;}); if(!x) return;
+  try{ await CDB.saveContact({id:id,active:x.active===false}); await renderContacts(); await refreshComplete(); }
+  catch(e){ banner("bad","Contact not changed","<div>"+esc(e.message)+"</div>"); }
+}
+
+/* activity */
+async function renderActivity(){
+  var c=state.customer, ro=!canManageCustomers()||!custSaved();
+  $("actAdd").querySelectorAll("select,textarea,button").forEach(function(el){ el.disabled=ro; });
+  $("actHint").textContent=!custSaved()?"Save the customer first.":!canManageCustomers()?"Logging activity needs the Manage customers permission.":"";
+  if(!custSaved()){ $("actList").innerHTML=notSavedYet(); return; }
+  var r=await Promise.all([CDB.activityFor(c.id),CDB.contactsFor(c.id)]); if(!custStill(c)) return;
+  state.custActs=r[0]||[]; state.custContacts=r[1]||[];
+  fillSelect("act_contact",state.custContacts.filter(function(x){return x.active!==false;}).map(function(x){return [x.id,contactName(x)];}),"— none —");
+  var cts={}; state.custContacts.forEach(function(x){ cts[x.id]=x; });
+  var mayReview=canApproveNotes();
+  var pend=state.custActs.filter(function(a){return a.status==="pending";}), rest=state.custActs.filter(function(a){return a.status!=="pending";});
+  $("actList").innerHTML=pend.concat(rest).map(function(a){ var p=a.status==="pending", drv=a.kind==="driver_note";
+    return '<div class="act-row'+(p?" pending":"")+'" data-act="'+esc(a.id)+'"><span class="chip st">'+esc(ACT_METHODS[a.method]||a.method||"note")+"</span>"+
+      '<div class="act-sum">'+(drv?'<span class="chip '+(a.status==="rejected"?"st stop":a.status==="approved"?"st done":"warn")+'">driver note · '+esc(a.status)+"</span> ":"")+esc(a.summary)+
+      (a.contact_id&&cts[a.contact_id]?' <span class="hint">with '+esc(contactName(cts[a.contact_id]))+"</span>":"")+
+      (a.status==="rejected"?'<div class="hint">Reason: '+esc(a.rejection_reason||"none given")+" — "+esc(whoName(a.reviewed_by))+"</div>":"")+"</div>"+
+      '<span class="hint">'+esc(whoName(a.logged_by))+" · "+esc(fmtWhen(a.occurred_at))+"</span>"+
+      (p&&mayReview?'<span style="display:flex;gap:6px"><button class="btn sm primary" type="button" data-approve="'+esc(a.id)+'">Approve</button><button class="btn sm danger" type="button" data-reject="'+esc(a.id)+'">Reject</button></span>':"")+"</div>"; }).join("")
+    ||custEmpty("No activity yet","Calls, emails, visits and drivers' notes show here, newest first.");
+}
+async function addNote(){
+  if(!canManageCustomers()||!custSaved()) return;
+  var sum=$("act_summary").value.trim();
+  if(!sum){ banner("warn","Say what happened","<div>The activity needs a short summary.</div>",{autoclose:6000}); $("act_summary").focus(); return; }
+  try{ await CDB.addActivity({customer_id:state.customer.id,method:$("act_method").value,summary:sum,contact_id:$("act_contact").value||null,kind:"note",status:"approved"});
+    $("act_summary").value=""; await renderActivity(); }
+  catch(e){ banner("bad","Activity not logged","<div>"+esc(e.message)+"</div>"); }
+}
+async function reviewDriverNote(id,ok){
+  if(!canApproveNotes()) return;
+  var reason=null;
+  if(!ok){ reason=prompt("Why is this driver's note rejected?"); if(reason===null) return; reason=reason.trim();
+    if(!reason){ banner("warn","Give a reason","<div>A rejected note needs a reason so the driver knows why.</div>",{autoclose:6000}); return; } }
+  try{ await CDB.reviewNote(id,ok?"approved":"rejected",reason); await renderActivity(); }
+  catch(e){ banner("bad","Note not "+(ok?"approved":"rejected"),"<div>"+esc(e.message)+"</div>"); }
+}
+
+/* history */
+function histVal(v){ if(v==null||v==="") return "—"; var s=typeof v==="object"?JSON.stringify(v):String(v); return s.length>120?s.slice(0,117)+"…":s; }
+async function renderHistory(){
+  var c=state.customer;
+  if(!custSaved()){ $("histList").innerHTML=custEmpty("No history yet","Changes are recorded once the customer is saved."); return; }
+  var r=await Promise.all([CDB.historyFor(c.id),CDB.contactsFor(c.id)]); if(!custStill(c)) return;
+  var cts={}; (r[1]||[]).forEach(function(x){ cts[x.id]=x; });
+  var ctx=function(l){ var id=l.row_id||"";
+    if(l.table_name==="dispatch_sites") return "site "+id+" › ";
+    if(l.table_name==="dispatch_site_hub_notes"){ var i=id.lastIndexOf("/"); return "site "+id.slice(0,i)+" › hub "+id.slice(i+1)+" › "; }
+    if(l.table_name==="dispatch_contacts") return "contact "+(cts[id]?contactName(cts[id]):id.slice(0,8))+" › ";
+    if(l.table_name==="dispatch_customer_activity") return "activity › ";
+    return ""; };
+  var lines=[];
+  (r[0]||[]).forEach(function(l){ var ch=l.changes||{}, ins=l.detail&&l.detail.op==="insert", head=fmtWhen(l.at)+" · "+whoName(l.who)+" · "+ctx(l);
+    Object.keys(ch).forEach(function(k){ var d=ch[k]||{};
+      if(HIST_SKIP[k]&&!(k==="customer_id"&&l.table_name==="dispatch_customers")) return;   // keys and ids are noise; a customer's own ID is not
+      if(ins&&(d.to==null||d.to==="")) return;
+      lines.push('<div class="hist-line" data-table="'+esc(l.table_name||"")+'">'+esc(head)+'<span class="mono">'+esc(k)+"</span>: "+esc(histVal(d.from))+" → "+esc(histVal(d.to))+"</div>"); }); });
+  $("histList").innerHTML=lines.join("")||custEmpty("No history yet","Changes to this customer, its sites, contacts and activity show here.");
+}
+
 function wireCustomers(){
   $("tab-customers").onclick=function(){ setTab("customers"); };
   ["custSearch"].forEach(function(k){ $(k).oninput=drawCustomers; });
@@ -155,6 +371,20 @@ function wireCustomers(){
   $("btnSaveCustomer").onclick=saveCustomer;
   $("btnCloseCustomer").onclick=closeCustomer;
   CUST_TABS.forEach(function(k){ $("ctab-"+k).onclick=function(){ setCustTab(k); }; });
+  $("btnAddSite").onclick=openNewSite;
+  ["siteNew","siteList"].forEach(function(id){ var h=$(id);
+    h.onsubmit=function(ev){ ev.preventDefault(); };
+    h.onclick=function(ev){ var b=ev.target.closest("[data-save-site]"); if(b){ saveSiteForm(b.closest("form[data-site]"),b); return; } if(ev.target.closest("[data-cancel-site]")) closeNewSite(); }; });
+  $("siteNew").onchange=function(ev){ if(ev.target.id!=="sSameAsBilling"||!ev.target.checked||!state.customer) return;
+    $("s_new_addr").value=state.customer.billing_street||""; $("s_new_city").value=state.customer.billing_city||""; };
+  $("btnAddContact").onclick=function(){ openContactForm(null); };
+  $("cfSave").onclick=saveContactForm;
+  $("cfCancel").onclick=function(){ $("contactForm").hidden=true; state.cfEdit=null; };
+  $("contactList").onclick=function(ev){ var d=ev.target.closest("[data-deact]"); if(d){ toggleContact(d.getAttribute("data-deact")); return; }
+    var e=ev.target.closest("[data-edit-contact]"); if(e) openContactForm(state.custContacts.find(function(x){return x.id===e.getAttribute("data-edit-contact");})); };
+  $("actAdd").onsubmit=function(ev){ ev.preventDefault(); addNote(); };
+  $("actList").onclick=function(ev){ var a=ev.target.closest("[data-approve]"); if(a){ reviewDriverNote(a.getAttribute("data-approve"),true); return; }
+    var r=ev.target.closest("[data-reject]"); if(r) reviewDriverNote(r.getAttribute("data-reject"),false); };
   var list=$("custList");
   list.onclick=function(ev){ var r=ev.target.closest("[data-cust]"); if(r) openCustomer(r.getAttribute("data-cust")); };
   list.onkeydown=function(ev){ if(ev.key!=="Enter"&&ev.key!==" ") return; var r=ev.target.closest("[data-cust]"); if(r){ ev.preventDefault(); openCustomer(r.getAttribute("data-cust")); } };

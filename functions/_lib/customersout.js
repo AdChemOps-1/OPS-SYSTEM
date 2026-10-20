@@ -79,9 +79,11 @@ const groupBy = (rows, k) => { const m = new Map(); for (const r of rows || []) 
 const keyOf = (r) => s(r[0]) + "\u0000" + s(r[DELIVERY_STREET]);
 
 // Write the given customers' rows (or every customer, when rebuild is true). customerIds are dispatch_customers.id uuids.
-// Incremental: a sheet row with the same (Customer ID, Delivery Street) is rewritten in place, new pairs are appended, and
-// rows of a listed customer whose site is gone (merged, relabelled, deleted) are blanked, so no pair is ever duplicated.
-// Rows are never deleted here: row numbers then never shift under a concurrent write. Rebuild compacts the blanks away.
+// Incremental: a sheet row with the same (Customer ID, Delivery Street) is rewritten in place, new pairs are written at explicit
+// rows just below the last existing row, and rows of a listed customer whose site is gone (merged, relabelled, deleted) are
+// blanked, so no pair is ever duplicated. Rows are never deleted or inserted here (no :append: a blanked row can end the
+// table Sheets searches, so an append could land mid-sheet and shift every row below it): row numbers never shift under a
+// concurrent write. Rebuild compacts the blanks away.
 // Values are written RAW: ZIPs and phones keep their leading zeros and a name starting with "=" is never a formula.
 export async function writeCustomersOut(env, db, ctx, company, customerIds, rebuild) {
   const sheetId = sheetIdFrom(ctx.settings.customersOutSheetId);
@@ -146,8 +148,11 @@ export async function writeCustomersOut(env, db, ctx, company, customerIds, rebu
   const stale = [...index.values()].flat().sort((a, b) => a - b);
   const blank = new Array(HEADER.length).fill("");
   for (const r of stale) updates.push({ range: `'${TAB}'!A${r}:${LAST}${r}`, values: [blank] });
-  if (updates.length) await gfetch(env, `${base}/values:batchUpdate`, json({ valueInputOption: "RAW", data: updates }));
-  if (appends.length) await gfetch(env, `${base}/values/${rng(`A2:${LAST}`)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, json({ values: appends }));
+  // new rows go below the last row read (A2 is row 2), in the same write
+  const first = (existing && existing.values || []).length + 2;
+  const added = appends.map((row, i) => ({ range: `'${TAB}'!A${first + i}:${LAST}${first + i}`, values: [row] }));
+  const data = updates.concat(added);
+  if (data.length) await gfetch(env, `${base}/values:batchUpdate`, json({ valueInputOption: "RAW", data }));
   return { ok: true, updated: updates.length - stale.length, appended: appends.length, cleared: stale.length };
 }
 

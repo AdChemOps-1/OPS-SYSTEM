@@ -150,22 +150,40 @@ test('incremental: an existing (Customer ID, Delivery Street) row is rewritten i
   assert.ok(db.some(d => d.url.startsWith('dispatch_customer_status?select=*&company=eq.adchem')), 'status read from the view');
 });
 
-test('incremental: a new site is appended; a row for a site the customer no longer has is blanked, never deleted (I2)', async () => {
+test('incremental: a new site is written at an explicit row below the data; a row for a site the customer no longer has is blanked, never deleted (I2)', async () => {
   const sheet = [blankRow('ADC-0007', '100 Main St'), blankRow('ADC-0001', ''), blankRow('ADC-0007', '9 Old Merged Rd'), blankRow('ADC-0007', '8 Older Rd')];
   const { r, seen } = await run(sheet, ['c1000000-0000-4000-8000-000000000001'], false, DATA);
   assert.deepEqual(r, { ok: true, updated: 1, appended: 1, cleared: 2 });
+  assert.ok(!seen.some(s => s.url.includes(':append')), 'no :append: it could land in a blanked gap and shift the rows below');
   assert.ok(!seen.some(s => s.body && s.body.requests), 'no spreadsheet batchUpdate: nothing is deleted, so no row number shifts');
   assert.ok(!seen.some(s => s.url.includes('fields=sheets.properties')), 'no gid lookup needed');
   const bu = seen.filter(s => s.url.endsWith('/values:batchUpdate'));
-  assert.equal(bu.length, 1, 'one values write: the update and the blanks together');
+  assert.equal(bu.length, 1, 'one values write: the update, the blanks and the new row together');
+  assert.equal(bu[0].body.valueInputOption, 'RAW');
   const blank = new Array(33).fill('');
-  assert.deepEqual(bu[0].body.data.map(d => [d.range, d.values[0][0], d.values[0][11]]), [[`'${TAB}'!A2:AG2`, 'ADC-0007', '100 Main St'], [`'${TAB}'!A4:AG4`, '', ''], [`'${TAB}'!A5:AG5`, '', '']]);
-  assert.deepEqual(bu[0].body.data.slice(1).map(d => d.values), [[blank], [blank]], 'stale rows 4 and 5 blanked A..AG');
-  const ap = seen.find(s => s.url.includes(':append'));
-  assert.equal(ap.body.values.length, 1); assert.equal(ap.body.values[0][11], '6201 Shellmound St');
-  const order = seen.map(s => s.url.endsWith('/values:batchUpdate') ? 'update' : s.url.includes(':append') ? 'append' : null).filter(Boolean);
-  assert.deepEqual(order, ['update', 'append']);
+  assert.deepEqual(bu[0].body.data.map(d => [d.range, d.values[0][0], d.values[0][11]]), [[`'${TAB}'!A2:AG2`, 'ADC-0007', '100 Main St'], [`'${TAB}'!A4:AG4`, '', ''], [`'${TAB}'!A5:AG5`, '', ''], [`'${TAB}'!A6:AG6`, 'ADC-0007', '6201 Shellmound St']]);
+  assert.deepEqual(bu[0].body.data.slice(1, 3).map(d => d.values), [[blank], [blank]], 'stale rows 4 and 5 blanked A..AG');
+  assert.ok(seen.filter(s => s.method !== 'GET').every(s => s.url.endsWith('/values:batchUpdate')), 'the only write is the one values:batchUpdate');
   assert.ok(!seen.some(s => s.url.includes(':clear')), 'incremental never clears the tab');
+});
+
+test('incremental: several new rows go at consecutive rows after the last existing row', async () => {
+  const sheet = [blankRow('ADC-0001', ''), blankRow('ADC-0002', '')];
+  const { r, seen } = await run(sheet, ['c1000000-0000-4000-8000-000000000001'], false, DATA);
+  assert.deepEqual(r, { ok: true, updated: 0, appended: 2, cleared: 0 });
+  assert.ok(!seen.some(s => s.url.includes(':append')), 'no :append');
+  const bu = seen.filter(s => s.url.endsWith('/values:batchUpdate'));
+  assert.equal(bu.length, 1);
+  assert.deepEqual(bu[0].body.data.map(d => [d.range, d.values.length, d.values[0][0], d.values[0][11]]), [[`'${TAB}'!A4:AG4`, 1, 'ADC-0007', '100 Main St'], [`'${TAB}'!A5:AG5`, 1, 'ADC-0007', '6201 Shellmound St']]);
+});
+
+test('incremental: with no data rows on the sheet, the first new row lands at A2', async () => {
+  const { r, seen } = await run([], ['c1000000-0000-4000-8000-000000000001'], false, DATA);
+  assert.deepEqual(r, { ok: true, updated: 0, appended: 2, cleared: 0 });
+  assert.ok(!seen.some(s => s.url.includes(':append')), 'no :append');
+  const bu = seen.filter(s => s.url.endsWith('/values:batchUpdate'));
+  assert.equal(bu.length, 1);
+  assert.deepEqual(bu[0].body.data.map(d => [d.range, d.values[0][11]]), [[`'${TAB}'!A2:AG2`, '100 Main St'], [`'${TAB}'!A3:AG3`, '6201 Shellmound St']]);
 });
 
 test('incremental: a blanked row is ignored on the next write; rebuild compacts it away', async () => {

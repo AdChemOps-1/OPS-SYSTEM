@@ -59,7 +59,7 @@ The dedicated user reaches them through its group membership, so share with the 
 | `EXPIRY_SECRET` | any long random string (e.g. 40+ characters from a password manager) — type **Secret**. The daily job sends it; without it the job is refused |
 | `APP_URL` | optional — the app's address (e.g. `https://ops.adchem.pro`), linked at the foot of the expiry email |
 
-Redeploy. Open the app as an admin → **Setup → Google connection → Check again**. Six lines — token, AR Command Center, calendars, Drive, Gmail, Orders Out — should each read *ok*. The Gmail line should say *can send as orders@adchem.pro*; the calendars line names each hub's calendar once they are set on **Setup → Delivery calendars**, and says which one the server can see but not write to. If one doesn't, the message says which share, scope or setting is missing. Two more lines check Supabase: *Documents bucket* (the private `dispatch-docs` bucket) and *Expiry email* (reads *ok — 0 14 * * \** once the daily job is scheduled — see the README, *Expiry email*).
+Redeploy. Open the app as an admin → **Setup → Google connection → Check again**. Six lines — token, AR Command Center, calendars, Drive, Gmail, Orders Out — should each read *ok*. The Gmail line should say *can send as orders@adchem.pro*; the calendars line names each hub's calendar once they are set on **Setup → Delivery calendars**, and says which one the server can see but not write to. If one doesn't, the message says which share, scope or setting is missing. Two more lines check Supabase: *Documents bucket* (the private `dispatch-docs` bucket) and *Expiry email* (reads *ok — daily 06:00 Pacific* once the daily job is scheduled — see the README, *Expiry email*).
 
 ## A second company
 

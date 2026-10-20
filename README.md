@@ -44,7 +44,7 @@ Every morning at 06:00 Pacific (07:00 during daylight time; `0 14 * * *` UTC) a 
 select dispatch_schedule_expiry('<app url>/api/expiry', '<EXPIRY_SECRET>');
 ```
 
-**Setup → Warnings → Send expiry email now** sends the same email for the current company straight away. **Setup → Google connection** shows *Expiry email: ok — 0 14 * * \** once the job is scheduled. Each email sent is logged (`expiry_email`).
+**Setup → Warnings → Send expiry email now** sends the same email for the current company straight away. **Setup → Google connection** shows *Expiry email: ok — daily 06:00 Pacific* once the job is scheduled. Each email sent is logged (`expiry_email`).
 
 ## Deploy (first time)
 

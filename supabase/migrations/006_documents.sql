@@ -264,15 +264,29 @@ begin
   end;
 end $fn$;
 
+-- Health (admins): the private dispatch-docs bucket. storage.buckets has no select policy for members, so the server cannot read
+-- the bucket as the caller; this answers 'ok', 'Bucket not found' or 'bucket is public'.
+create or replace function public.dispatch_docs_bucket_ok() returns text language plpgsql stable security definer set search_path = public as $fn$
+declare pub boolean;
+begin
+  if not exists (select 1 from public.dispatch_companies() c where public.dispatch_is_admin_in(c) or public.dispatch_is_super_in(c)) then raise exception 'not allowed'; end if;
+  select b.public into pub from storage.buckets b where b.id = 'dispatch-docs';
+  if not found then return 'Bucket not found'; end if;
+  if pub then return 'bucket is public'; end if;
+  return 'ok';
+end $fn$;
+
 -- ---------- execute: RPCs and the view helpers to authenticated; the subject check and trigger functions to no one ----------
 grant execute on function public.dispatch_warn_days(text), public.dispatch_customer_doc_status(text,uuid), public.dispatch_doc_subject_name(text,text,text),
   public.dispatch_set_warnings(text,int,jsonb,text[]), public.dispatch_approve_capture(uuid,jsonb), public.dispatch_reject_capture(uuid,text),
-  public.dispatch_cron_status() to authenticated;
+  public.dispatch_cron_status(), public.dispatch_docs_bucket_ok() to authenticated;
 grant execute on function public.dispatch_schedule_expiry(text,text) to service_role;
 revoke execute on function public.dispatch_schedule_expiry(text,text) from authenticated;
 revoke execute on function public.dispatch_warn_days(text), public.dispatch_customer_doc_status(text,uuid), public.dispatch_doc_subject_name(text,text,text),
   public.dispatch_set_warnings(text,int,jsonb,text[]), public.dispatch_approve_capture(uuid,jsonb), public.dispatch_reject_capture(uuid,text),
-  public.dispatch_schedule_expiry(text,text), public.dispatch_cron_status() from anon, public;
+  public.dispatch_schedule_expiry(text,text), public.dispatch_cron_status(), public.dispatch_docs_bucket_ok() from anon, public;
+-- the expiry email's cron path reads dispatch_documents_due (security_invoker) as the service role, which then needs its two helpers
+grant execute on function public.dispatch_warn_days(text), public.dispatch_doc_subject_name(text,text,text) to service_role;
 revoke execute on function public.dispatch_doc_subject_ok(text,text,text), public.dispatch_documents_subject_guard(), public.dispatch_documents_capture_guard(),
   public.dispatch_settings_warnings_guard()
   from anon, authenticated, public;

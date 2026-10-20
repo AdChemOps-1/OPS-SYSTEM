@@ -8,7 +8,7 @@ declare
   dr uuid := gen_random_uuid(); nm uuid := gen_random_uuid();
   cust uuid; l1 uuid := gen_random_uuid(); l2 uuid := gen_random_uuid(); l3 uuid := gen_random_uuid(); psa uuid := gen_random_uuid();
   cdl uuid := gen_random_uuid(); cap uuid := gen_random_uuid(); cap2 uuid := gen_random_uuid(); cap3 uuid := gen_random_uuid();
-  n int; s text; ok boolean; d record; v record; lg record; dt date; j bigint;
+  n int; s text; ok boolean; j_u uuid; d record; v record; lg record; dt date; j bigint;
 begin
   -- ---- setup (as the database owner; RLS does not apply) ----
   insert into public.companies (id, name, short_name) values ('north', 'North Test Co', 'North') on conflict (id) do nothing;
@@ -260,6 +260,40 @@ begin
   if not found or lg.table_name <> 'dispatch_company_settings' or lg.row_id <> 'adchem' or lg.changes->'warnDays'->>'from' <> '30' or lg.changes->'warnDays'->>'to' <> '45' then
     raise exception 'warnings log row wrong: %', lg.changes; end if;
   select count(*) into n from public.dispatch_log where what = 'warnings' and who = sa;  if n <> 1 then raise exception 'warnings logged % times (want 1)', n; end if;
+
+  -- ---- health: the documents bucket (dispatch_docs_bucket_ok), admins and super admins only ----
+  perform set_config('request.jwt.claims', json_build_object('sub', sa, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  s := public.dispatch_docs_bucket_ok();
+  reset role;
+  if s is distinct from 'ok' then raise exception 'bucket check for sa: %', s; end if;
+  -- the bucket is global: an admin of any company (nm, of north) gets the same answer
+  perform set_config('request.jwt.claims', json_build_object('sub', nm, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  s := public.dispatch_docs_bucket_ok();
+  reset role;
+  if s is distinct from 'ok' then raise exception 'bucket check for nm: %', s; end if;
+  foreach j_u in array array[co, cn, dr] loop
+    perform set_config('request.jwt.claims', json_build_object('sub', j_u, 'role', 'authenticated')::text, true);
+    set local role authenticated;
+    ok := false;
+    begin perform public.dispatch_docs_bucket_ok();
+    exception when others then ok := sqlerrm = 'not allowed'; end;
+    reset role;
+    if not ok then raise exception 'member % read the bucket check', j_u; end if;
+  end loop;
+  perform set_config('request.jwt.claims', '', true);
+
+  -- ---- the expiry email's cron path reads dispatch_documents_due as the service role: every company's rows, names hidden ----
+  insert into public.dispatch_documents (company, subject_type, subject_id, doc_type, number, expires) values
+    ('adchem', 'company', 'adchem', 'dot_registration', 'T006-DUE-A', current_date + 3),
+    ('north', 'company', 'north', 'other', 'T006-DUE-N', current_date - 2);
+  set local role service_role;
+  select count(distinct company), count(*) filter (where subject_name is not null) into n, j
+    from public.dispatch_documents_due where number in ('T006-DUE-A', 'T006-DUE-N');
+  reset role;
+  if n <> 2 then raise exception 'service role sees due rows of % companies (want 2)', n; end if;
+  if j <> 0 then raise exception 'service role got % subject names (want none)', j; end if;
 
   -- ---- expiry cron: the job is global, so no member (not even a super admin) schedules it; the owner does, and re-running replaces it ----
   foreach dr in array array[co, sa, nm] loop   -- dr reused as a loop variable from here on

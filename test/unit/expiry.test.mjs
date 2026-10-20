@@ -177,7 +177,7 @@ async function runHealth({ bucket, cron }) {
     if (u.includes('/rest/v1/dispatch_users')) return ok([{ email: 'boss@adchem.pro', name: 'Boss' }]);
     if (u.includes('/rest/v1/dispatch_company_settings')) return ok([{ data: {} }]);
     if (u.includes('/rest/v1/companies')) return ok([{ id: 'adchem', name: 'AdChem, LLC', short_name: 'AdChem', data: {} }]);
-    if (u.endsWith('/storage/v1/bucket/dispatch-docs')) return bucket;
+    if (u.endsWith('/rest/v1/rpc/dispatch_docs_bucket_ok')) return bucket;
     if (u.endsWith('/rest/v1/rpc/dispatch_cron_status')) return cron;
     return new Response('nope', { status: 404 });
   };
@@ -187,14 +187,17 @@ async function runHealth({ bucket, cron }) {
   } finally { globalThis.fetch = real; }
 }
 test('health: docsBucket and expiryCron', async () => {
-  const a = await runHealth({ bucket: ok({ id: 'dispatch-docs', name: 'dispatch-docs', public: false }), cron: ok([{ jobname: 'dispatch-expiry-email', schedule: '0 14 * * *', active: true }]) });
-  assert.equal(a.j.checks.docsBucket, 'ok'); assert.equal(a.j.checks.expiryCron, 'ok — 0 14 * * *');
-  const b = a.calls.find(c => c.url.endsWith('/storage/v1/bucket/dispatch-docs'));
-  assert.deepEqual([b.headers.apikey, b.headers.authorization], ['anon', 'Bearer tok'], 'as the caller');
-  const z = await runHealth({ bucket: new Response(JSON.stringify({ statusCode: '404', error: 'Bucket not found', message: 'Bucket not found' }), { status: 400 }), cron: ok([]) });
+  const a = await runHealth({ bucket: ok('ok'), cron: ok([{ jobname: 'dispatch-expiry-email', schedule: '0 14 * * *', active: true }]) });
+  assert.equal(a.j.checks.docsBucket, 'ok'); assert.equal(a.j.checks.expiryCron, 'ok — daily 06:00 Pacific');
+  const b = a.calls.find(c => c.url.endsWith('/rest/v1/rpc/dispatch_docs_bucket_ok'));
+  assert.equal(b.method, 'POST'); assert.deepEqual([b.headers.apikey, b.headers.authorization], ['anon', 'Bearer tok'], 'as the caller');
+  assert.ok(!a.calls.some(c => c.url.includes('/storage/v1/')), 'no storage API read');
+  const z = await runHealth({ bucket: ok('Bucket not found'), cron: ok([]) });
   assert.equal(z.j.checks.docsBucket, 'Bucket not found'); assert.equal(z.j.checks.expiryCron, 'not scheduled');
-  const e = await runHealth({ bucket: ok({ id: 'other' }), cron: new Response('{"message":"not allowed"}', { status: 400 }) });
-  assert.notEqual(e.j.checks.docsBucket, 'ok'); assert.equal(e.j.checks.expiryCron, 'not scheduled', 'an RPC error reads not scheduled');
-  const off = await runHealth({ bucket: ok({ id: 'dispatch-docs' }), cron: ok([{ jobname: 'dispatch-expiry-email', schedule: '0 14 * * *', active: false }]) });
-  assert.equal(off.j.checks.expiryCron, 'not scheduled', 'an inactive job is not scheduled');
+  const e = await runHealth({ bucket: new Response('{"message":"not allowed"}', { status: 400 }), cron: new Response('{"message":"not allowed"}', { status: 400 }) });
+  assert.match(e.j.checks.docsBucket, /not allowed/, 'an RPC error gives its message'); assert.equal(e.j.checks.expiryCron, 'not scheduled', 'an RPC error reads not scheduled');
+  const off = await runHealth({ bucket: ok('bucket is public'), cron: ok([{ jobname: 'dispatch-expiry-email', schedule: '0 14 * * *', active: false }]) });
+  assert.equal(off.j.checks.docsBucket, 'bucket is public'); assert.equal(off.j.checks.expiryCron, 'not scheduled', 'an inactive job is not scheduled');
+  const other = await runHealth({ bucket: ok('ok'), cron: ok([{ jobname: 'dispatch-expiry-email', schedule: '30 13 * * *', active: true }]) });
+  assert.equal(other.j.checks.expiryCron, 'ok — 30 13 * * *', 'another schedule is shown as is');
 });

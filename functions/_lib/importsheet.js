@@ -276,9 +276,12 @@ export function applyPlan(plan, existing, importUserId) {
     return d;
   };
   // customer numbers: rows without one (a site turned into a customer) take max + 1
+  // (a row with no sheet ID reuses an existing customer of the same name first, so committing the same plan twice never numbers it twice)
   let max = Math.max(0, ...exC.map(c => num(c.customer_id)), ...items.map(i => num(normId(i.customer_id))));
+  const byName = new Map(); for (const c of exC) if (!byName.has(lc(c.name))) byName.set(lc(c.name), c);
   const cidOf = new Map();
-  for (const it of items) { const d = decided(it); if (d === "customer" || d === "related") cidOf.set(it.key, normId(it.customer_id) || fmtId(++max)); }
+  for (const it of items) { const d = decided(it); if (d === "customer" || d === "related") { const e = byName.get(lc(it.name));
+    cidOf.set(it.key, normId(it.customer_id) || (e && normId(e.customer_id)) || fmtId(++max)); } }
   const seen = new Set();
   for (const [k, id] of [...cidOf]) { if (seen.has(id)) { const n = fmtId(++max); cidOf.set(k, n); problems.push(`${byKey.get(k).name}: Customer ID ${id} is used twice; ${n} is assigned.`); } seen.add(cidOf.get(k)); }
 
@@ -312,12 +315,16 @@ export function applyPlan(plan, existing, importUserId) {
     return mine.find(x => street && streetKey(x.addr) === streetKey(street))
       || exS.find(x => x.site_key === key && (!x.customer_id || x.customer_id === uuid))
       || (label === "Primary" && mine.find(x => x.site_label === "Primary" && (blank(x.addr) || x.unconfirmed)))
+      || (!street && (mine.find(x => x.site_label === label) || (mine.length === 1 ? mine[0] : null)))   // no street to compare: the customer's site by label, or its only one
       || null;
   };
   const siteKeyOf = new Map();
   for (const it of items) {
     const d = decided(it); if (d === "skip") continue;
-    const f = it.fields; if (blank(f.delivery_street)) continue;
+    const f = it.fields;
+    // no delivery street: still import Delivery Notes (site fields, route notes, site contacts) onto the customer's site
+    const notesOnly = blank(f.delivery_street) && (SITE_OPS.some(k => !blank(f[k])) || !blank(f.site_last_verified) || (it.hubNotes || []).length || (it.contacts || []).some(c => c.at_site));
+    if (blank(f.delivery_street) && !notesOnly) continue;
     const owner = d === "site" ? byKey.get(it.siteOf) : it, cid = d === "site" ? cidOf.get(it.siteOf) : cidOf.get(it.key);
     if (!cid || !known.has(cid)) { problems.push(`${it.name}: its customer is skipped, so the site is not imported.`); continue; }
     const label = d === "site" ? (s(f.site_label) || s(f.delivery_city) || "Site") : "Primary";
@@ -325,6 +332,7 @@ export function applyPlan(plan, existing, importUserId) {
     const addr = street + (city && s(f.delivery_state) && s(f.delivery_zip) ? `, ${city} ${s(f.delivery_state)} ${s(f.delivery_zip)}` : "");
     const e = siteFor(cid, [nameOf.get(cid), owner.name, it.name], label, street);
     const key = e ? e.site_key : cid + " — " + label; claimed.add(key); siteKeyOf.set(it.key, key);
+    if (!e && notesOnly) problems.push(`${it.name}: no delivery address in the workbook; its Delivery Notes go on a new site “${key}” with a blank address. Add the address on the customer's Sites tab.`);
     const edited = appEdited(e, uid);
     const prev = sites.get(key);
     const row = { site_key: key, customer_ref: cid, customer: (e && s(e.customer)) || nameOf.get(cid) || owner.name,

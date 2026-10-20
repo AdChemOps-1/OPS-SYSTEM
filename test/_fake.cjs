@@ -109,6 +109,7 @@ function fakeImport(T,b,IMP,calls){
   const now=new Date().toISOString(), applied=IMP.applyPlan(b.plan,existing,'u1');
   const src=r=>({...r,import_source:{...(r.import_source||{}),sheetId,at:now}});
   upsertRows(T,'dispatch_customers',IMP.bindRows({customers:applied.customers},new Map(),co,now).customers.map(src),['company','customer_id']);
+  const next=Math.max(Number(st.data.nextCustomerNumber)||1,applied.nextCustomerNumber); st.data={...st.data,nextCustomerNumber:next};   // right after the customers, as the route does
   const ids=new Map(mine('dispatch_customers').map(c=>[c.customer_id,c.id])), rows=IMP.bindRows(applied,ids,co,now);
   rows.parents.forEach(p=>{ const c=T.dispatch_customers.find(x=>x.company===co&&x.customer_id===p.customer_id); if(c){ const was={...c}; c.parent_customer_id=p.parent_customer_id; audit(T,'dispatch_customers',was,c); } });
   upsertRows(T,'dispatch_sites',rows.sites.map(src),['company','site_key']);
@@ -116,7 +117,6 @@ function fakeImport(T,b,IMP,calls){
   upsertRows(T,'dispatch_contacts',rows.contacts.map(src),['id']);
   const counts={customers:rows.customers.length,sites:rows.sites.length,hubNotes:rows.siteHubNotes.length,contacts:rows.contacts.length,skipped:b.plan.items.filter(i=>i&&i.decision==='skip').length};
   T.dispatch_log.push({id:T.dispatch_log.length+1,at:now,company:co,who:'u1',what:'import',detail:{counts,sheetId}});
-  const next=Math.max(Number(st.data.nextCustomerNumber)||1,applied.nextCustomerNumber); st.data={...st.data,nextCustomerNumber:next};
   calls.push(['customers-out',{rebuild:true}]);
   return {code:200,body:{ok:true,counts,nextCustomerNumber:next,problems:applied.problems,customersOut:st.data.customersOutSheetId?{ok:true,rebuilt:counts.customers}:{ok:false,skipped:'No Customers Out sheet is set on Setup.'}}}; }
 

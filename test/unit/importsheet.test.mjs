@@ -275,9 +275,10 @@ test('/api/import commit: customers first, then sites, hub notes, contacts; log;
   assert.equal(r.json.nextCustomerNumber, 9);
   assert.match(r.json.customersOut.skipped, /No Customers Out sheet/, 'Customers Out attempted (best effort)');
   const order = r.writes.map(w => w.t + (w.q.includes('on_conflict') ? '?' + w.q.split('on_conflict=')[1] : '') + ' ' + w.method);
-  assert.deepEqual(order, ['dispatch_customers?company,customer_id POST', 'dispatch_customers PATCH', 'dispatch_sites?company,site_key POST',
-    'dispatch_site_hub_notes?company,site_key,hub POST', 'dispatch_contacts POST', 'dispatch_log POST', 'dispatch_company_settings?company POST']);
-  const [cust, parent, sites, , contacts, log, settings] = r.writes;
+  assert.deepEqual(order, ['dispatch_customers?company,customer_id POST', 'dispatch_company_settings?company POST', 'dispatch_customers PATCH', 'dispatch_sites?company,site_key POST',
+    'dispatch_site_hub_notes?company,site_key,hub POST', 'dispatch_contacts POST', 'dispatch_log POST']);
+  assert.ok(order.indexOf('dispatch_company_settings?company POST') < order.indexOf('dispatch_sites?company,site_key POST'), 'numbering moves before any site/note/contact write');
+  const [cust, settings, parent, sites, , contacts, log] = r.writes;
   assert.ok(cust.body.every(c => c.company === 'adchem' && c.updated_by === 'u1' && c.import_source.sheetId === '1IMPORTworkbookAAAAAAAAAA' && !('id' in c) && !('parent_ref' in c)));
   assert.match(parent.q, /customer_id=eq\.ADC-0007/); assert.deepEqual(parent.body, { parent_customer_id: 'uuid-ADC-0001' });
   assert.ok(sites.body.every(s => /^uuid-ADC-/.test(s.customer_id) && s.company === 'adchem'));
@@ -285,4 +286,48 @@ test('/api/import commit: customers first, then sites, hub notes, contacts; log;
   assert.deepEqual(log.body, [{ company: 'adchem', who: 'u1', what: 'import', detail: { counts: r.json.counts, sheetId: '1IMPORTworkbookAAAAAAAAAA' } }]);
   assert.equal(settings.body[0].data.nextCustomerNumber, 9); assert.equal(settings.body[0].data.tz, 'America/Los_Angeles', 'other settings kept');
   for (const w of r.writes) assert.ok(!/credit|balance|terms|price|deposit|"fee/i.test(JSON.stringify(w.body)), 'no money in ' + w.t);
+});
+
+// ---------- review fixes ----------
+const BIO_NOTES = ['Bio-Rad', 'EB', '8–4', 'Dana Fox', '(510) 555-0160', '#77', '', 'No', 'Via 80', '', '', '', '', '', ''];
+
+test('Delivery Notes for a customer with no delivery street: a new blank-address Primary site + a problem', () => {
+  const wb = clone(WB); wb.delivery.push(BIO_NOTES);
+  const plan = planImport(wb, NONE);
+  assert.equal(byName(plan, 'Bio-Rad').fields.gate_code, '#77');
+  const out = applyPlan(plan, NONE, 'u1');
+  const site = out.sites.find(x => x.customer_ref === 'ADC-0008');
+  assert.ok(site, 'a site is created for the notes');
+  assert.deepEqual([site.site_key, site.addr, site.gate_code, site.receiving_hours, site.hub], ['ADC-0008 — Primary', '', '#77', '8–4', 'EB']);
+  assert.deepEqual(out.siteHubNotes.filter(n => n.site_key === 'ADC-0008 — Primary').map(n => [n.hub, n.scale_on_route, n.route_notes]), [['EB', false, 'Via 80']]);
+  assert.ok(out.contacts.some(c => c.customer_ref === 'ADC-0008' && c.type === 'receiving' && c.site_key === 'ADC-0008 — Primary'), 'site contact linked to the site');
+  assert.ok(out.problems.some(p => /Bio-Rad/.test(p) && /no delivery address/.test(p)), out.problems.join(' | '));
+});
+
+test('Delivery Notes for a customer with no delivery street land on its existing feed site', () => {
+  const wb = clone(WB); wb.delivery.push(BIO_NOTES);
+  const feed = { company: 'adchem', site_key: 'Bio-Rad — Primary', customer: 'Bio-Rad', customer_id: null, code_raw: 'COD - Collect before unloading', code: 'COD',
+    addr: '2000 Alfred Nobel Dr, Hercules CA 94547', unconfirmed: true, city: 'Hercules', hub: '', site_label: 'Primary', updated_by: null };
+  const existing = { ...NONE, sites: [feed] };
+  const out = applyPlan(planImport(wb, existing), existing, 'u1');
+  const bio = out.sites.filter(x => x.customer_ref === 'ADC-0008');
+  assert.deepEqual(bio.map(x => [x.site_key, x.addr, x.gate_code, x.code_raw]), [['Bio-Rad — Primary', '2000 Alfred Nobel Dr, Hercules CA 94547', '#77', 'COD - Collect before unloading']]);
+  assert.deepEqual(out.siteHubNotes.filter(n => n.site_key === 'Bio-Rad — Primary').map(n => [n.hub, n.route_notes]), [['EB', 'Via 80']]);
+  assert.ok(!out.problems.some(p => /Bio-Rad/.test(p)), 'nothing to report');
+});
+
+test('applyPlan twice (first result fed back as existing): a flipped row with no sheet ID keeps its number', () => {
+  const plan = planImport(WB, NONE);
+  const la = byName(plan, 'VKGL Manufacturing - LA'); la.customer_id = ''; la.decision = 'customer';
+  const out1 = applyPlan(plan, NONE, 'u1');
+  const id1 = out1.customers.find(c => c.name === 'VKGL Manufacturing - LA').customer_id;
+  assert.equal(id1, 'ADC-0009');
+  const ids = new Map(out1.customers.map(c => [c.customer_id, 'uuid-' + c.customer_id]));
+  const b = bindRows(out1, ids, 'adchem', '2026-10-20T00:00:00Z');
+  const again = { customers: b.customers.map(c => ({ ...c, id: ids.get(c.customer_id) })), sites: b.sites, contacts: b.contacts, hubNotes: b.siteHubNotes };
+  const out2 = applyPlan(plan, again, 'u1');
+  assert.equal(out2.customers.find(c => c.name === 'VKGL Manufacturing - LA').customer_id, id1, 'same customer_id on the retry');
+  assert.equal(out2.customers.length, out1.customers.length);
+  assert.equal(out2.contacts.length, 0, 'no duplicate contacts');
+  assert.equal(out2.nextCustomerNumber, 10);
 });

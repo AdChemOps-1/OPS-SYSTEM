@@ -65,11 +65,17 @@ export async function onRequestPost({ request, env }) {
     // 1. customers, then their ids
     const head = bindRows({ customers: applied.customers }, new Map(), company, now);
     await batches(head.customers.map(src), rows => db.upsert("dispatch_customers", rows, "company,customer_id"));
+    // 2. numbering, straight away: if a later write fails, the trigger still never hands out an ID the import just used
+    //    (fresh read, never below what the company already uses)
+    const srow = (await db.get(`dispatch_company_settings?select=data&company=eq.${co}`) || [])[0];
+    const data = (srow && srow.data) || {};
+    const next = Math.max(Number(data.nextCustomerNumber) || 1, applied.nextCustomerNumber);
+    await db.upsert("dispatch_company_settings", [{ company, data: { ...data, nextCustomerNumber: next }, updated_at: now }], "company");
     const ids = new Map((await db.get(`dispatch_customers?select=id,customer_id&company=eq.${co}&limit=20000`) || []).map(r => [r.customer_id, r.id]));
     const rows = bindRows(applied, ids, company, now);
     for (const p of rows.parents)
       await db.patch("dispatch_customers", `company=eq.${co}&customer_id=eq.${encodeURIComponent(p.customer_id)}`, { parent_customer_id: p.parent_customer_id });
-    // 2. sites, hub notes, contacts
+    // 3. sites, hub notes, contacts
     await batches(rows.sites.map(src), r => db.upsert("dispatch_sites", r, "company,site_key"));
     await batches(rows.siteHubNotes, r => db.upsert("dispatch_site_hub_notes", r, "company,site_key,hub"));
     await batches(rows.contacts.map(src), r => db.insert("dispatch_contacts", r));
@@ -77,11 +83,6 @@ export async function onRequestPost({ request, env }) {
     const counts = { customers: rows.customers.length, sites: rows.sites.length, hubNotes: rows.siteHubNotes.length, contacts: rows.contacts.length,
       skipped: plan.items.filter(i => i && i.decision === "skip").length };
     await db.insert("dispatch_log", [{ company, who: user.id, what: "import", detail: { counts, sheetId } }]);
-    // 3. numbering: never below what the company already uses (fresh read, so a number taken meanwhile is kept)
-    const srow = (await db.get(`dispatch_company_settings?select=data&company=eq.${co}`) || [])[0];
-    const data = (srow && srow.data) || {};
-    const next = Math.max(Number(data.nextCustomerNumber) || 1, applied.nextCustomerNumber);
-    await db.upsert("dispatch_company_settings", [{ company, data: { ...data, nextCustomerNumber: next }, updated_at: now }], "company");
     // 4. Customers Out, best effort
     const customersOut = await tryWriteCustomersOut(env, db, { ...ctx, settings: { ...ctx.settings, ...data } }, company, [], true);
     return json({ ok: true, counts, nextCustomerNumber: next, problems: applied.problems, customersOut });

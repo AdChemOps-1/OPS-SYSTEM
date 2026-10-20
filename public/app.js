@@ -240,7 +240,24 @@ function sheetIdFrom(raw){
   var m=s.match(/\/d\/([A-Za-z0-9_-]+)/); if(m) return m[1];
   return /^[A-Za-z0-9_-]{20,}$/.test(s)?s:"";
 }
-function feedRowsFor(name){return state.feed.byCust[String(name||"").trim().toLowerCase()]||null;}
+function feedRowsFor(name){
+  var k=String(name||"").trim().toLowerCase(), rows=(state.feed.byCust[k]||[]).slice();
+  /* Ops-created sites (no payment code) follow the feed rows for the same customer name */
+  (state.feed.rows||[]).forEach(function(r){
+    if(r.code==null && String(r.customer||"").toLowerCase()===k && !rows.some(function(x){return x.siteKey===r.siteKey;})) rows.push(r);
+  });
+  return rows.length?rows:null;
+}
+/* The Ops customer a site belongs to: by its customer id, else by an unambiguous name match. */
+function customerForSite(row){
+  if(!row) return null;
+  var list=state.customers||[], hit=null;
+  if(row.customerId) hit=list.find(function(c){return c.id===row.customerId;});
+  if(hit) return hit;
+  var nm=String(row.customer||"").trim().toLowerCase();
+  var m=list.filter(function(c){return String(c.name||"").trim().toLowerCase()===nm;});
+  return m.length===1?m[0]:null;
+}
 function feedReady(){return !!(state.feed.loadedAt && !state.feed.error);}
 function indexSites(rows){
   var by={}; rows.forEach(function(r){ (by[r.customer.toLowerCase()]=by[r.customer.toLowerCase()]||[]).push(r); });
@@ -285,7 +302,11 @@ function renderFeedState(){
    Customer / site / address
    ============================================================ */
 function fillAccounts(){
-  var names=Object.keys(state.feed.byCust).map(function(k){return state.feed.byCust[k][0].customer;}).sort(function(a,b){return a.localeCompare(b);});
+  var seen={}, names=[];
+  Object.keys(state.feed.byCust).map(function(k){return state.feed.byCust[k][0].customer;}).concat((state.customers||[]).map(function(c){return c.name;})).forEach(function(n){
+    var k=String(n||"").trim().toLowerCase(); if(!k||seen[k]) return; seen[k]=1; names.push(n);
+  });
+  names.sort(function(a,b){return a.localeCompare(b);});
   $("customerList").innerHTML=names.map(function(n){return '<option value="'+esc(n)+'"></option>';}).join("");
 }
 function currentSiteRow(){
@@ -503,6 +524,7 @@ function hubAllows(code,cat,product){ var h=hubBy(code); return !(h&&Array.isArr
 function hubLabel(code){ var h=hubBy(code); return h?(h.name||code)+" ("+code+")":code||"this hub"; }
 function draftOrderFromForm(){
   var c=currentCode(), r=currentSiteRow(), a=addrStatus();
+  var cu=customerForSite(r||{customer:$("fCustomer").value});
   var clear=($("fClearBy").value&&$("fClearCode").value)?{by:$("fClearBy").value,code:$("fClearCode").value,note:$("fClearNote").value.trim()}:null;
   var eff=effectiveCode(c.code,clear);
   var dep=$("fDep").checked?{item:$("fDepItem").value,amount:Number($("fDepAmt").value||0)}:null;
@@ -511,6 +533,7 @@ function draftOrderFromForm(){
     id:effectiveId(), bolNo:ed?ed.bolNo||null:null,
     customer:$("fCustomer").value.trim(),
     siteKey:r?r.siteKey:"", siteLabel:r?r.siteLabel:"",
+    customerId:cu?cu.id:null, customerNo:cu?(cu.customer_id||""):"",
     shipTo:$("fShipTo").value.trim(), feedAddr:state.form.feedAddr,
     addrState:a.k, addrChanged:(a.k==="edited"||a.k==="typed"||a.k==="confirmedNow"),
     contact:$("fContact").value.trim(), contactPhone:$("fContactPhone").value.trim(), copyTo:$("fCopyTo").value.trim(),
@@ -2232,6 +2255,7 @@ async function loadCompanyData(){
   if(state.canEdit) await loadCalendars();
   closeCustomer(); state.customers=[];
   if(state.canEdit){ try{ state.customers=await CDB.customers(); }catch(e){ banner("bad","Couldn't load customers","<div>"+esc(e.message)+"</div>"); } }
+  fillAccounts();
   setConn("ok","Connected");
   setTab(state.canEdit?(state.tab||"new"):"today"); renderLive();
 }

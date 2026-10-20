@@ -90,6 +90,23 @@ const flat = s => s.replace(/\s+/g, ' ').trim();
     {id:'LA-261020-03',co:'adchem',bol:9452,status:'Scheduled',code:'D',addr:'sheet',cod:0},
     {id:'CO-261020-01',co:'adchem',bol:9453,status:'Scheduled',code:'D',addr:'sheet',cod:0}]);
   assert.deepEqual(calls.filter(c=>c[0]==='orderlog').map(c=>c[1].orderIds), [['EB-261020-01'],['EB-261020-02'],['LA-261020-03'],['CO-261020-01']]);
+  // orders link to the Ops customer through the chosen site; an Ops-only customer (no feed row) saves as CHECK
+  const ordersBefore=T.dispatch_orders.length;
+  const u7='00000000-0000-4000-8000-000000000007', u8='00000000-0000-4000-8000-000000000008', u9='00000000-0000-4000-8000-000000000009';
+  T.dispatch_customers.push({id:u7,customer_id:'ADC-0007',company:'adchem',name:'VKGL Manufacturing LLC'},{id:u8,customer_id:'ADC-0008',company:'adchem',name:'VKGL Manufacturing - LA'},{id:u9,customer_id:'ADC-0009',company:'adchem',name:'Ops Only Plastics'});
+  T.dispatch_sites.find(s=>s.company==='adchem'&&s.site_key==='VKGL — Primary').customer_id=u7;
+  T.dispatch_sites.push({company:'adchem',site_key:'VKGL LA — Plant',customer:'VKGL Manufacturing LLC',code_raw:'',code:null,addr:'1 Plant Rd, Carson CA 90745',hub:'LA',site_label:'LA Plant',customer_id:u8,synced_at:new Date().toISOString()},
+    {company:'adchem',site_key:'Ops Only Plastics — Primary',customer:'Ops Only Plastics',code_raw:'',code:null,addr:'9 Ops Way, Hayward CA 94545',hub:'EB',site_label:'Primary',customer_id:u9,synced_at:new Date().toISOString()});
+  await page.evaluate(async()=>{ state.customers=await CDB.customers(); await loadSitesFromDb(); });
+  const lst=await page.$$eval('#customerList option',o=>o.map(x=>x.value));
+  assert.ok(lst.includes('Ops Only Plastics')&&lst.includes('VKGL Manufacturing - LA'), 'datalist shows Ops customers');
+  assert.equal(new Set(lst.map(x=>x.toLowerCase())).size, lst.length, 'datalist is deduplicated');
+  await newOrder('VKGL Manufacturing LLC',{site:'LA Plant — 1 Plant Rd, Carson CA 90745',cat:'Gases',prod:'Butane',cont:'120lb Cylinder',qty:3});
+  const oLA=T.dispatch_orders.slice(ordersBefore)[0];
+  assert.ok(oLA, 'VKGL LA order saved'); assert.equal(oLA.data.customerNo,'ADC-0008'); assert.equal(oLA.data.customerId,u8); assert.equal(oLA.data.siteKey,'VKGL LA — Plant');
+  await newOrder('Ops Only Plastics',{cat:'Gases',prod:'Butane',cont:'120lb Cylinder',qty:2});
+  const oOps=T.dispatch_orders.slice(ordersBefore)[1];
+  assert.ok(oOps, 'Ops-only order saved'); assert.equal(oOps.data.customerNo,'ADC-0009'); assert.equal(oOps.data.customerId,u9); assert.equal(oOps.data.effCode,'CHECK');
   assert.equal(await page.$eval('#coPick',e=>e.hidden), false, 'company picker shown');
   assert.deepEqual(await page.$$eval('#coPick option',o=>o.map(x=>x.textContent)), ['AdChem','Northstar']);
   assert.deepEqual(calls.filter(c=>c[0]==='calendar').map(c=>c[1].cal), ['calEB','calEB','calLA@group.calendar.google.com','calCO']);
@@ -140,7 +157,7 @@ const flat = s => s.replace(/\s+/g, ' ').trim();
   await page.selectOption('#coPick','north'); await page.waitForTimeout(900);
   assert.deepEqual(await page.evaluate(()=>({orders:state.orders.length,hubs:state.hubs.length,role:state.role,shipper:coName()})), {orders:0,hubs:0,role:'coordinator',shipper:'Northstar Gas Co.'});
   await page.selectOption('#coPick','adchem'); await page.waitForTimeout(900);
-  assert.equal(await page.evaluate(()=>state.orders.length), 6, 'back on AdChem');
+  assert.equal(await page.evaluate(()=>state.orders.length), 8, 'back on AdChem');
   // print BOL one page
   await page.click('#tab-open'); await page.waitForTimeout(300); await page.click(`[data-bol="${br.id}"]`); await page.waitForTimeout(300);
   await page.emulateMedia({media:'print'}); await page.pdf({path:path.join(__dirname,'bol.pdf'),format:'Letter',printBackground:true,margin:{top:'0.4in',bottom:'0.4in',left:'0.4in',right:'0.4in'}}); await page.emulateMedia({media:'screen'});

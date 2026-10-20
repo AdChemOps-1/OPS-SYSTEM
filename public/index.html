@@ -30,7 +30,7 @@
       </div>
       <div style="margin-top:10px"><button type="button" class="lnk btn" id="btnForgot" style="border:0;background:none;padding:0;font-size:12.5px;color:var(--ink-3);text-decoration:underline">Forgot password</button></div>
     </form>
-    <p class="hint" style="margin-top:14px">Create account works only for an email an admin has added. Drivers: use your hub's driver account.</p>
+    <p class="hint" style="margin-top:14px">Create account works only for an email an admin has added. Drivers: sign in with your own account.</p>
   </div>
 </div>
 
@@ -48,6 +48,7 @@
       <button class="tab" role="tab" id="tab-open">Orders <span class="cnt" id="cntOpen">0</span></button>
       <button class="tab" role="tab" id="tab-today">Today <span class="cnt" id="cntToday">0</span></button>
       <button class="tab" role="tab" id="tab-setup">Setup <span class="cnt warn" id="cntSetup">0</span></button>
+      <button class="tab" role="tab" id="tab-customers" hidden>Customers</button>
       <button class="tab" role="tab" id="tab-users" hidden>People</button>
     </div>
   </div>
@@ -245,7 +246,7 @@
       <div class="hubpick" id="hubPick"></div>
       <div class="grid two">
         <label class="f">Driver's name / Nombre del chofer<input id="tDriver" placeholder="Goes on the email with the BOL photo"></label>
-        <span class="hint" id="todayHint" style="align-self:end;padding-bottom:6px">Each hub signs in with its own driver account. Pick the hub this phone is at; the list shows that hub's stops. Remembered on this phone.</span>
+        <span class="hint" id="todayHint" style="align-self:end;padding-bottom:6px">Each driver signs in with their own account. Pick the hub this phone is at; the list shows that hub's stops. Remembered on this phone.</span>
       </div>
     </div>
     <div id="podQueueNote" hidden></div>
@@ -299,6 +300,38 @@
         <button class="btn primary" id="btnSaveOrdersOut">Save</button>
         <button class="btn" id="btnRebuildOrdersOut">Rebuild Orders Out from the database</button>
       </div>
+    </div>
+
+    <div class="card pad sec">
+      <h2 class="sec-h">Customers Out — the customer directory for the AR Command Center</h2>
+      <div id="customersOutState"></div>
+      <div class="grid two" style="margin-top:11px">
+        <label class="f spanall">Customers Out sheet — link or ID
+          <input id="sCustomersOut" class="mono" placeholder="The company's Customers Out sheet">
+          <span class="hint">The app writes the <i>Customers Out</i> tab: one row per customer with its primary site, plus one per additional site (33 columns, keyed on Customer ID and delivery street), every time a customer, site or contact is saved. The AR Command Center, FEED_ORDERS and the Order Log read it by IMPORTRANGE. It never carries balances, terms, prices, notes or files. Keep it in the same Drive folder as Orders Out, add a tab named <i>Customers Out</i>, and share the sheet with the Google user the server acts as, as an editor.</span>
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px">
+        <button class="btn primary" id="btnSaveCustomersOut">Save</button>
+        <button class="btn" id="btnRebuildCustomersOut">Rebuild Customers Out from the database</button>
+      </div>
+    </div>
+
+    <div class="card pad sec" id="importCard" hidden>
+      <h2 class="sec-h">Import customers — the office's customer workbook</h2>
+      <div id="importState"></div>
+      <div class="grid two" style="margin-top:11px">
+        <label class="f spanall">Customer workbook — link or ID
+          <input id="sImportSheet" class="mono" placeholder="The office's customer workbook">
+          <span class="hint">Reads the <i>Customer Directory</i>, <i>Customers</i> and <i>Delivery Notes</i> tabs and proposes one action per row for you to review; nothing is written until you press Import. <i>Licensing &amp; Entity</i> and <i>Account Terms</i> wait for a later stage. Terms, credit limits, balances, payment methods and prices are never read. Fields someone has edited in the app are kept; the import only fills their blanks. Share the workbook with the Google user the server acts as.</span>
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px">
+        <button class="btn" id="btnImportRead">Read the workbook</button>
+        <button class="btn primary" id="btnImportCommit" disabled>Import the reviewed rows</button>
+      </div>
+      <div id="importPlan" style="margin-top:11px"></div>
+      <div id="importResult"></div>
     </div>
 
     <div class="card pad sec">
@@ -386,6 +419,107 @@
     </div>
 </section>
 
+  <!-- ================= CUSTOMERS ================= -->
+  <section id="panel-customers" hidden>
+    <div class="card pad sec" id="custToolbar">
+      <div class="toolbar" style="margin-bottom:0">
+        <input id="custSearch" type="search" placeholder="Search name, ID, legal name, city" aria-label="Search customers">
+        <select id="custHub" aria-label="Hub"><option value="">All hubs</option></select>
+        <select id="custStatus" aria-label="Account status"><option value="">All statuses</option><option value="active">Active</option><option value="prospect">Prospect</option><option value="inactive">Inactive</option></select>
+        <label class="cust-chk"><input id="custIncomplete" type="checkbox"> Incomplete only</label>
+        <button class="btn primary" id="btnNewCustomer" type="button">New customer</button>
+      </div>
+    </div>
+    <div class="card sec"><div id="custList"></div></div>
+
+    <div id="custPage" hidden>
+      <div class="card pad sec cust-head">
+        <div class="cust-title">
+          <h2 id="custTitle">New customer</h2>
+          <div class="cust-chips"><span class="chip" id="custIdChip">—</span><span class="chip st" id="custStatusChip">active</span><span class="badge-complete" id="custComplete">0 of 15</span></div>
+        </div>
+        <button class="btn" id="btnCloseCustomer" type="button">Close</button>
+      </div>
+      <div class="tabs cust-tabs" role="tablist">
+        <button class="tab" role="tab" id="ctab-profile" aria-selected="true">Profile</button>
+        <button class="tab" role="tab" id="ctab-sites" aria-selected="false">Sites</button>
+        <button class="tab" role="tab" id="ctab-contacts" aria-selected="false">Contacts</button>
+        <button class="tab" role="tab" id="ctab-activity" aria-selected="false">Activity</button>
+        <button class="tab" role="tab" id="ctab-history" aria-selected="false">History</button>
+      </div>
+      <div id="cpane-profile" class="card pad sec">
+        <div class="grid two">
+          <label class="f">Name<input id="cName" autocomplete="off"></label>
+          <label class="f">Also known as<input id="cAka" autocomplete="off" placeholder="other names, comma separated"></label>
+        </div>
+        <div class="grid two" style="margin-top:11px">
+          <label class="f">Legal name<input id="cLegal" autocomplete="off"></label>
+          <label class="f">Parent customer<select id="cParent"><option value="">— none —</option></select></label>
+        </div>
+        <div class="grid three" style="margin-top:11px">
+          <label class="f">Account status<select id="cStatus"><option value="active">Active</option><option value="prospect">Prospect</option><option value="inactive">Inactive</option></select></label>
+          <label class="f">Primary hub<select id="cHub"><option value="">— pick a hub —</option></select></label>
+          <label class="f">Last verified<input id="cVerified" type="date"></label>
+        </div>
+        <h3 class="sec-h" style="margin-top:16px">Billing address</h3>
+        <div class="grid four">
+          <label class="f span2">Street<input id="cBillStreet" autocomplete="off"></label>
+          <label class="f">City<input id="cBillCity" autocomplete="off"></label>
+          <div class="grid two" style="gap:11px"><label class="f">State<input id="cBillState" autocomplete="off" maxlength="2"></label><label class="f">ZIP<input id="cBillZip" autocomplete="off" inputmode="numeric"></label></div>
+        </div>
+        <label class="f" style="margin-top:11px">Notes<textarea id="cNotes"></textarea></label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px">
+          <button class="btn primary" id="btnSaveCustomer" type="button">Save customer</button>
+          <span class="hint" id="custSaveHint"></span>
+        </div>
+      </div>
+      <div id="cpane-sites" class="card pad sec" hidden>
+        <div class="cpane-head"><p class="hint" style="margin:0">Delivery sites for this customer. Open a site to edit its receiving details and per-hub route notes.</p>
+          <button class="btn primary sm" id="btnAddSite" type="button">Add site</button></div>
+        <div id="siteNew" class="site-new" hidden></div>
+        <div id="siteList"></div>
+      </div>
+      <div id="cpane-contacts" class="card pad sec" hidden>
+        <div class="cpane-head"><p class="hint" style="margin:0">Contacts for this customer, grouped by role.</p>
+          <button class="btn primary sm" id="btnAddContact" type="button">Add contact</button></div>
+        <div id="contactForm" class="site-new" hidden>
+          <div class="grid three">
+            <label class="f">Type<select id="cf_type"><option value="receiving">Receiving</option><option value="site_manager">Site manager</option><option value="ordering">Ordering</option><option value="safety">Safety</option><option value="billing">Billing</option><option value="ap">Accounts payable</option><option value="owner">Owner</option><option value="other">Other</option></select></label>
+            <label class="f">First name<input id="cf_first" autocomplete="off"></label>
+            <label class="f">Last name<input id="cf_last" autocomplete="off"></label>
+          </div>
+          <div class="grid three" style="margin-top:11px">
+            <label class="f">Phone<input id="cf_phone" type="tel" autocomplete="off"></label>
+            <label class="f">Email<input id="cf_email" type="email" autocomplete="off"></label>
+            <label class="f">Preferred method<select id="cf_method"><option value="">— any —</option><option value="phone">Phone</option><option value="email">Email</option><option value="text">Text</option></select></label>
+          </div>
+          <div class="grid two" style="margin-top:11px">
+            <label class="f">Site<select id="cf_site"><option value="">— the customer as a whole —</option></select></label>
+            <label class="cust-chk" style="align-self:end;min-height:42px"><input id="cf_cc" type="checkbox"> CC on statements</label>
+          </div>
+          <label class="f" style="margin-top:11px">Notes<textarea id="cf_notes"></textarea></label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn primary" id="cfSave" type="button">Save contact</button><button class="btn" id="cfCancel" type="button">Cancel</button></div>
+        </div>
+        <div id="contactList"></div>
+      </div>
+      <div id="cpane-activity" class="card pad sec" hidden>
+        <form id="actAdd" class="site-new" autocomplete="off">
+          <div class="grid two">
+            <label class="f">Method<select id="act_method"><option value="call">Call</option><option value="email">Email</option><option value="text">Text</option><option value="in_person">In person</option></select></label>
+            <label class="f">Contact<select id="act_contact"><option value="">— none —</option></select></label>
+          </div>
+          <label class="f" style="margin-top:11px">What happened<textarea id="act_summary" placeholder="Called receiving to confirm Tuesday's delivery window"></textarea></label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px"><button class="btn primary" type="submit">Log activity</button><span class="hint" id="actHint"></span></div>
+        </form>
+        <div id="actList"></div>
+      </div>
+      <div id="cpane-history" class="card pad sec" hidden>
+        <p class="hint" style="margin:0 0 10px">Every change to this customer, its sites, contacts and activity, field by field. Newest first.</p>
+        <div id="histList"></div>
+      </div>
+    </div>
+  </section>
+
   <!-- ================= PEOPLE ================= -->
   <section id="panel-users" hidden>
     <div class="card pad sec">
@@ -402,7 +536,7 @@
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px;align-items:center">
         <button class="btn primary" id="btnGrant">Add / update</button>
-        <span class="hint">An address that already has an AdChem account (AdChem Time) gets access at once. A new address is invited: they open this app, choose <b>Create account</b> with that email, and set a password. Drivers: one account per hub — e.g. driver-eb@adchem.pro — signed in on that hub's phones.</span>
+        <span class="hint">An address that already has an AdChem account (AdChem Time) gets access at once. A new address is invited: they open this app, choose <b>Create account</b> with that email, and set a password. Drivers: one account per person, with their hub.</span>
       </div>
     </div>
     <div class="card sec" id="userList"></div>
@@ -487,5 +621,7 @@
 <script src="/vendor/supabase.js"></script>
 <script src="/config.js"></script>
 <script src="/app.js"></script>
+<script src="/customers.js"></script>
+<script src="/import.js"></script>
 </body>
 </html>

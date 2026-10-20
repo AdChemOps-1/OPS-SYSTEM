@@ -1,7 +1,8 @@
 // GET /api/health?company=… — what the server can reach for that company. Admin only; never returns secrets.
 import { googleToken, gfetch } from "../_lib/google.js";
 import { requireUser, sb, json, handle, companyFrom, companyContext } from "../_lib/auth.js";
-import { TAB } from "../_lib/orderlog.js";
+import { TAB, sheetIdFrom } from "../_lib/orderlog.js";
+import { TAB as CUSTOMERS_TAB } from "../_lib/customersout.js";
 import { probeCalendar } from "../_lib/calendars.js";
 
 export async function onRequestGet({ request, env }) {
@@ -41,6 +42,17 @@ export async function onRequestGet({ request, env }) {
     const oo = ctx.settings.ordersOutSheetId;
     if (oo) { try { const r = await gfetch(env, `https://sheets.googleapis.com/v4/spreadsheets/${String(oo).replace(/.*\/d\/([A-Za-z0-9_-]+).*/, "$1")}/values/${encodeURIComponent("'" + TAB + "'!A1:L1")}`); out.checks.ordersOut = (r.values && r.values[0] && r.values[0][0] === "Order #") ? "ok" : "tab found but the header row is not the twelve Orders In columns"; } catch (e) { out.checks.ordersOut = e.message; } }
     else out.checks.ordersOut = "no Orders Out sheet set on Setup";
+    const co = sheetIdFrom(ctx.settings.customersOutSheetId);
+    if (co) { try { const r = await gfetch(env, `https://sheets.googleapis.com/v4/spreadsheets/${co}/values/${encodeURIComponent("'" + CUSTOMERS_TAB + "'!A1:AG1")}`); out.checks.customersOut = (r && r.values && r.values[0] && r.values[0][0] === "Customer ID") ? "ok" : "tab found but the header row is not the Customers Out columns (press Rebuild Customers Out on Setup)"; } catch (e) { out.checks.customersOut = e.message; } }
+    else out.checks.customersOut = "no Customers Out sheet set on Setup";
+    const im = sheetIdFrom(ctx.settings.importSheetId);
+    if (im) {
+      try {
+        const r = await gfetch(env, `https://sheets.googleapis.com/v4/spreadsheets/${im}/values/${encodeURIComponent("'Customer Directory'!A1:AZ6")}`);
+        const found = ((r && r.values) || []).some(row => (row || []).some(c => String(c).trim() === "Customer ID"));
+        out.checks.importSheet = found ? "ok" : "tab found but no Customer ID header in its first rows";
+      } catch (e) { out.checks.importSheet = e.message; }
+    } else out.checks.importSheet = "no import sheet set on Setup";
     return json(out);
   });
 }

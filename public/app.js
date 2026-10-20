@@ -240,7 +240,24 @@ function sheetIdFrom(raw){
   var m=s.match(/\/d\/([A-Za-z0-9_-]+)/); if(m) return m[1];
   return /^[A-Za-z0-9_-]{20,}$/.test(s)?s:"";
 }
-function feedRowsFor(name){return state.feed.byCust[String(name||"").trim().toLowerCase()]||null;}
+function feedRowsFor(name){
+  var k=String(name||"").trim().toLowerCase(), rows=(state.feed.byCust[k]||[]).slice();
+  /* Ops-created sites (no payment code) follow the feed rows for the same customer name */
+  (state.feed.rows||[]).forEach(function(r){
+    if(r.code==null && String(r.customer||"").toLowerCase()===k && !rows.some(function(x){return x.siteKey===r.siteKey;})) rows.push(r);
+  });
+  return rows.length?rows:null;
+}
+/* The Ops customer a site belongs to: by its customer id, else by an unambiguous name match. */
+function customerForSite(row){
+  if(!row) return null;
+  var list=state.customers||[], hit=null;
+  if(row.customerId) hit=list.find(function(c){return c.id===row.customerId;});
+  if(hit) return hit;
+  var nm=String(row.customer||"").trim().toLowerCase();
+  var m=list.filter(function(c){return String(c.name||"").trim().toLowerCase()===nm;});
+  return m.length===1?m[0]:null;
+}
 function feedReady(){return !!(state.feed.loadedAt && !state.feed.error);}
 function indexSites(rows){
   var by={}; rows.forEach(function(r){ (by[r.customer.toLowerCase()]=by[r.customer.toLowerCase()]||[]).push(r); });
@@ -250,7 +267,6 @@ function indexSites(rows){
   fillAccounts();
 }
 async function loadSitesFromDb(){
-  if(!state.canEdit){ state.feed.rows=[]; state.feed.byCust={}; return; }
   try{ indexSites(await DB.sites()); }
   catch(e){ state.feed.error={code:"db",message:"Couldn't load the customer sites: "+e.message}; }
   renderFeedState(); refreshCode();
@@ -286,7 +302,11 @@ function renderFeedState(){
    Customer / site / address
    ============================================================ */
 function fillAccounts(){
-  var names=Object.keys(state.feed.byCust).map(function(k){return state.feed.byCust[k][0].customer;}).sort(function(a,b){return a.localeCompare(b);});
+  var seen={}, names=[];
+  Object.keys(state.feed.byCust).map(function(k){return state.feed.byCust[k][0].customer;}).concat((state.customers||[]).map(function(c){return c.name;})).forEach(function(n){
+    var k=String(n||"").trim().toLowerCase(); if(!k||seen[k]) return; seen[k]=1; names.push(n);
+  });
+  names.sort(function(a,b){return a.localeCompare(b);});
   $("customerList").innerHTML=names.map(function(n){return '<option value="'+esc(n)+'"></option>';}).join("");
 }
 function currentSiteRow(){
@@ -504,6 +524,10 @@ function hubAllows(code,cat,product){ var h=hubBy(code); return !(h&&Array.isArr
 function hubLabel(code){ var h=hubBy(code); return h?(h.name||code)+" ("+code+")":code||"this hub"; }
 function draftOrderFromForm(){
   var c=currentCode(), r=currentSiteRow(), a=addrStatus();
+  var cur=state.editing?state.orders.find(function(o){return o.id===state.editing;}):null;
+  /* an edit keeps the stored link when no site is chosen and the name is unchanged */
+  var keepLink=!r && cur && cur.customerId && String(cur.customer||"").trim().toLowerCase()===$("fCustomer").value.trim().toLowerCase();
+  var cu=keepLink?null:customerForSite(r||{customer:$("fCustomer").value});
   var clear=($("fClearBy").value&&$("fClearCode").value)?{by:$("fClearBy").value,code:$("fClearCode").value,note:$("fClearNote").value.trim()}:null;
   var eff=effectiveCode(c.code,clear);
   var dep=$("fDep").checked?{item:$("fDepItem").value,amount:Number($("fDepAmt").value||0)}:null;
@@ -512,6 +536,7 @@ function draftOrderFromForm(){
     id:effectiveId(), bolNo:ed?ed.bolNo||null:null,
     customer:$("fCustomer").value.trim(),
     siteKey:r?r.siteKey:"", siteLabel:r?r.siteLabel:"",
+    customerId:cu?cu.id:(keepLink?cur.customerId:null), customerNo:cu?(cu.customer_id||""):(keepLink?cur.customerNo||"":""),
     shipTo:$("fShipTo").value.trim(), feedAddr:state.form.feedAddr,
     addrState:a.k, addrChanged:(a.k==="edited"||a.k==="typed"||a.k==="confirmedNow"),
     contact:$("fContact").value.trim(), contactPhone:$("fContactPhone").value.trim(), copyTo:$("fCopyTo").value.trim(),
@@ -780,7 +805,7 @@ function fillStatic(){
 }
 function setTab(t){
   state.tab=t;
-  ["new","bol","open","today","setup","users"].forEach(function(k){
+  ["new","bol","open","today","setup","customers","users"].forEach(function(k){
     $("tab-"+k).setAttribute("aria-selected",k===t?"true":"false");
     $("panel-"+k).hidden=(k!==t);
   });
@@ -790,6 +815,7 @@ function setTab(t){
   if(t==="bol") renderBolTab();
   if(t==="setup") renderSetup();
   if(t==="users") renderUsers();
+  if(t==="customers") renderCustomers();
 }
 function codeChip(o){
   var k=o.effCode||o.code;
@@ -897,7 +923,7 @@ function printDriverSheet(){
 function myHub(){return lsGet("adchem_myhub","");}
 function renderHubPick(){
   var cur=myHub();
-  if(state.me&&state.me.role==="driver"&&state.me.hub){ var h=hubBy(state.me.hub); $("hubPick").innerHTML='<span class="chip k-DEP">'+esc(state.me.hub)+(h?" — "+esc(h.name):"")+'</span><span class="hint" style="margin-left:8px">This account is the '+esc(state.me.hub)+' driver account.</span>'; $("tDriver").value=lsGet("adchem_driver",""); return; }
+  if(state.me&&state.me.role==="driver"&&state.me.hub){ var h=hubBy(state.me.hub); $("hubPick").innerHTML='<span class="chip k-DEP">'+esc(state.me.hub)+(h?" — "+esc(h.name):"")+'</span><span class="hint" style="margin-left:8px">Signed in to hub '+esc(state.me.hub)+'.</span>'; $("tDriver").value=lsGet("adchem_driver",""); return; }
   $("hubPick").innerHTML=state.hubs.map(function(h){
     return '<label class="tg"><input type="radio" name="myhub" value="'+esc(h.code)+'"'+(h.code===cur?" checked":"")+'><span>'+esc(h.code)+" — "+esc(h.name.split(" — ").pop())+"</span></label>";
   }).join("")+'<label class="tg"><input type="radio" name="myhub" value=""'+(cur?"":" checked")+'><span>All hubs</span></label>';
@@ -908,7 +934,9 @@ function renderToday(){
   renderHubPick();
   var base=$("tDate").value||ymd(new Date()), hubFilter=myHub();
   var d2=new Date(base+"T12:00:00"); d2.setDate(d2.getDate()+1);
-  var days=[base,ymd(d2)], host=$("todayList"), out="";
+  var days=[base,ymd(d2)], host=$("todayList"), out="", siteKeys=[];
+  var siteOf=function(o){ var rows=state.feed.rows||[], k=o.siteKey, c=String(o.customer||"").trim().toLowerCase();
+    return (k&&rows.find(function(r){return r.siteKey===k;}))||rows.find(function(r){return String(r.customer||"").trim().toLowerCase()===c&&r.hub===o.hub;})||null; };
   days.forEach(function(day){
     var dayOrders=state.orders.filter(function(o){return o.date===day&&o.status!=="Cancelled"&&(!hubFilter||o.hub===hubFilter);});
     var label=(day===ymd(new Date()))?"Today":(day===days[1]?"Tomorrow":day);
@@ -936,6 +964,7 @@ function renderToday(){
           else if(o.deposit) moneyLine+=" — <b>"+esc(o.deposit.item||"deposit")+" "+money(o.deposit.amount)+"</b>";
           var due=(k==="COD"?Number(o.codAmount||0):0)+(o.deposit?Number(o.deposit.amount||0):0);
           var fl=orderFlags(o).filter(function(f){return f.k==="stop"||f.k==="warn";});
+          var site=siteOf(o); if(site&&siteKeys.indexOf(site.siteKey)<0) siteKeys.push(site.siteKey);
           var where=o.shipTo?esc(o.shipTo)+(o.addrState==="unconfirmed"?' <span class="chip warn">UNCONFIRMED</span>':""):'<span style="color:var(--amber)">No delivery address</span>';
           return '<div class="stop'+cls+'">'+
             '<div class="qr"><div class="qr-win mono">'+esc(o.window)+"</div>"+
@@ -945,6 +974,7 @@ function renderToday(){
               '<div class="qr-code">'+codeChip(o)+'<div class="qr-codetext">'+esc(k?CODES[k].text:"No code")+"</div>"+(due?'<div class="qr-amt mono">'+money(due)+"</div>":"")+"</div></div>"+
             (moneyLine?'<div class="qr-band'+(k==="COD"?" collect":" dep")+'"><span>'+moneyLine+'</span><span class="mono">'+money(due)+"</span></div>":"")+
             (fl.length?'<div class="qr-flags">'+fl.map(function(f){return '<span class="chip '+(f.k==="stop"?"k-H":"warn")+'" title="'+esc(f.s)+'">'+esc(f.t)+"</span>";}).join(" ")+"</div>":"")+
+            siteNotesHtml(site,hc)+
             '<div class="qr-actions"><button class="btn sm" data-bol2="'+esc(o.id)+'">BOL</button>'+podButton(o)+
               '<button class="btn sm ghost" data-more="'+esc(o.id)+'">Details / Detalles</button></div>'+
             '<div class="qr-more" id="more-'+esc(o.id)+'" hidden>'+
@@ -974,6 +1004,8 @@ function renderToday(){
   host.querySelectorAll("[data-pod]").forEach(function(b){
     b.onclick=function(){var o=state.orders.find(function(x){return x.id===b.getAttribute("data-pod");}); if(o) openPod(o);};
   });
+  host.querySelectorAll("[data-note]").forEach(function(b){ b.onclick=function(){ addDriverNote(b.getAttribute("data-note")); }; });
+  todayExtras(siteKeys);
   updatePodQueueNote();
 }
 function updateCounts(){
@@ -994,7 +1026,8 @@ function updateCounts(){
    Setup
    ============================================================ */
 function renderOrdersOutState(){ var el=$("ordersOutState"); if(!el) return; $("sOrdersOut").value=state.settings.ordersOutSheetId||""; el.innerHTML=state.settings.ordersOutSheetId?'<div class="banner good" style="margin:0"><div><b>Orders Out is set.</b><div>Every scheduled, numbered and delivered order is written to it as it changes; Rebuild rewrites the whole sheet from the database.</div></div></div>':'<div class="banner warn" style="margin:0"><div><b>No Orders Out sheet yet.</b><div>Paste the link to the company\'s <i>Dispatch Orders Out</i> sheet. Until then nothing is reported back to the AR Command Center.</div></div></div>'; }
-function renderSetup(){renderShareState();renderFeedState();renderOrdersOutState();renderBolNumState();renderCalState();renderDriveState();renderHubEditor();renderSegTable();renderHealth();}
+function renderCustomersOutState(){ var el=$("customersOutState"); if(!el) return; $("sCustomersOut").value=state.settings.customersOutSheetId||""; el.innerHTML=state.settings.customersOutSheetId?'<div class="banner good" style="margin:0"><div><b>Customers Out is set.</b><div>Each customer\'s rows are rewritten whenever the customer, a site or a contact is saved; Rebuild rewrites the whole tab from the database.</div></div></div>':'<div class="banner warn" style="margin:0"><div><b>No Customers Out sheet yet.</b><div>Paste the link to the company\'s <i>Customers Out</i> sheet. Until then the AR Command Center keeps reading its own directory.</div></div></div>'; }
+function renderSetup(){renderShareState();renderFeedState();renderOrdersOutState();renderCustomersOutState();renderImportCard();renderBolNumState();renderCalState();renderDriveState();renderHubEditor();renderSegTable();renderHealth();}
 function renderBolNumState(){
   var n=Number(state.settings.nextBol)||0, used=maxBolUsed();
   $("sNextBol").value=n||"";
@@ -1442,6 +1475,7 @@ function clearBanner(k){var el=document.querySelector('[data-bkey="'+k+'"]'); if
 function setConn(kind,text){$("connDot").className="dot"+(kind?" "+kind:"");$("connTxt").textContent=text;}
 function wire(){
   ["new","bol","open","today","setup"].forEach(function(k){ $("tab-"+k).onclick=function(){ if(k==="bol") state.bolOrder=null; setTab(k); }; });
+  wireCustomers(); wireImport();
   $("fHub").onchange=function(){refreshId();renderLines();scheduleLive();};
   $("fDate").onchange=function(){refreshId();scheduleLive();};
   $("fIdOverride").oninput=function(){refreshId();scheduleLive();};
@@ -1491,11 +1525,23 @@ function wire(){
     catch(e){ banner("bad","Orders Out not rebuilt","<div>"+esc(e.message)+"</div>"); }
     $("btnRebuildOrdersOut").disabled=false;
   };
+  $("btnSaveCustomersOut").onclick=function(){
+    var raw=$("sCustomersOut").value.trim();
+    if(raw && !sheetIdFrom(raw)){ banner("bad","That doesn't look like a spreadsheet link","<div>Paste the full link to the Customers Out sheet, or just its ID.</div>"); return; }
+    state.settings.customersOutSheetId=sheetIdFrom(raw); saveSettings().then(function(){ banner("good","Customers Out sheet saved","",{autoclose:4000}); renderCustomersOutState(); });
+  };
+  $("btnRebuildCustomersOut").onclick=async function(){
+    if(!confirm("Rewrite every row of the Customers Out tab from this company's customers, sites and contacts?")) return;
+    $("btnRebuildCustomersOut").disabled=true;
+    try{ var r=await API.post("/api/customers-out",{rebuild:true}); banner("good","Customers Out rebuilt","<div>"+r.rebuilt+" rows written.</div>",{autoclose:8000}); }
+    catch(e){ banner("bad","Customers Out not rebuilt","<div>"+esc(e.message)+"</div>"); }
+    $("btnRebuildCustomersOut").disabled=false;
+  };
   $("btnSaveBol").onclick=function(){
     var n=parseInt($("sNextBol").value,10);
     if(!n||n<1){ banner("warn","Enter a number","<div>One above SmartBOL's last issued BOL number.</div>",{autoclose:7000}); return; }
     if(n<=maxBolUsed()){ banner("bad","That number is already used","<div>This app has issued up to "+maxBolUsed()+". The next number must be higher.</div>"); return; }
-    state.settings.nextBol=n; saveSettings(); renderBolNumState(); updateCounts(); refreshId(); clearBanner("bolnum");
+    state.settings.nextBol=n; saveSettings(["nextBol"]); renderBolNumState(); updateCounts(); refreshId(); clearBanner("bolnum");
     banner("good","BOL numbering set","<div>The next scheduled order takes BOL <b>"+n+"</b>. SmartBOL issues nothing from today.</div>",{autoclose:9000});
   };
   $("btnSaveDrive").onclick=function(){
@@ -1867,7 +1913,7 @@ const DB={
   async me(){
     var r=await supa.from("dispatch_users").select("user_id,email,name,active").eq("user_id",state.session.user.id).maybeSingle();
     var me=sbErr(r);
-    var m=sbErr(await supa.from("dispatch_members").select("company,role,hub,active").eq("user_id",state.session.user.id).eq("active",true));
+    var m=sbErr(await supa.from("dispatch_members").select("company,role,hub,active,is_super_admin,permissions").eq("user_id",state.session.user.id).eq("active",true));
     var cos=sbErr(await supa.from("companies").select("id,name,short_name,active,data").eq("active",true).order("name"));
     return {me:me,memberships:m||[],companies:cos||[]};
   },
@@ -1882,7 +1928,9 @@ const DB={
   },
   async sites(){
     var r=await supa.from("dispatch_sites").select("*").eq("company",state.company).order("customer"); var rows=sbErr(r);
-    return rows.map(function(s){return {siteKey:s.site_key,customer:s.customer,codeRaw:s.code_raw,code:s.code,addr:s.addr,unconfirmed:s.unconfirmed,city:s.city,hub:s.hub,contact:s.contact,phone:s.phone,gate:s.gate,hours:s.hours,instr:s.instr,siteLabel:s.site_label,copyTo:s.copy_to,syncedAt:s.synced_at};});
+    return rows.map(function(s){return {siteKey:s.site_key,customer:s.customer,codeRaw:s.code_raw,code:s.code,addr:s.addr,unconfirmed:s.unconfirmed,city:s.city,hub:s.hub,contact:s.contact,phone:s.phone,gate:s.gate,hours:s.hours,instr:s.instr,siteLabel:s.site_label,copyTo:s.copy_to,syncedAt:s.synced_at,
+      customerId:s.customer_id||null,receivingHours:s.receiving_hours||"",gateCode:s.gate_code||"",parkingUnloading:s.parking_unloading||"",hazmatRestrictions:s.hazmat_restrictions||"",
+      containerNotes:s.container_notes||"",specialInstructions:s.special_instructions||"",lastVerified:s.last_verified||null};});
   },
   async saveSiteCopyTo(siteKey,copyTo){ if(!siteKey) return; sbErr(await supa.from("dispatch_sites").update({copy_to:copyTo}).eq("site_key",siteKey).eq("company",state.company)); },
   async saveOrder(o){
@@ -1891,15 +1939,23 @@ const DB={
     sbErr(await supa.from("dispatch_orders").upsert(row,{onConflict:"company,id"}));
   },
   async saveHubs(){ sbErr(await supa.from("dispatch_hubs").upsert(state.hubs.map(function(h,i){return {code:h.code,company:state.company,name:h.name,street:h.street||"",city:h.city||"",state:h.state||"",zip:h.zip||"",phone:h.phone||"",emerg:h.emerg||"",settled:!!h.settled,tz:h.tz||"",products:Array.isArray(h.products)?h.products:null,sort:i};}),{onConflict:"company,code"})); },
-  async saveSettings(){ sbErr(await supa.from("dispatch_company_settings").upsert({company:state.company,data:state.settings,updated_at:new Date().toISOString()},{onConflict:"company"})); },
+  // The server owns the counters (the customer-ID trigger and dispatch_next_bol move them), so a save writes them back as the
+  // database has them now, never as this screen loaded them; own lists a counter the caller sets on purpose (Setup's BOL start).
+  async saveSettings(own){
+    var cur=sbErr(await supa.from("dispatch_company_settings").select("data").eq("company",state.company).maybeSingle()), d=(cur&&cur.data)||{};
+    var data=Object.assign({},state.settings);
+    SERVER_COUNTERS.forEach(function(k){ if((own||[]).indexOf(k)>=0) return; if(k in d){ data[k]=d[k]; state.settings[k]=d[k]; } else { delete data[k]; delete state.settings[k]; } });
+    sbErr(await supa.from("dispatch_company_settings").upsert({company:state.company,data:data,updated_at:new Date().toISOString()},{onConflict:"company"})); },
   async assignBol(id){ return sbErr(await supa.rpc("dispatch_next_bol",{p_order_id:id,p_company:state.company})); },
   async users(){
-    var mem=sbErr(await supa.from("dispatch_members").select("user_id,role,hub,active,created_at").eq("company",state.company));
+    var mem=sbErr(await supa.from("dispatch_members").select("user_id,role,hub,active,created_at,is_super_admin,permissions").eq("company",state.company));
     var ids=mem.map(function(m){return m.user_id;}); if(!ids.length) return [];
     var us=sbErr(await supa.from("dispatch_users").select("user_id,email,name").in("user_id",ids));
     var by={}; us.forEach(function(u){by[u.user_id]=u;});
-    return mem.map(function(m){var u=by[m.user_id]||{}; return {user_id:m.user_id,email:u.email||"",name:u.name||"",role:m.role,hub:m.hub,active:m.active,created_at:m.created_at};}).sort(function(a,b){return a.email.localeCompare(b.email);});
+    return mem.map(function(m){var u=by[m.user_id]||{}; return {user_id:m.user_id,email:u.email||"",name:u.name||"",role:m.role,hub:m.hub,active:m.active,created_at:m.created_at,isSuper:!!m.is_super_admin,permissions:m.permissions||{}};}).sort(function(a,b){return a.email.localeCompare(b.email);});
   },
+  async setPermissions(userId,perms){ return sbErr(await supa.rpc("dispatch_set_permissions",{p_user:userId,p_company:state.company,p_perms:perms})); },
+  async setSuperAdmin(userId,on){ return sbErr(await supa.rpc("dispatch_set_super_admin",{p_user:userId,p_company:state.company,p_on:!!on})); },
   async invites(){ return sbErr(await supa.from("dispatch_invites").select("email,name,role,hub,invited_at,accepted_at,revoked_at").eq("company",state.company).order("invited_at",{ascending:false})); },
   async grant(email,name,role,hub){ return sbErr(await supa.rpc("dispatch_grant",{p_email:email,p_name:name,p_role:role,p_hub:hub,p_company:state.company})); },
   async revoke(email){ return sbErr(await supa.rpc("dispatch_revoke",{p_email:email,p_company:state.company})); },
@@ -1921,7 +1977,8 @@ async function saveOrder(o){
   catch(e){ banner("bad","Order not saved to the shared database","<div>"+esc(e.message)+" — it is only on this screen. Check your connection and try again.</div>",{key:"save"}); throw e; }
 }
 async function saveHubs(){ try{ await DB.saveHubs(); }catch(e){ banner("bad","Hubs not saved","<div>"+esc(e.message)+"</div>"); } }
-async function saveSettings(){ try{ await DB.saveSettings(); }catch(e){ banner("bad","Settings not saved","<div>"+esc(e.message)+"</div>"); } }
+const SERVER_COUNTERS=["nextCustomerNumber","nextBol"];
+async function saveSettings(own){ try{ await DB.saveSettings(own); }catch(e){ banner("bad","Settings not saved","<div>"+esc(e.message)+"</div>"); } }
 
 const API={
   async call(method,path,body){
@@ -2048,6 +2105,9 @@ function readSegTable(){
 /* ============================================================
    People (admin)
    ============================================================ */
+// manage_people is still accepted by dispatch_set_permissions (and kept when another switch changes) but has no switch: nothing
+// checks it yet, so offering it would grant nothing
+const MEMBER_PERMS=[["manage_customers","Manage customers"],["approve_driver_notes","Approve driver notes"],["run_imports","Run imports"]];
 async function renderUsers(){
   if(!state.isOwner) return;
   var ph=$("peopleHead"); if(ph) ph.textContent="People at "+coName();
@@ -2057,12 +2117,19 @@ async function renderUsers(){
     var users=await DB.users(), inv=await DB.invites();
     state.users=users; state.invites=inv;
     var pend=inv.filter(function(i){return !i.accepted_at&&!i.revoked_at;});
+    var meSuper=!!(state.me&&state.me.isSuper), canPerm=state.isOwner||meSuper;
+    var permRow=function(u){
+      if(!canPerm||!u.active) return "";
+      var lock=u.isSuper&&!meSuper;   // only a super admin can change a super admin
+      return '<div class="perm-row">'+MEMBER_PERMS.map(function(p){ return '<label class="perm-chk"><input type="checkbox" data-perm="'+esc(u.user_id+":"+p[0])+'"'+(u.permissions[p[0]]?" checked":"")+(lock?" disabled":"")+"> "+esc(p[1])+"</label>"; }).join("")+
+        (meSuper?'<label class="perm-chk"><input type="checkbox" data-super="'+esc(u.user_id)+'"'+(u.isSuper?" checked":"")+(u.user_id===state.session.user.id?' disabled title="You can\'t remove your own super admin"':"")+"> Super admin</label>":"")+"</div>";
+    };
     var rows=users.map(function(u){
       return '<div class="urow"><div><b>'+esc(u.name||u.email)+'</b><div class="hint">'+esc(u.email)+'</div></div>'+
         '<div><span class="chip st'+(u.role==="admin"?" done":"")+'">'+esc(u.role)+'</span> '+(u.hub?'<span class="chip k-DEP">'+esc(u.hub)+'</span>':'<span class="hint">all hubs</span>')+'</div>'+
         '<div>'+(u.active?'<span class="chip k-D">active</span>':'<span class="chip warn">removed</span>')+'</div><div></div>'+
         '<div style="display:flex;gap:6px;justify-content:flex-end">'+(u.active&&u.user_id!==state.session.user.id?'<button class="btn sm danger" data-revoke="'+esc(u.email)+'">Remove</button>':'')+
-        (!u.active?'<button class="btn sm" data-regrant="'+esc(u.email)+'" data-role="'+esc(u.role)+'" data-hub="'+esc(u.hub)+'">Restore</button>':'')+'</div></div>';
+        (!u.active?'<button class="btn sm" data-regrant="'+esc(u.email)+'" data-role="'+esc(u.role)+'" data-hub="'+esc(u.hub)+'">Restore</button>':'')+'</div>'+permRow(u)+'</div>';
     }).join("");
     var prow=pend.map(function(i){
       return '<div class="urow" style="background:var(--amber-soft)"><div><b>'+esc(i.name||i.email)+'</b><div class="hint">'+esc(i.email)+'</div></div>'+
@@ -2073,6 +2140,14 @@ async function renderUsers(){
     $("userList").innerHTML=(rows+prow)||'<div class="empty">No one yet.</div>';
     $("userList").querySelectorAll("[data-revoke]").forEach(function(b){ b.onclick=async function(){ if(!confirm("Remove access for "+b.getAttribute("data-revoke")+"? They lose access on their next page load.")) return; try{ await DB.revoke(b.getAttribute("data-revoke")); banner("good","Access removed","",{autoclose:5000}); }catch(e){ banner("bad","Not removed","<div>"+esc(e.message)+"</div>"); } renderUsers(); }; });
     $("userList").querySelectorAll("[data-regrant]").forEach(function(b){ b.onclick=async function(){ try{ await DB.grant(b.getAttribute("data-regrant"),"",b.getAttribute("data-role"),b.getAttribute("data-hub")); }catch(e){ banner("bad","Not restored","<div>"+esc(e.message)+"</div>"); } renderUsers(); }; });
+    $("userList").querySelectorAll("[data-perm]").forEach(function(c){ c.onchange=async function(){
+      var uid=c.getAttribute("data-perm").split(":")[0], u=users.find(function(x){return x.user_id===uid;})||{permissions:{}};
+      var perms=Object.assign({},u.permissions); $("userList").querySelectorAll("[data-perm]").forEach(function(el){ var a=el.getAttribute("data-perm").split(":"); if(a[0]===uid) perms[a[1]]=el.checked; });
+      try{ await DB.setPermissions(uid,perms); if(uid===state.session.user.id) state.me.perms=perms; }catch(e){ banner("bad","Permissions not changed","<div>"+esc(e.message)+"</div>"); }
+      renderUsers(); }; });
+    $("userList").querySelectorAll("[data-super]").forEach(function(c){ c.onchange=async function(){
+      try{ await DB.setSuperAdmin(c.getAttribute("data-super"),c.checked); }catch(e){ banner("bad","Super admin not changed","<div>"+esc(e.message)+"</div>"); }
+      renderUsers(); }; });
     var log=await DB.log();
     $("userLog").innerHTML=log.map(function(l){return esc(new Date(l.at).toLocaleString([], {month:"numeric",day:"numeric",hour:"numeric",minute:"2-digit"}))+" · "+esc(l.what)+" · "+esc(JSON.stringify(l.detail));}).join("<br>")||"Nothing yet.";
   }catch(e){ $("userList").innerHTML='<div class="empty">'+esc(e.message)+"</div>"; }
@@ -2112,11 +2187,11 @@ function applyAccess(){
   chip.className="chip st"+(state.isOwner?" done":"");
   $("whoami").textContent=state.me?(state.me.name||state.me.email):"";
   var ro=!state.canEdit;
-  ["btnSubmit","btnSaveHubs","btnAddHub","btnConfirmCal","btnSaveDrive","btnTestDrive","btnSaveSheet","btnRefreshFeed","btnSaveBol","btnSaveOrdersOut","btnRebuildOrdersOut"].forEach(function(k){ var el=$(k); if(el) el.disabled=ro; });
+  ["btnSubmit","btnSaveHubs","btnAddHub","btnConfirmCal","btnSaveDrive","btnTestDrive","btnSaveSheet","btnRefreshFeed","btnSaveBol","btnSaveOrdersOut","btnRebuildOrdersOut","btnSaveCustomersOut","btnRebuildCustomersOut"].forEach(function(k){ var el=$(k); if(el) el.disabled=ro; });
   document.body.classList.toggle("role-driver",state.role==="driver");
   $("tab-users").hidden=!state.isOwner;
   $("healthCard").hidden=!state.isOwner;
-  ["tab-new","tab-bol","tab-setup"].forEach(function(k){ $(k).hidden=ro; });
+  ["tab-new","tab-bol","tab-setup","tab-customers"].forEach(function(k){ $(k).hidden=ro; });
   if(ro){ $("btnSubmit").textContent="Drivers cannot create orders"; if(state.tab!=="today"&&state.tab!=="open") setTab("today"); }
 }
 function showLogin(msg,kind){
@@ -2161,7 +2236,7 @@ async function renderHealth(){
     if(!h.googleConfigured){ host.innerHTML='<div class="banner warn" style="margin:0"><div><b>Google isn\'t set up on the server yet</b><div>Add the service account (GOOGLE_SA_JSON) and the Workspace user it acts as (GOOGLE_IMPERSONATE) in Cloudflare Pages → Settings → Variables and Secrets, then redeploy. See the README.</div></div></div>'; return; }
     var c=h.checks||{}, ok=function(v){return typeof v==="string"&&(v==="ok"||v.indexOf("ok ")===0||v.indexOf("ok —")===0);};
     host.innerHTML='<div class="banner '+(Object.values(c).every(ok)?"good":"warn")+'" style="margin:0"><div><b>Acting as '+esc(h.impersonate||"(no user set)")+' · mail goes out as '+esc(h.mailFrom)+' · BOLs to '+esc(h.ordersTo)+' · deposit slips to '+esc(h.accountingTo)+'</b>'+
-      '<div>Token: '+esc(c.token||"—")+'<br>AR Command Center: '+esc(c.sheet||"—")+'<br>Calendars: '+esc(c.calendar||"—")+'<br>Drive: '+esc(c.drive||"—")+'<br>Gmail: '+esc(c.gmail||"—")+'<br>Orders Out: '+esc(c.ordersOut||"—")+'</div></div></div>';
+      '<div>Token: '+esc(c.token||"—")+'<br>AR Command Center: '+esc(c.sheet||"—")+'<br>Calendars: '+esc(c.calendar||"—")+'<br>Drive: '+esc(c.drive||"—")+'<br>Gmail: '+esc(c.gmail||"—")+'<br>Orders Out: '+esc(c.ordersOut||"—")+'<br>Customers Out: '+esc(c.customersOut||"—")+'<br>Import sheet: '+esc(c.importSheet||"—")+'</div></div></div>';
   }catch(e){ host.innerHTML='<div class="banner bad" style="margin:0"><div><b>Server check failed</b><div>'+esc(e.message)+'</div></div></div>'; }
 }
 function wireAuth(){
@@ -2180,7 +2255,7 @@ function wireAuth(){
 function pickCompany(id,me){
   var m=state.memberships.find(function(x){return x.company===id;})||state.memberships[0];
   state.company=m.company; state.co=state.companies.find(function(c){return c.id===m.company;})||{id:m.company,name:m.company,short_name:m.company,data:{}};
-  state.me=Object.assign({},me||state.me,{role:m.role,hub:m.hub}); state.role=m.role;
+  state.me=Object.assign({},me||state.me,{role:m.role,hub:m.hub,isSuper:!!m.is_super_admin,perms:m.permissions||{}}); state.role=m.role;
   lsSet("adchem_company",state.company);
   renderCompanyPick();
 }
@@ -2192,6 +2267,7 @@ function renderCompanyPick(){
   sel.onchange=async function(){ pickCompany(sel.value); lsSet("adchem_myhub",""); await loadCompanyData(); };
 }
 async function loadCompanyData(){
+  state.todayX=emptyTodayX(); todaySeq++;   // Today's site-note cache belongs to the company just left
   setConn("","Loading…");
   try{
     var r=await Promise.all([DB.hubs(),DB.settings(),DB.orders()]);
@@ -2200,7 +2276,11 @@ async function loadCompanyData(){
   applyAccess();
   fillHubSelects(); state.form.lines=[blankLine()]; renderLines(); onCustomerInput(true); refreshId(); updateCounts();
   if(state.me.role==="driver"&&state.me.hub) lsSet("adchem_myhub",state.me.hub);
-  if(state.canEdit){ await loadSitesFromDb(); await loadCalendars(); }
+  await loadSitesFromDb();   // drivers too: the policy limits them to their hub's sites, which Today's site notes read
+  if(state.canEdit) await loadCalendars();
+  closeCustomer(); state.customers=[];
+  if(state.canEdit){ try{ state.customers=await CDB.customers(); }catch(e){ banner("bad","Couldn't load customers","<div>"+esc(e.message)+"</div>"); } }
+  fillAccounts();
   setConn("ok","Connected");
   setTab(state.canEdit?(state.tab||"new"):"today"); renderLive();
 }

@@ -14,7 +14,13 @@ export function companyFrom(request, body) {
   return String((body && body.company) || q || "").toLowerCase().replace(/[^a-z0-9-]/g, "");
 }
 
-export async function requireUser(request, env, roles, company) {
+const PERM_LABELS = { manage_customers: "manage customers", run_imports: "run imports", approve_driver_notes: "approve driver notes", manage_people: "manage people" };
+
+export function hasPerm(me, perm) {
+  return !!(me && (me.isSuper || (me.perms && me.perms[perm] === true)));
+}
+
+export async function requireUser(request, env, roles, company, perm) {
   const auth = request.headers.get("authorization") || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!token) throw fail("Sign in first.", 401, "unauthenticated");
@@ -25,24 +31,40 @@ export async function requireUser(request, env, roles, company) {
   const u = await fetch(base + "/auth/v1/user", { headers: h });
   if (!u.ok) throw fail("Your session has expired. Sign in again.", 401, "unauthenticated");
   const user = await u.json();
-  const mr = await fetch(base + "/rest/v1/dispatch_members?select=company,role,hub,active&active=eq.true&user_id=eq." + user.id, { headers: h });
+  const mr = await fetch(base + "/rest/v1/dispatch_members?select=company,role,hub,active,is_super_admin,permissions&active=eq.true&user_id=eq." + user.id, { headers: h });
   const memberships = mr.ok ? await mr.json() : [];
   if (!memberships.length) throw fail("This account has no access to AdChem Ops.", 403, "no_access");
   const c = company || memberships[0].company;
   const me = memberships.find(m => m.company === c);
   if (!me) throw fail("You are not a member of that company.", 403, "no_access");
   if (roles && !roles.includes(me.role)) throw fail("Your role can't do that.", 403, "forbidden");
+  const isSuper = me.is_super_admin === true;
+  const perms = me.permissions && typeof me.permissions === "object" ? me.permissions : {};
+  if (perm && !(isSuper || perms[perm] === true)) throw fail("You don't have the " + (PERM_LABELS[perm] || perm) + " permission.", 403, "forbidden");
   const ur = await fetch(base + "/rest/v1/dispatch_users?select=email,name&user_id=eq." + user.id, { headers: h });
   const urow = ur.ok ? (await ur.json())[0] : null;
-  return { user, me: { ...me, email: (urow && urow.email) || user.email, name: (urow && urow.name) || "" }, token, company: c, memberships };
+  return { user, me: { ...me, isSuper, perms, email: (urow && urow.email) || user.email, name: (urow && urow.name) || "" }, token, company: c, memberships };
 }
 
 // A Supabase client for the server, acting as the caller (RLS applies).
+export const PAGE = 1000;
 export function sb(env, token) {
   const base = env.SUPABASE_URL, anon = env.SUPABASE_ANON_KEY;
   const h = { apikey: anon, authorization: "Bearer " + token, "content-type": "application/json" };
   return {
     async get(path) { const r = await fetch(base + "/rest/v1/" + path, { headers: h }); if (!r.ok) throw new Error(await r.text()); return r.json(); },
+    // every row, PAGE at a time by Range header (PostgREST caps a response at the project's max rows, 1000 on Supabase);
+    // path should carry an order= so pages do not overlap
+    async getAll(path) {
+      const out = [];
+      for (let from = 0; ; from += PAGE) {
+        const r = await fetch(base + "/rest/v1/" + path, { headers: { ...h, "range-unit": "items", range: from + "-" + (from + PAGE - 1) } });
+        if (!r.ok) throw new Error(await r.text());
+        const rows = await r.json();
+        out.push(...rows);
+        if (!Array.isArray(rows) || rows.length < PAGE) return out;
+      }
+    },
     async upsert(table, rows, onConflict) {
       const r = await fetch(base + "/rest/v1/" + table + (onConflict ? "?on_conflict=" + onConflict : ""), { method: "POST", headers: { ...h, prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(rows) });
       if (!r.ok) throw new Error(await r.text());
@@ -51,9 +73,10 @@ export function sb(env, token) {
       const r = await fetch(base + "/rest/v1/" + table + "?" + filter, { method: "PATCH", headers: { ...h, prefer: "return=minimal" }, body: JSON.stringify(data) });
       if (!r.ok) throw new Error(await r.text());
     },
-    async insert(table, rows) {
-      const r = await fetch(base + "/rest/v1/" + table, { method: "POST", headers: { ...h, prefer: "return=representation" }, body: JSON.stringify(rows) });
-      if (!r.ok) throw new Error(await r.text()); return r.json();
+    // minimal: no rows back, for tables the caller may write but not read (dispatch_log)
+    async insert(table, rows, minimal) {
+      const r = await fetch(base + "/rest/v1/" + table, { method: "POST", headers: { ...h, prefer: minimal ? "return=minimal" : "return=representation" }, body: JSON.stringify(rows) });
+      if (!r.ok) throw new Error(await r.text()); return minimal ? null : r.json();
     },
     async rpc(fn, args) {
       const r = await fetch(base + "/rest/v1/rpc/" + fn, { method: "POST", headers: h, body: JSON.stringify(args || {}) });

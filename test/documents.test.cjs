@@ -26,6 +26,7 @@ const CID = '11111111-1111-4111-8111-111111111111';
   const today = isoLocal(new Date()); T.__today = today;   // the fake's "today" and the browser's agree
   T.dispatch_members[0].is_super_admin = true;
   T.dispatch_company_settings[0].data.nextCustomerNumber = 2;
+  T.dispatch_company_settings[0].data.customersOutSheetId = '1COUTseedAAAAAAAAAAAAAA';   // saves report to Customers Out only when a sheet is set
   // a customer complete on the twelve Stage 1 fields (Stage 1 fixture): 12 of 15 before any document
   T.dispatch_customers.push({id:CID,company:'adchem',customer_id:'ADC-0001',name:'Costa Cannabis',also_known_as:'',legal_name:'Costa Cannabis, Inc.',account_status:'active',primary_hub:'LA',parent_customer_id:null,
     billing_street:'2325 E Anaheim St',billing_city:'Long Beach',billing_state:'CA',billing_zip:'90804',last_verified:'2026-10-01',notes:''});
@@ -89,8 +90,10 @@ const CID = '11111111-1111-4111-8111-111111111111';
   assert.equal(await page.$eval('#dfPsa',e=>e.hidden), false); assert.equal(await page.$eval('#dfLicense',e=>e.hidden), true);
   const psaDates = {df_quote_sent:'2026-09-01',df_quote_accepted:'2026-09-03',df_sent_sig:'2026-09-05',df_signed_cust:'2026-09-08',df_countersigned:'2026-09-09',df_effective:'2026-09-10'};
   for (const [k,v] of Object.entries(psaDates)) await page.fill('#'+k, v);
+  const coBeforePsa = fake.calls.filter(x=>x[0]==='customers-out').length;
   await page.click('#dfSave'); await page.waitForTimeout(1000);
   assert.equal(T.dispatch_documents.length, 2);
+  assert.deepEqual(fake.calls.filter(x=>x[0]==='customers-out').slice(coBeforePsa), [['customers-out',{customerIds:[CID]}]], 'saving a customer document rewrites the customer\'s Customers Out rows');
   const psa = T.dispatch_documents.find(d=>d.doc_type==='psa');
   assert.deepEqual(psa.extra, {quote_sent:'2026-09-01',quote_accepted:'2026-09-03',sent_for_signature:'2026-09-05',signed_customer:'2026-09-08',countersigned:'2026-09-09',effective_date:'2026-09-10'});
   assert.equal(psa.file_path==null, true, 'no file uploaded for the PSA');

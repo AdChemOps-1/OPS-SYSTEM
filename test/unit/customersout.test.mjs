@@ -46,7 +46,7 @@ test('rowsFor: one row for the Primary site, one per additional site, contacts b
     assert.equal(get(r, 'Billing Contact'), 'Pat Ng'); assert.equal(get(r, 'Billing Phone'), '(510) 555-0199'); assert.equal(get(r, 'Billing Email'), 'pat@type7.example');
     assert.equal(get(r, 'CC Emails'), 'ap@type7.example', 'active cc billing contacts only, not the main billing email');
     assert.deepEqual([get(r, 'Owner Name'), get(r, 'Owner Phone'), get(r, 'Owner Email')], ['Olu Ade', '(510) 555-0111', 'olu@type7.example']);
-    assert.deepEqual([get(r, 'License Status'), get(r, 'License #'), get(r, 'License Expires'), get(r, 'Entity Status'), get(r, 'PSA Status'), get(r, 'PSA Effective')], ['missing', '', '', 'missing', 'missing', ''], 'blank dates stay blank');
+    assert.deepEqual([get(r, 'License Status'), get(r, 'License #'), get(r, 'License Expires'), get(r, 'Entity Status'), get(r, 'PSA Status'), get(r, 'PSA Effective')], ['missing', '', '', '', 'missing', ''], 'blank dates stay blank');
     assert.equal(get(r, 'Profile Complete'), '9 of 15');
     assert.equal(get(r, 'Last Verified'), 46296, '2026-10-01 as a Sheets serial number');
     near(get(r, 'Updated At'), 46315 + (10 * 60 + 5) / 1440, '10/20/2026 10:05 Los Angeles time (17:05Z) as a fractional serial');
@@ -69,6 +69,20 @@ test('date cells are serial numbers; text cells stay strings (ZIP leading zero, 
   assert.deepEqual([r[col('License Expires')], r[col('PSA Effective')], r[col('Last Verified')]], [dateSerial('2027-03-31'), dateSerial('2026-01-02'), '']);
   const dateCols = new Set([col('License Expires'), col('PSA Effective'), col('Last Verified'), col('Updated At')]);
   r.forEach((v, i) => assert.equal(typeof v, dateCols.has(i) && v !== '' ? 'number' : 'string', HEADER[i] + ' type'));
+});
+
+test('rowsFor: real license / entity / PSA values land in their columns; a no-document customer reads missing with blanks', () => {
+  const real = { ...STATUS, license_status: 'expiring', license_number: 'C11-0000123-LIC', license_expires: '2026-10-30', entity_status: 'Active', psa_status: 'signed', psa_effective: '2026-09-10' };
+  const [r] = rowsFor(C, [], [], real, 'America/Los_Angeles', NOW);
+  assert.deepEqual([r[col('License Status')], r[col('License #')], r[col('License Expires')], r[col('Entity Status')], r[col('PSA Status')], r[col('PSA Effective')]],
+    ['expiring', 'C11-0000123-LIC', dateSerial('2026-10-30'), 'Active', 'signed', dateSerial('2026-09-10')]);
+  assert.equal(HEADER[26], 'License Expires'); assert.equal(HEADER[29], 'PSA Effective');
+  // the view's row for a customer with no documents: statuses 'missing', everything else null
+  const [n] = rowsFor(C, [], [], { id: STATUS.id, profile_complete: 0, license_status: 'missing', psa_status: 'missing', license_number: null, license_expires: null, entity_status: null, psa_effective: null }, 'America/Los_Angeles', NOW);
+  assert.deepEqual(n.slice(24, 30), ['missing', '', '', '', 'missing', '']);
+  // a document record with no file still reports its status (the view derives it from the row, not the file)
+  const [f] = rowsFor(C, [], [], { ...real, license_status: 'valid', file_path: null }, 'America/Los_Angeles', NOW);
+  assert.equal(f[col('License Status')], 'valid');
 });
 
 test('rowsFor: a customer with no sites still gets one row; no Primary label → first site', () => {

@@ -187,6 +187,7 @@ async function saveDocForm(){
   closeDocForm();
   if(fileOk) banner("good","Document saved","<div>"+esc(DOC_LABEL[row.doc_type]||row.doc_type)+(row.number?" "+esc(row.number):"")+"</div>",{autoclose:4000});
   await afterDocChange(where,e.subject_type,e.subject_id);
+  if(e.subject_type==="customer") afterCustomerSave(e.subject_id);   // Customers Out carries license/PSA/entity status
 }
 async function afterDocChange(where,subjectType,subjectId){
   try{
@@ -198,7 +199,7 @@ async function afterDocChange(where,subjectType,subjectId){
 async function deleteDoc(){
   var e=state.docEdit; if(!e||!e.id||!canManageDocs()) return;
   if(!confirm("Delete this document record? Its file is kept in storage but no longer listed.")) return;
-  try{ await DDB.remove(e.id); var where=e.where; closeDocForm(); banner("good","Document deleted","",{autoclose:4000}); await afterDocChange(where,e.subject_type,e.subject_id); }
+  try{ await DDB.remove(e.id); var where=e.where; closeDocForm(); banner("good","Document deleted","",{autoclose:4000}); await afterDocChange(where,e.subject_type,e.subject_id); if(e.subject_type==="customer") afterCustomerSave(e.subject_id); }
   catch(err){ banner("bad","Document not deleted","<div>"+esc(err.message)+"</div>"); }
 }
 // own: a driver opening their own document on My documents (the database lets them read only those)
@@ -311,7 +312,8 @@ async function reviewCapture(id,decision){
     if(fields.doc_type==="other"&&!fields.title){ banner("warn","Give the document a title","<div>An <b>Other</b> document is named by its title.</div>",{autoclose:6000}); $("rv_title").focus(); return; } }
   else { reason=prompt("Why is this capture rejected? The reason is kept on the record.",""); if(reason==null||!reason.trim()) return; reason=reason.trim().slice(0,300); }
   var item=reviewItem(id); if(item) item.querySelectorAll("[data-approve],[data-reject]").forEach(function(b){ b.disabled=true; });
-  try{ await DDB.review(id,decision,reason,fields);
+  var reviewed=false;
+  try{ await DDB.review(id,decision,reason,fields); reviewed=true;
     banner("good",decision==="approve"?"Capture approved":"Capture rejected","<div>"+esc(decision==="approve"?(DOC_LABEL[fields.doc_type]||fields.doc_type)+(fields.number?" "+fields.number:""):reason)+"</div>",{autoclose:5000}); }
   catch(err){ banner("bad",decision==="approve"?"Capture not approved":"Capture not rejected","<div>"+esc(err.message)+"</div>"); }
   // the hub and the customer's pane are re-read either way: after a 409 the capture is no longer pending
@@ -319,6 +321,7 @@ async function reviewCapture(id,decision){
     if(state.tab==="documents") await renderDocsHub();
     if(d.subject_type==="customer"&&state.customer&&String(state.customer.id)===String(d.subject_id)&&(!state.docEdit||state.docEdit.where==="customer")){ await renderCustDocs(); await refreshComplete(); }
   }catch(err){ banner("bad","Couldn't reload the documents","<div>"+esc(err.message)+"</div>"); }
+  if(reviewed&&d.subject_type==="customer") afterCustomerSave(d.subject_id);
 }
 
 /* ---------- People: each member's documents (CDL, medical card), loaded when the disclosure opens ---------- */

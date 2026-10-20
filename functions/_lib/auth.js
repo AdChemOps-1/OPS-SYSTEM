@@ -14,7 +14,7 @@ export function companyFrom(request, body) {
   return String((body && body.company) || q || "").toLowerCase().replace(/[^a-z0-9-]/g, "");
 }
 
-const PERM_LABELS = { manage_customers: "manage customers", run_imports: "run imports", approve_driver_notes: "approve driver notes", manage_people: "manage people" };
+const PERM_LABELS = { manage_customers: "manage customers", run_imports: "run imports", approve_driver_notes: "approve driver notes", manage_people: "manage people", view_documents: "view documents", manage_documents: "manage documents" };
 
 export function hasPerm(me, perm) {
   return !!(me && (me.isSuper || (me.perms && me.perms[perm] === true)));
@@ -85,6 +85,14 @@ export function sb(env, token) {
     async storageGet(bucket, path) {
       const r = await fetch(base + "/storage/v1/object/" + bucket + "/" + path, { headers: { apikey: anon, authorization: "Bearer " + token } });
       if (!r.ok) throw new Error("photo not found: " + r.status); return r;
+    },
+    // A short-lived URL for one private object, signed as the caller (storage RLS applies).
+    async storageSign(bucket, path, expiresIn) {
+      const r = await fetch(base + "/storage/v1/object/sign/" + bucket + "/" + path.split("/").map(encodeURIComponent).join("/"), { method: "POST", headers: h, body: JSON.stringify({ expiresIn }) });
+      if (!r.ok) throw new Error("sign failed: " + r.status);
+      const j = await r.json();
+      if (!j || !j.signedURL) throw new Error("sign failed: no url");
+      return base + "/storage/v1" + j.signedURL;
     },
   };
 }

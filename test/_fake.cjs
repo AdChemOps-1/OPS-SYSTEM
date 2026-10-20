@@ -42,7 +42,7 @@ function customerStatus(T){ return T.dispatch_customers.map(c=>{
   const checks=[has(c.name),has(c.legal_name),has(c.account_status),has(c.primary_hub),has(c.billing_street),has(c.billing_city),has(c.billing_state),has(c.billing_zip),
     sites.length>0, cts.some(x=>x.type==='receiving'&&has(x.phone)), cts.some(x=>x.type==='billing'&&has(x.email)),
     false /* license on file */, false /* license expiry */, false /* PSA signed */, has(c.last_verified)];
-  return { id:c.id, company:c.company, customer_id:c.customer_id, profile_complete:checks.every(Boolean), license_status:'missing', psa_status:'missing', license_expires:null, license_number:null, entity_status:null };
+  return { id:c.id, company:c.company, customer_id:c.customer_id, profile_complete:checks.filter(Boolean).length, license_status:'missing', psa_status:'missing', license_expires:null, license_number:null, entity_status:null };
 }); }
 
 function uuid(){ return require('crypto').randomUUID(); }

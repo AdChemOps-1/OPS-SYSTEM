@@ -342,3 +342,11 @@ body.role-driver #foot,body.role-driver #todayHint{display:none}
 .pdocs>summary{cursor:pointer;font-size:12.5px;color:var(--ink-2);padding:2px 0}
 .pdocs-body{padding:6px 0 4px;min-width:0}
 .pdocs-body #docForm{margin:8px 0}
+/* order-time document warnings: the strip under the customer, and Setup → Warnings */
+.warn-strip{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.warn-strip .chip{white-space:normal}
+.warn-strip .warn-note{flex:1 1 100%;min-width:0;word-break:break-word}
+.warn-rows{display:grid;gap:8px;margin-top:10px}
+.warn-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;min-width:0}
+.warn-row .perm-chk{flex:0 0 190px}
+.warn-row input[data-warnnote]{flex:1 1 220px;min-width:0}

@@ -109,7 +109,10 @@ function fakeRpc(name,b,T){
   if(name==='dispatch_set_warnings'){ const m=T.dispatch_members.find(x=>x.user_id==='u1'&&x.company===b.p_company&&x.active); if(!m||m.is_super_admin!==true) return {code:403,body:{message:'not allowed'}};
     const st=T.dispatch_company_settings.find(x=>x.company===b.p_company); if(!st) return {code:404,body:{message:'no settings'}};
     if(!(b.p_warn_days>=1&&b.p_warn_days<=365)) return {code:400,body:{message:'warn days must be 1-365'}};
-    st.data={...st.data,warnDays:b.p_warn_days,warnings:b.p_warnings,expiryEmailRecipients:b.p_recipients}; return {code:200,body:null}; }
+    const was=st.data||{}; st.data={...st.data,warnDays:b.p_warn_days,warnings:b.p_warnings,expiryEmailRecipients:b.p_recipients};
+    // the log row dispatch_set_warnings writes (migration 006): from/to of the three keys
+    T.dispatch_log.push({id:T.dispatch_log.length+1,at:new Date().toISOString(),company:b.p_company,who:'u1',what:'warnings',detail:{},table_name:'dispatch_company_settings',row_id:b.p_company,
+      changes:{warnDays:{from:was.warnDays??null,to:b.p_warn_days},warnings:{from:was.warnings??null,to:b.p_warnings},expiryEmailRecipients:{from:was.expiryEmailRecipients??null,to:b.p_recipients}}}); return {code:200,body:null}; }
   return {code:404,body:{message:'no fn '+name}}; }
 
 // insert-or-merge on the conflict keys, audited, the way PostgREST's resolution=merge-duplicates does

@@ -420,8 +420,87 @@ async function renderMyDocs(){
     ||custEmpty("No documents on file / Sin documentos","The office adds your CDL and medical card here.");
 }
 
+/* ---------- order-time warnings: the strip under the customer on New order, and Setup → Warnings (super admin) ----------
+   settings.warnings = {<type>:{orderTime:boolean, note:text}}, with warnDays and expiryEmailRecipients beside it; all three are written
+   only through dispatch_set_warnings. Every type is off until a super admin switches it on. A warning never blocks an order
+   and never touches its payment code; what the person saw is stamped on the order as warningsShown. */
+const WARN_TYPES=[["cannabis_license","Cannabis license"],["psa","PSA"],["entity_status","Entity status (SOS)"]];
+const WARN_KEYS=["warnDays","warnings","expiryEmailRecipients"];
+const WARN_EMAIL=/^[^@\s]+@[^@\s]+\.[^@\s]+$/;   // dispatch_set_warnings' rule for a recipient
+const WARN_CLS={red:"st stop",amber:"warn",green:"k-D"};
+function warnDay(iso){ if(!iso) return ""; var s=String(iso); return s.slice(5,7)+"/"+s.slice(8,10)+"/"+s.slice(0,4); }   // MM/DD/YYYY
+function warnCfg(settings,type){ var w=(settings&&settings.warnings)||{}; return w[type]&&typeof w[type]==="object"?w[type]:{}; }
+// [{type, status, level:'green'|'amber'|'red', text[, note]}] for the switched-on types, from a dispatch_customer_status row
+function warnStatusFor(st,settings){
+  st=st||{}; var out=[];
+  function add(type,status,level,text){ var w={type:type,status:status,level:level,text:text}, n=String(warnCfg(settings,type).note||"").trim(); if(n) w.note=n; out.push(w); }
+  if(warnCfg(settings,"cannabis_license").orderTime===true){
+    var ls=st.license_status||"missing", e=st.license_expires;
+    add("cannabis_license",ls,ls==="missing"||ls==="expired"?"red":ls==="expiring"?"amber":"green",
+      ls==="missing"?"No license on file":ls==="expired"?"License EXPIRED "+warnDay(e):e?"License expires "+warnDay(e):"License on file, no expiry");
+  }
+  if(warnCfg(settings,"psa").orderTime===true){
+    var ps=st.psa_status||"missing";
+    add("psa",ps,ps==="signed"?"green":ps==="in_progress"?"amber":"red",ps==="signed"?"PSA signed":ps==="in_progress"?"PSA sent, not signed":"PSA not signed");
+  }
+  if(warnCfg(settings,"entity_status").orderTime===true){
+    var es=String(st.entity_status||"").trim();   // blank: no SOS check recorded, nothing to warn about
+    if(es) add("entity_status",es,/^active$/i.test(es)?"green":"red","Entity status (SOS): "+es);
+  }
+  return out;
+}
+// take the server's warning keys into state.settings (they change only through dispatch_set_warnings, maybe on another screen)
+function takeWarnSettings(s){ s=s||{}; WARN_KEYS.forEach(function(k){ if(k in s) state.settings[k]=s[k]; else delete state.settings[k]; }); }
+var warnSeq=0;
+// the strip under #fCustomer for the customer the form resolves to (null clears it); keeps what it showed in state.form.warnings
+async function renderWarnStrip(c){
+  var host=$("warnStrip"); if(!host) return;
+  var seq=++warnSeq, co=state.company;
+  if(!c){ state.form.warnings=[]; state.form.warnFor=null; host.innerHTML=""; host.hidden=true; return; }
+  try{ takeWarnSettings(await DB.settings()); }catch(e){}   // a super admin may have just switched a type on: no reload needed
+  var st=state.custStatus[c.id];
+  if(!st){ try{ st=await CDB.statusFor(c.id); if(st) state.custStatus[st.id]=st; }catch(e){} }
+  if(seq!==warnSeq||co!==state.company) return;   // the customer changed meanwhile
+  var list=warnStatusFor(st,state.settings);
+  state.form.warnings=list; state.form.warnFor=c.id;
+  var notes=WARN_TYPES.filter(function(t){ var w=warnCfg(state.settings,t[0]); return w.orderTime!==true&&String(w.note||"").trim(); })
+    .map(function(t){ return '<span class="hint warn-note">'+esc(t[1])+": "+esc(String(warnCfg(state.settings,t[0]).note).trim())+"</span>"; });
+  host.innerHTML=list.map(function(w){ return '<span class="chip '+WARN_CLS[w.level]+'" data-warnlevel="'+esc(w.level)+'">'+esc(w.text)+"</span>"+
+    (w.note?'<span class="hint warn-note">'+esc(w.note)+"</span>":""); }).join("")+notes.join("");
+  host.hidden=!host.innerHTML;
+}
+// Setup → Warnings: shown to super admins only (the RPC refuses anyone else)
+function renderWarnings(){
+  var card=$("warnCard"); if(!card) return;
+  var sup=!!(state.me&&state.me.isSuper); card.hidden=!sup; if(!sup) return;
+  $("warnRows").innerHTML=WARN_TYPES.map(function(t){ var w=warnCfg(state.settings,t[0]);
+    return '<div class="warn-row"><label class="perm-chk"><input type="checkbox" data-warn="'+esc(t[0])+'"'+(w.orderTime===true?" checked":"")+"> "+esc(t[1])+"</label>"+
+      '<input data-warnnote="'+esc(t[0])+'" value="'+esc(w.note||"")+'" placeholder="Note shown with the warning (optional)" aria-label="'+esc(t[1])+' note"></div>'; }).join("");
+  $("sWarnDays").value=docWarnDays();
+  var r=state.settings.expiryEmailRecipients; $("sExpiryTo").value=Array.isArray(r)?r.join("\n"):"";
+}
+async function saveWarnings(){
+  var raw=$("sWarnDays").value.trim(), days=Number(raw);
+  if(!/^\d+$/.test(raw)||days<1||days>365){ banner("warn","Warnings not saved","<div>The expiring window is a whole number of days, 1 to 365.</div>",{autoclose:9000,key:"warnings"}); return; }
+  var to=$("sExpiryTo").value.split(/\r?\n/).map(function(l){ return l.trim(); }).filter(Boolean);
+  var bad=to.filter(function(l){ return !WARN_EMAIL.test(l); });
+  if(bad.length){ banner("warn","Warnings not saved","<div>Not an email address: <b>"+esc(bad.join(", "))+"</b>. Put one address on each line.</div>",{autoclose:12000,key:"warnings"}); return; }
+  var warnings={}, card=$("warnCard");
+  WARN_TYPES.forEach(function(t){ var cb=card.querySelector('[data-warn="'+t[0]+'"]'), n=card.querySelector('[data-warnnote="'+t[0]+'"]');
+    warnings[t[0]]={orderTime:!!(cb&&cb.checked),note:n?n.value.trim():""}; });
+  var btn=$("btnSaveWarnings"); btn.disabled=true;
+  try{ await DB.setWarnings(days,warnings,to); }
+  catch(e){ btn.disabled=false; banner("bad","Warnings not saved","<div>"+esc(e.message)+"</div>",{key:"warnings"}); return; }
+  try{ takeWarnSettings(await DB.settings()); }
+  catch(e){ state.settings.warnDays=days; state.settings.warnings=warnings; state.settings.expiryEmailRecipients=to; }
+  btn.disabled=false; renderWarnings();
+  banner("good","Warnings saved","<div>"+(WARN_TYPES.filter(function(t){ return warnings[t[0]].orderTime; }).map(function(t){ return esc(t[1]); }).join(", ")||"Every warning is off")+
+    " · expiring window "+days+" days · "+to.length+" expiry email recipient"+(to.length===1?"":"s")+".</div>",{autoclose:8000,key:"warnings"});
+}
+
 function wireDocuments(){
   $("tab-documents").onclick=function(){ setTab("documents"); };
+  $("btnSaveWarnings").onclick=saveWarnings;
   $("capFile").onchange=onCapFile; $("capSend").onclick=capSend; $("capClose").onclick=closeCapture;
   $("capSheet").addEventListener("keydown",function(e){ if(e.key==="Escape") closeCapture(); });
   $("myDocsList").onclick=function(ev){ var o=ev.target.closest("[data-open]"); if(o) openDocFile(o.getAttribute("data-open"),o,true); };

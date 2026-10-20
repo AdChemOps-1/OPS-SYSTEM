@@ -95,6 +95,7 @@
             <input id="fCustomer" list="customerList" placeholder="Start typing — the list comes from the AR Command Center" required>
             <datalist id="customerList"></datalist>
           </label>
+          <div class="spanall warn-strip" id="warnStrip" hidden></div>
           <label class="f spanall" id="siteWrap" hidden>Delivery site
             <select id="fSite"></select>
             <span class="hint">This customer has more than one delivery site. Choose the one this order goes to.</span>
@@ -273,6 +274,22 @@
       <h2 class="sec-h">Google connection (server)</h2>
       <div id="healthState"><span class="hint">Checking…</span></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px"><button class="btn" id="btnHealth">Check again</button></div>
+    </div>
+    <div class="card pad sec" id="warnCard" hidden>
+      <h2 class="sec-h">Warnings — documents at order time</h2>
+      <p class="hint">Super admins only. A type switched on shows under the customer on New order (license expired or missing, PSA not signed, entity not Active) and is stamped on the order; it never blocks the order or changes its payment code. The note is shown with the warning.</p>
+      <div id="warnRows" class="warn-rows"></div>
+      <div class="grid two" style="margin-top:11px">
+        <label class="f">Expiring window (days)
+          <input id="sWarnDays" type="number" min="1" max="365" step="1" inputmode="numeric">
+          <span class="hint">A document inside this many days of its expiry counts as expiring (1–365).</span>
+        </label>
+        <label class="f spanall">Expiry email — one address per line
+          <textarea id="sExpiryTo" rows="3" class="mono" placeholder="ops@adchem.pro"></textarea>
+          <span class="hint">Who receives the expiring-documents email.</span>
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px"><button class="btn primary" id="btnSaveWarnings">Save warnings</button></div>
     </div>
     <div class="card pad sec">
       <h2 class="sec-h">Customer feed — AR Command Center</h2>

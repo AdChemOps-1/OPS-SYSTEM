@@ -207,7 +207,7 @@ function coMail(k,fallback){var d=(state.co&&state.co.data)||{}; return d[k]||fa
    ============================================================ */
 const state = {tab:"new",orders:[],hubs:[],settings:{},calendars:[],session:null,me:null,role:"",company:"",co:null,companies:[],memberships:[],canEdit:false,isOwner:false,busy:false,bolOrder:null,editing:null,lastLoad:null,users:[],invites:[],
   feed:{rows:[],byCust:{},loadedAt:null,error:null,loading:false},
-  form:{lines:[],feedAddr:"",feedUnconfirmed:false,suppress:false}};
+  form:{lines:[],feedAddr:"",feedUnconfirmed:false,suppress:false,warnings:[],warnFor:null}};
 const $ = function(id){return document.getElementById(id);};
 const esc = function(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});};
 function pad(n){return n<10?"0"+n:""+n;}
@@ -330,8 +330,10 @@ function onCustomerInput(keepFields){
   } else { sw.hidden=true; $("fSite").innerHTML=""; }
   if(!keepFields && !state.form.suppress) applySite();
   else { var r=currentSiteRow(); state.form.feedAddr=r?r.addr:""; state.form.feedUnconfirmed=r?r.unconfirmed:false; }
-  refreshAddr(); refreshCode();
+  refreshAddr(); refreshCode(); warnForForm();
 }
+/* the document warnings for the customer the form resolves to (documents.js) */
+function warnForForm(){ var n=$("fCustomer").value.trim(); renderWarnStrip(n?customerForSite(currentSiteRow()||{customer:n}):null); }
 function applySite(){
   var r=currentSiteRow();
   state.form.feedAddr=r?r.addr:""; state.form.feedUnconfirmed=r?r.unconfirmed:false;
@@ -532,11 +534,15 @@ function draftOrderFromForm(){
   var eff=effectiveCode(c.code,clear);
   var dep=$("fDep").checked?{item:$("fDepItem").value,amount:Number($("fDepAmt").value||0)}:null;
   var ed=state.editing?state.orders.find(function(o){return o.id===state.editing;}):null;
+  /* the warnings the strip showed for this customer; an edit whose strip hasn't drawn yet keeps the stored ones */
+  var cid=cu?cu.id:(keepLink?cur.customerId:null);
+  var warn=cid&&state.form.warnFor===cid?state.form.warnings:(cur&&cid&&cid===cur.customerId?cur.warningsShown||[]:[]);
   return {
     id:effectiveId(), bolNo:ed?ed.bolNo||null:null,
     customer:$("fCustomer").value.trim(),
     siteKey:r?r.siteKey:"", siteLabel:r?r.siteLabel:"",
-    customerId:cu?cu.id:(keepLink?cur.customerId:null), customerNo:cu?(cu.customer_id||""):(keepLink?cur.customerNo||"":""),
+    customerId:cid, customerNo:cu?(cu.customer_id||""):(keepLink?cur.customerNo||"":""),
+    warningsShown:warn.map(function(w){return Object.assign({},w);}),
     shipTo:$("fShipTo").value.trim(), feedAddr:state.form.feedAddr,
     addrState:a.k, addrChanged:(a.k==="edited"||a.k==="typed"||a.k==="confirmedNow"),
     contact:$("fContact").value.trim(), contactPhone:$("fContactPhone").value.trim(), copyTo:$("fCopyTo").value.trim(),
@@ -822,7 +828,9 @@ function setTab(t){
 function codeChip(o){
   var k=o.effCode||o.code;
   var label=!k?"—":(o.code==="CHECK"&&k!=="CHECK")?k+" (cleared)":k;
-  return '<span class="chip '+(k?CODES[k].cls:"k-none")+'" title="'+esc(k?CODES[k].text:"")+'">'+esc(label)+"</span>"+(o.deposit?' <span class="chip k-DEP">+DEP</span>':"");
+  var red=(o.warningsShown||[]).filter(function(w){return w.level==="red";});
+  return '<span class="chip '+(k?CODES[k].cls:"k-none")+'" title="'+esc(k?CODES[k].text:"")+'">'+esc(label)+"</span>"+(o.deposit?' <span class="chip k-DEP">+DEP</span>':"")+
+    (red.length?' <span class="chip st stop" title="'+esc("Shown when the order was taken: "+red.map(function(w){return w.text;}).join(" · "))+'">⚠ docs</span>':"");
 }
 
 /* ============================================================
@@ -1031,7 +1039,7 @@ function updateCounts(){
    ============================================================ */
 function renderOrdersOutState(){ var el=$("ordersOutState"); if(!el) return; $("sOrdersOut").value=state.settings.ordersOutSheetId||""; el.innerHTML=state.settings.ordersOutSheetId?'<div class="banner good" style="margin:0"><div><b>Orders Out is set.</b><div>Every scheduled, numbered and delivered order is written to it as it changes; Rebuild rewrites the whole sheet from the database.</div></div></div>':'<div class="banner warn" style="margin:0"><div><b>No Orders Out sheet yet.</b><div>Paste the link to the company\'s <i>Dispatch Orders Out</i> sheet. Until then nothing is reported back to the AR Command Center.</div></div></div>'; }
 function renderCustomersOutState(){ var el=$("customersOutState"); if(!el) return; $("sCustomersOut").value=state.settings.customersOutSheetId||""; el.innerHTML=state.settings.customersOutSheetId?'<div class="banner good" style="margin:0"><div><b>Customers Out is set.</b><div>Each customer\'s rows are rewritten whenever the customer, a site or a contact is saved; Rebuild rewrites the whole tab from the database.</div></div></div>':'<div class="banner warn" style="margin:0"><div><b>No Customers Out sheet yet.</b><div>Paste the link to the company\'s <i>Customers Out</i> sheet. Until then the AR Command Center keeps reading its own directory.</div></div></div>'; }
-function renderSetup(){renderShareState();renderFeedState();renderOrdersOutState();renderCustomersOutState();renderImportCard();renderBolNumState();renderCalState();renderDriveState();renderHubEditor();renderSegTable();renderHealth();}
+function renderSetup(){renderShareState();renderFeedState();renderOrdersOutState();renderCustomersOutState();renderImportCard();renderBolNumState();renderCalState();renderDriveState();renderHubEditor();renderSegTable();renderHealth();renderWarnings();}
 function renderBolNumState(){
   var n=Number(state.settings.nextBol)||0, used=maxBolUsed();
   $("sNextBol").value=n||"";
@@ -1485,7 +1493,7 @@ function wire(){
   $("fIdOverride").oninput=function(){refreshId();scheduleLive();};
   $("btnIdAuto").onclick=function(){$("fIdOverride").value="";refreshId();scheduleLive();};
   $("fCustomer").oninput=function(){onCustomerInput(false);scheduleLive();};
-  $("fSite").onchange=function(){applySite();refreshAddr();refreshCode();scheduleLive();};
+  $("fSite").onchange=function(){applySite();refreshAddr();refreshCode();warnForForm();scheduleLive();};
   $("fShipTo").oninput=function(){refreshAddr();scheduleLive();};
   $("fAddrConfirm").onchange=function(){refreshAddr();scheduleLive();};
   ["fManualCode","fClearBy","fClearCode"].forEach(function(k){$(k).onchange=function(){refreshCode();scheduleLive();};});
@@ -1960,6 +1968,7 @@ const DB={
   },
   async setPermissions(userId,perms){ return sbErr(await supa.rpc("dispatch_set_permissions",{p_user:userId,p_company:state.company,p_perms:perms})); },
   async setSuperAdmin(userId,on){ return sbErr(await supa.rpc("dispatch_set_super_admin",{p_user:userId,p_company:state.company,p_on:!!on})); },
+  async setWarnings(warnDays,warnings,recipients){ return sbErr(await supa.rpc("dispatch_set_warnings",{p_company:state.company,p_warn_days:warnDays,p_warnings:warnings,p_recipients:recipients})); },
   async invites(){ return sbErr(await supa.from("dispatch_invites").select("email,name,role,hub,invited_at,accepted_at,revoked_at").eq("company",state.company).order("invited_at",{ascending:false})); },
   async grant(email,name,role,hub){ return sbErr(await supa.rpc("dispatch_grant",{p_email:email,p_name:name,p_role:role,p_hub:hub,p_company:state.company})); },
   async revoke(email){ return sbErr(await supa.rpc("dispatch_revoke",{p_email:email,p_company:state.company})); },

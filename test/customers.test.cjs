@@ -403,6 +403,56 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
     await pc.fill('#sNextBol','9600'); await pc.click('#btnSaveBol'); await pc.waitForTimeout(600);
     assert.equal(TC.dispatch_company_settings[0].data.nextBol, 9600, 'BOL numbering on Setup still sets it');
   }
+  // ---------- Setup → Warnings: super admin only, written only through dispatch_set_warnings ----------
+  { const fw = makeFake(); const TW = fw.T; const baseW = await fw.start(); fakes.push(fw);
+    TW.dispatch_members[0].is_super_admin = true;
+    const pw = await newPage(b, baseW); pages.push(pw); await signIn(pw, baseW);
+    const topBanner = async p => flat(await p.$$eval('#banners .banner',e=>e[0]?e[0].innerText:''));
+    const wdata = () => TW.dispatch_company_settings[0].data;
+    await pw.click('#tab-setup'); await pw.waitForTimeout(400);
+    assert.equal(await pw.$eval('#warnCard',e=>e.hidden), false, 'warnings card shown to a super admin');
+    assert.deepEqual(await pw.$$eval('#warnCard [data-warn]',e=>e.map(x=>[x.getAttribute('data-warn'),x.checked])),
+      [['cannabis_license',false],['psa',false],['entity_status',false]], 'every warning type is off by default');
+    assert.equal(await pw.$$eval('#warnCard [data-warnnote]',e=>e.length), 3, 'a note per type');
+    assert.equal(await pw.inputValue('#sWarnDays'), '30', 'default warning window');
+    await pw.check('[data-warn="cannabis_license"]'); await pw.fill('[data-warnnote="cannabis_license"]','Call the office before loading');
+    await pw.fill('#sWarnDays','45');
+    // an invalid recipient line: banner, nothing saved
+    await pw.fill('#sExpiryTo','ops@adchem.pro\nnot-an-email');
+    const logW = TW.dispatch_log.length;
+    await pw.click('#btnSaveWarnings'); await pw.waitForTimeout(500);
+    assert.match(await topBanner(pw), /not-an-email/, 'the bad recipient line is named');
+    assert.equal(wdata().warnings, undefined, 'nothing saved with a bad recipient'); assert.equal(TW.dispatch_log.length, logW);
+    // an out-of-range window: banner, nothing saved
+    await pw.fill('#sExpiryTo','ops@adchem.pro\n\n  billing@adchem.pro  '); await pw.fill('#sWarnDays','0');
+    await pw.click('#btnSaveWarnings'); await pw.waitForTimeout(500);
+    assert.match(await topBanner(pw), /1.*365/, 'the window must be 1–365 days');
+    assert.equal(wdata().warnings, undefined, 'nothing saved with a bad window');
+    // valid: saved through the RPC, logged, and shown back
+    await pw.fill('#sWarnDays','45'); await pw.click('#btnSaveWarnings'); await pw.waitForTimeout(600);
+    assert.equal(wdata().warnDays, 45);
+    assert.deepEqual(wdata().warnings, {cannabis_license:{orderTime:true,note:'Call the office before loading'},psa:{orderTime:false,note:''},entity_status:{orderTime:false,note:''}});
+    assert.deepEqual(wdata().expiryEmailRecipients, ['ops@adchem.pro','billing@adchem.pro'], 'blank lines dropped, lines trimmed');
+    assert.ok(TW.dispatch_log.slice(logW).some(l=>l.what==='warnings'), 'a warnings log row');
+    assert.deepEqual(await pw.evaluate(()=>[state.settings.warnDays,state.settings.warnings.cannabis_license.orderTime]), [45,true], 'the page re-reads the settings');
+    await pw.click('#tab-today'); await pw.waitForTimeout(200); await pw.click('#tab-setup'); await pw.waitForTimeout(400);
+    assert.equal(await pw.$eval('[data-warn="cannabis_license"]',e=>e.checked), true); assert.equal(await pw.inputValue('[data-warnnote="cannabis_license"]'), 'Call the office before loading');
+    assert.equal(await pw.inputValue('#sWarnDays'), '45'); assert.equal(await pw.inputValue('#sExpiryTo'), 'ops@adchem.pro\nbilling@adchem.pro');
+    // an unrelated Setup save leaves the warning keys as the server has them
+    await pw.selectOption('#sTz','America/Denver'); await pw.waitForTimeout(600);
+    assert.equal(wdata().tz, 'America/Denver'); assert.equal(wdata().warnDays, 45); assert.equal(wdata().warnings.cannabis_license.orderTime, true);
+    // a coordinator (not super): no card, and the RPC's refusal surfaces as a banner
+    const pcw = await newPage(b, baseW, {members:[{user_id:'u1',company:'adchem',role:'coordinator',hub:'',active:true,is_super_admin:false,permissions:{}}]});
+    await signIn(pcw, baseW); await pcw.click('#tab-setup'); await pcw.waitForTimeout(400);
+    assert.equal(await pcw.$eval('#warnCard',e=>e.hidden), true, 'no warnings card for a coordinator');
+    await pcw.evaluate(()=>{ document.getElementById('warnCard').hidden=false; document.getElementById('sWarnDays').value='10'; });
+    await pcw.click('#btnSaveWarnings'); await pcw.waitForTimeout(600);
+    assert.match(await topBanner(pcw), /Warnings not saved.*not allowed/, 'the refusal is shown');
+    assert.equal(wdata().warnDays, 45, 'nothing changed');
+    assert.deepEqual(pcw.errs.filter(e=>!/status of 403/.test(e)), [], 'unexpected page errors (coordinator)');
+    assert.equal(pcw.errs.filter(e=>/status of 403/.test(e)).length, 1, 'the refused RPC case ran');
+    await pcw.close();
+  }
   // no page errors except the deliberate Customers Out 502
   assert.deepEqual(pages.flatMap(p=>p.errs).filter(e=>!/status of 502/.test(e)), [], 'unexpected page errors');
   assert.equal(page.errs.filter(e=>/status of 502/.test(e)).length, 1, 'the Customers Out failure case ran');

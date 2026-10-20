@@ -279,6 +279,63 @@ const flat = s => s.replace(/\s+/g, ' ').trim();
   const after=await m.$$eval('#todayList .stop',e=>e.map(x=>x.textContent.replace(/\s+/g,' ')));
   assert.equal(after.length, 2);
   after.forEach(t=>{ assert.doesNotMatch(t, /4321|Scale on 580|LA only route note|555-0101|Gate moved to the north side/, 'no AdChem site notes for the Northstar driver'); assert.match(t, /9999/); assert.match(t, /North route note/); });
+  // ---------- order-time document warnings: off by default; a super admin's switch takes effect without a reload (Review Focus 3) ----------
+  const fw=makeFake(); const TW=fw.T; const baseW=await fw.start();
+  try {
+    TW.dispatch_members[0].is_super_admin=true;
+    TW.dispatch_customers.push({id:'c-w7',company:'adchem',customer_id:'ADC-0001',name:'Type 7 Manufacturing',account_status:'active',primary_hub:'EB'});
+    TW.dispatch_documents.push({id:'0b5e0c9a-7d1e-4c55-9a51-3f2b8f1c0d77',company:'adchem',subject_type:'customer',subject_id:'c-w7',doc_type:'cannabis_license',title:'',number:'C11-0000123-LIC',status:'',
+      expires:'2026-09-30',review_status:'live',extra:{},created_at:new Date().toISOString()});
+    const w=await newPage(b,baseW);
+    await w.goto(baseW+'/'); await w.waitForTimeout(400); await w.fill('#lEmail','jamie@adchem.pro'); await w.fill('#lPass','correct-horse'); await w.click('#btnLogin'); await w.waitForTimeout(1200);
+    await w.click('#tab-setup'); await w.waitForTimeout(300); await w.click('#btnRefreshFeed'); await w.waitForTimeout(800);
+    const pickType7=async()=>{ await w.click('#tab-new'); await w.waitForTimeout(200);
+      await w.fill('#fCustomer',''); await w.fill('#fCustomer','Type 7 Manufacturing'); await w.dispatchEvent('#fCustomer','input'); await w.waitForTimeout(500); };
+    const submitButane=async()=>{ await w.selectOption('[data-line="0"] [data-k="category"]','Gases'); await w.selectOption('[data-line="0"] [data-k="product"]','Butane');
+      await w.selectOption('[data-line="0"] [data-k="container"]','120lb Cylinder'); await w.fill('[data-line="0"] [data-k="qty"]','2'); await w.waitForTimeout(200);
+      const n=TW.dispatch_orders.length; await w.click('#btnSubmit'); await w.waitForTimeout(900); assert.equal(TW.dispatch_orders.length, n+1, 'order saved'); return TW.dispatch_orders[n]; };
+    // off (the default): no strip, nothing stamped
+    await pickType7();
+    assert.equal(flat(await w.textContent('#warnStrip')), '', 'no strip while warnings are off');
+    const o1=await submitButane();
+    assert.deepEqual(o1.data.warningsShown, [], 'no warnings stamped while off');
+    assert.equal(flat(await w.textContent('#warnStrip')), '', 'the strip clears with the form');
+    // the super admin turns the license warning on
+    await w.click('#tab-setup'); await w.waitForTimeout(400);
+    await w.check('[data-warn="cannabis_license"]'); await w.click('#btnSaveWarnings'); await w.waitForTimeout(600);
+    assert.equal(TW.dispatch_company_settings[0].data.warnings.cannabis_license.orderTime, true, 'switch saved');
+    assert.ok(TW.dispatch_log.some(l=>l.what==='warnings'), 'a warnings log row');
+    // same page, no reload: the strip shows the expired license in red and the order is stamped
+    await pickType7();
+    assert.match(flat(await w.textContent('#warnStrip')), /License EXPIRED 09\/30\/2026/);
+    assert.equal(await w.$eval('#warnStrip .chip',e=>e.className), 'chip st stop', 'red');
+    assert.doesNotMatch(flat(await w.textContent('#warnStrip')), /PSA/, 'a type left off shows nothing');
+    const o2=await submitButane();
+    assert.equal(o2.data.warningsShown.length, 1);
+    assert.deepEqual(o2.data.warningsShown[0], {type:'cannabis_license',status:'expired',level:'red',text:'License EXPIRED 09/30/2026'});
+    assert.equal(o2.data.effCode, 'D', 'the warning never changes the payment code'); assert.equal(o2.status, 'Scheduled', 'nor blocks the order');
+    // the red flag on the Orders list and on the Today stop
+    await w.click('#tab-open'); await w.waitForTimeout(300);
+    const orow=id=>w.$$eval('#orderList .orow',(e,id)=>e.filter(x=>x.textContent.includes(id)).map(x=>x.textContent.replace(/\s+/g,' ')),id);
+    assert.match((await orow(o2.id))[0], /⚠ docs/, 'Orders row flagged'); assert.doesNotMatch((await orow(o1.id))[0], /⚠ docs/, 'the earlier order is not');
+    await w.click('#tab-today'); await w.waitForTimeout(400);
+    const stop=id=>w.$$eval('#todayList .stop',(e,id)=>e.filter(x=>x.querySelector('#more-'+CSS.escape(id))).map(x=>x.querySelector('.qr-code').textContent),id);
+    assert.match((await stop(o2.id))[0], /⚠ docs/, 'Today stop flagged'); assert.doesNotMatch((await stop(o1.id))[0], /⚠ docs/);
+    // the rules, type by type
+    const rules=await w.evaluate(()=>{ const on={warnings:{cannabis_license:{orderTime:true,note:''},psa:{orderTime:true,note:'Ask for the countersigned copy'},entity_status:{orderTime:true,note:''}}};
+      const f=st=>warnStatusFor(st,on).map(x=>[x.type,x.level,x.text].concat(x.note?[x.note]:[]));
+      return { expiring:f({license_status:'expiring',license_expires:'2026-11-05',psa_status:'signed',entity_status:'Active'}),
+        missing:f({license_status:'missing',psa_status:'in_progress',entity_status:'Suspended'}),
+        valid:f({license_status:'valid',license_expires:'2027-01-02',psa_status:'missing',entity_status:''}),
+        off:warnStatusFor({license_status:'expired',license_expires:'2026-09-30',psa_status:'missing',entity_status:'Suspended'},{warnings:{cannabis_license:{orderTime:false,note:'x'}}}),
+        none:warnStatusFor({license_status:'expired'},{}) }; });
+    assert.deepEqual(rules.expiring, [['cannabis_license','amber','License expires 11/05/2026'],['psa','green','PSA signed','Ask for the countersigned copy'],['entity_status','green','Entity status (SOS): Active']]);
+    assert.deepEqual(rules.missing, [['cannabis_license','red','No license on file'],['psa','amber','PSA sent, not signed','Ask for the countersigned copy'],['entity_status','red','Entity status (SOS): Suspended']]);
+    assert.deepEqual(rules.valid, [['cannabis_license','green','License expires 01/02/2027'],['psa','red','PSA not signed','Ask for the countersigned copy']], 'a blank entity status warns about nothing');
+    assert.deepEqual(rules.off, [], 'a type switched off yields no entry'); assert.deepEqual(rules.none, [], 'no settings: every type off');
+    assert.deepEqual(w.errs, [], 'unexpected page errors (warnings)');
+    await w.close();
+  } finally { await fw.stop(); }
   // no page errors except the deliberate Gmail 502
   // ... and, on the driver's phone, the deliberate failed capture upload (500) and the refused sign (404)
   const errs=page.errs.filter(e=>!/status of 502/.test(e)).concat(m.errs.filter(e=>!/status of (500|404)/.test(e)));

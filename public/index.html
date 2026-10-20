@@ -48,6 +48,7 @@
       <button class="tab" role="tab" id="tab-open">Orders <span class="cnt" id="cntOpen">0</span></button>
       <button class="tab" role="tab" id="tab-today">Today <span class="cnt" id="cntToday">0</span></button>
       <button class="tab" role="tab" id="tab-setup">Setup <span class="cnt warn" id="cntSetup">0</span></button>
+      <button class="tab" role="tab" id="tab-customers" hidden>Customers</button>
       <button class="tab" role="tab" id="tab-users" hidden>People</button>
     </div>
   </div>
@@ -386,6 +387,67 @@
     </div>
 </section>
 
+  <!-- ================= CUSTOMERS ================= -->
+  <section id="panel-customers" hidden>
+    <div class="card pad sec" id="custToolbar">
+      <div class="toolbar" style="margin-bottom:0">
+        <input id="custSearch" type="search" placeholder="Search name, ID, legal name, city" aria-label="Search customers">
+        <select id="custHub" aria-label="Hub"><option value="">All hubs</option></select>
+        <select id="custStatus" aria-label="Account status"><option value="">All statuses</option><option value="active">Active</option><option value="prospect">Prospect</option><option value="inactive">Inactive</option></select>
+        <label class="cust-chk"><input id="custIncomplete" type="checkbox"> Incomplete only</label>
+        <button class="btn primary" id="btnNewCustomer" type="button">New customer</button>
+      </div>
+    </div>
+    <div class="card sec"><div id="custList"></div></div>
+
+    <div id="custPage" hidden>
+      <div class="card pad sec cust-head">
+        <div class="cust-title">
+          <h2 id="custTitle">New customer</h2>
+          <div class="cust-chips"><span class="chip" id="custIdChip">—</span><span class="chip st" id="custStatusChip">active</span><span class="badge-complete" id="custComplete">0 of 15</span></div>
+        </div>
+        <button class="btn" id="btnCloseCustomer" type="button">Close</button>
+      </div>
+      <div class="tabs cust-tabs" role="tablist">
+        <button class="tab" role="tab" id="ctab-profile" aria-selected="true">Profile</button>
+        <button class="tab" role="tab" id="ctab-sites" aria-selected="false">Sites</button>
+        <button class="tab" role="tab" id="ctab-contacts" aria-selected="false">Contacts</button>
+        <button class="tab" role="tab" id="ctab-activity" aria-selected="false">Activity</button>
+        <button class="tab" role="tab" id="ctab-history" aria-selected="false">History</button>
+      </div>
+      <div id="cpane-profile" class="card pad sec">
+        <div class="grid two">
+          <label class="f">Name<input id="cName" autocomplete="off"></label>
+          <label class="f">Also known as<input id="cAka" autocomplete="off" placeholder="other names, comma separated"></label>
+        </div>
+        <div class="grid two" style="margin-top:11px">
+          <label class="f">Legal name<input id="cLegal" autocomplete="off"></label>
+          <label class="f">Parent customer<select id="cParent"><option value="">— none —</option></select></label>
+        </div>
+        <div class="grid three" style="margin-top:11px">
+          <label class="f">Account status<select id="cStatus"><option value="active">Active</option><option value="prospect">Prospect</option><option value="inactive">Inactive</option></select></label>
+          <label class="f">Primary hub<select id="cHub"><option value="">— pick a hub —</option></select></label>
+          <label class="f">Last verified<input id="cVerified" type="date"></label>
+        </div>
+        <h3 class="sec-h" style="margin-top:16px">Billing address</h3>
+        <div class="grid four">
+          <label class="f span2">Street<input id="cBillStreet" autocomplete="off"></label>
+          <label class="f">City<input id="cBillCity" autocomplete="off"></label>
+          <div class="grid two" style="gap:11px"><label class="f">State<input id="cBillState" autocomplete="off" maxlength="2"></label><label class="f">ZIP<input id="cBillZip" autocomplete="off" inputmode="numeric"></label></div>
+        </div>
+        <label class="f" style="margin-top:11px">Notes<textarea id="cNotes"></textarea></label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px">
+          <button class="btn primary" id="btnSaveCustomer" type="button">Save customer</button>
+          <span class="hint" id="custSaveHint"></span>
+        </div>
+      </div>
+      <div id="cpane-sites" class="card pad sec" hidden><p class="hint" style="margin:0">Delivery sites for this customer.</p></div>
+      <div id="cpane-contacts" class="card pad sec" hidden><p class="hint" style="margin:0">Contacts for this customer.</p></div>
+      <div id="cpane-activity" class="card pad sec" hidden><p class="hint" style="margin:0">Calls, emails, visits and drivers' notes.</p></div>
+      <div id="cpane-history" class="card pad sec" hidden><p class="hint" style="margin:0">Every change to this customer, field by field.</p></div>
+    </div>
+  </section>
+
   <!-- ================= PEOPLE ================= -->
   <section id="panel-users" hidden>
     <div class="card pad sec">
@@ -487,5 +549,6 @@
 <script src="/vendor/supabase.js"></script>
 <script src="/config.js"></script>
 <script src="/app.js"></script>
+<script src="/customers.js"></script>
 </body>
 </html>

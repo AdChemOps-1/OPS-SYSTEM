@@ -780,7 +780,7 @@ function fillStatic(){
 }
 function setTab(t){
   state.tab=t;
-  ["new","bol","open","today","setup","users"].forEach(function(k){
+  ["new","bol","open","today","setup","customers","users"].forEach(function(k){
     $("tab-"+k).setAttribute("aria-selected",k===t?"true":"false");
     $("panel-"+k).hidden=(k!==t);
   });
@@ -790,6 +790,7 @@ function setTab(t){
   if(t==="bol") renderBolTab();
   if(t==="setup") renderSetup();
   if(t==="users") renderUsers();
+  if(t==="customers") renderCustomers();
 }
 function codeChip(o){
   var k=o.effCode||o.code;
@@ -1442,6 +1443,7 @@ function clearBanner(k){var el=document.querySelector('[data-bkey="'+k+'"]'); if
 function setConn(kind,text){$("connDot").className="dot"+(kind?" "+kind:"");$("connTxt").textContent=text;}
 function wire(){
   ["new","bol","open","today","setup"].forEach(function(k){ $("tab-"+k).onclick=function(){ if(k==="bol") state.bolOrder=null; setTab(k); }; });
+  wireCustomers();
   $("fHub").onchange=function(){refreshId();renderLines();scheduleLive();};
   $("fDate").onchange=function(){refreshId();scheduleLive();};
   $("fIdOverride").oninput=function(){refreshId();scheduleLive();};
@@ -1867,7 +1869,7 @@ const DB={
   async me(){
     var r=await supa.from("dispatch_users").select("user_id,email,name,active").eq("user_id",state.session.user.id).maybeSingle();
     var me=sbErr(r);
-    var m=sbErr(await supa.from("dispatch_members").select("company,role,hub,active").eq("user_id",state.session.user.id).eq("active",true));
+    var m=sbErr(await supa.from("dispatch_members").select("company,role,hub,active,is_super_admin,permissions").eq("user_id",state.session.user.id).eq("active",true));
     var cos=sbErr(await supa.from("companies").select("id,name,short_name,active,data").eq("active",true).order("name"));
     return {me:me,memberships:m||[],companies:cos||[]};
   },
@@ -2116,7 +2118,7 @@ function applyAccess(){
   document.body.classList.toggle("role-driver",state.role==="driver");
   $("tab-users").hidden=!state.isOwner;
   $("healthCard").hidden=!state.isOwner;
-  ["tab-new","tab-bol","tab-setup"].forEach(function(k){ $(k).hidden=ro; });
+  ["tab-new","tab-bol","tab-setup","tab-customers"].forEach(function(k){ $(k).hidden=ro; });
   if(ro){ $("btnSubmit").textContent="Drivers cannot create orders"; if(state.tab!=="today"&&state.tab!=="open") setTab("today"); }
 }
 function showLogin(msg,kind){
@@ -2180,7 +2182,7 @@ function wireAuth(){
 function pickCompany(id,me){
   var m=state.memberships.find(function(x){return x.company===id;})||state.memberships[0];
   state.company=m.company; state.co=state.companies.find(function(c){return c.id===m.company;})||{id:m.company,name:m.company,short_name:m.company,data:{}};
-  state.me=Object.assign({},me||state.me,{role:m.role,hub:m.hub}); state.role=m.role;
+  state.me=Object.assign({},me||state.me,{role:m.role,hub:m.hub,isSuper:!!m.is_super_admin,perms:m.permissions||{}}); state.role=m.role;
   lsSet("adchem_company",state.company);
   renderCompanyPick();
 }
@@ -2201,6 +2203,8 @@ async function loadCompanyData(){
   fillHubSelects(); state.form.lines=[blankLine()]; renderLines(); onCustomerInput(true); refreshId(); updateCounts();
   if(state.me.role==="driver"&&state.me.hub) lsSet("adchem_myhub",state.me.hub);
   if(state.canEdit){ await loadSitesFromDb(); await loadCalendars(); }
+  closeCustomer(); state.customers=[];
+  if(state.canEdit){ try{ state.customers=await CDB.customers(); }catch(e){ banner("bad","Couldn't load customers","<div>"+esc(e.message)+"</div>"); } }
   setConn("ok","Connected");
   setTab(state.canEdit?(state.tab||"new"):"today"); renderLive();
 }

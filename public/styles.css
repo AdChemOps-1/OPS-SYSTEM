@@ -269,3 +269,20 @@ body.role-driver #foot,body.role-driver #todayHint{display:none}
 .hprod input[type=checkbox],.hprod input[type=radio]{width:16px;height:16px;min-height:0;padding:0;margin:0;flex:none;accent-color:var(--accent)}
 .hprod .grid-p{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:4px 12px}
 .hprod .cat{font-size:12px;font-weight:700;color:var(--ink-3);margin:9px 0 3px}
+/* ---- customers ---- */
+.cust-row{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:11px 13px;border-bottom:1px solid var(--line-2);cursor:pointer}
+.cust-row:last-child{border-bottom:0}
+.cust-row:hover{background:var(--surface-2)}
+.cust-row .cust-name{flex:1 1 220px;min-width:0;font-weight:600;font-size:14.5px;word-break:break-word}
+.cust-row .cust-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px}
+.cust-row .cust-id{font-size:12.5px;font-weight:600;color:var(--accent)}
+.badge-complete{display:inline-flex;align-items:center;padding:2px 7px;border-radius:9px;background:var(--amber-soft);color:var(--amber);font-size:11px;font-weight:700;font-family:"IBM Plex Mono",monospace;white-space:nowrap}
+.badge-complete.full{background:var(--accent-soft);color:var(--accent)}
+.cust-chk{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--ink-2);white-space:nowrap}
+.toolbar .cust-chk input{width:auto;min-height:0;flex:none;min-width:0;margin:0}
+.toolbar #custSearch{flex:2 1 200px}
+.cust-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.cust-title{min-width:0}
+.cust-title h2{margin:0 0 6px;font-size:18px;word-break:break-word}
+.cust-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.cust-tabs{margin-bottom:10px}

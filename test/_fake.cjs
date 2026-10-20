@@ -45,6 +45,16 @@ function customerStatus(T){ return T.dispatch_customers.map(c=>{
   return { id:c.id, company:c.company, customer_id:c.customer_id, profile_complete:checks.filter(Boolean).length, license_status:'missing', psa_status:'missing', license_expires:null, license_number:null, entity_status:null };
 }); }
 
+// ---- audit: mirrors dispatch_audit() in migration 005 — one dispatch_log row per written row, {field:{from,to}} ----
+const AUDITED=['dispatch_customers','dispatch_sites','dispatch_site_hub_notes','dispatch_contacts','dispatch_customer_activity'];
+const AUDIT_SKIP=['updated_at','updated_by','synced_at'];
+function audit(T,t,before,after){ if(!AUDITED.includes(t)) return; const r=after||before; const ch={};
+  new Set(Object.keys(before||{}).concat(Object.keys(after||{}))).forEach(k=>{ if(AUDIT_SKIP.includes(k)) return; const from=before?(before[k]===undefined?null:before[k]):null, to=after?(after[k]===undefined?null:after[k]):null;
+    if(JSON.stringify(from)!==JSON.stringify(to)) ch[k]={from,to}; });
+  if(before&&after&&!Object.keys(ch).length) return;
+  const row_id=t==='dispatch_sites'?r.site_key:t==='dispatch_site_hub_notes'?r.site_key+'/'+r.hub:r.id;
+  T.dispatch_log.push({id:T.dispatch_log.length+1,at:new Date().toISOString(),company:r.company,who:'u1',what:'change',detail:{op:!before?'insert':!after?'delete':'update'},table_name:t,row_id:row_id==null?null:String(row_id),changes:ch}); }
+
 function uuid(){ return require('crypto').randomUUID(); }
 function nextCustomerId(T,company){ const s=T.dispatch_company_settings.find(x=>x.company===company); if(!s) return null; const n=s.data.nextCustomerNumber||1; s.data.nextCustomerNumber=n+1; return 'ADC-'+String(n).padStart(4,'0'); }
 
@@ -73,9 +83,9 @@ function makeFake(seed){
       if(req.method==='GET'){ let out=orderRows(rows.filter(r=>match(r,f)),u.searchParams.get('order')); const lim=parseInt(u.searchParams.get('limit'),10); if(lim>0) out=out.slice(0,lim); if(req.headers.accept&&req.headers.accept.includes('vnd.pgrst.object')) return out.length?send(200,out[0]):send(406,{message:'none'}); return send(200,out); }
       if(req.method==='POST'){ const arr=[].concat(JSON.parse(body)); const keys=(u.searchParams.get('on_conflict')||'id').split(',');
         arr.forEach(r=>{ if(t==='dispatch_customers'){ if(!r.id) r.id=uuid(); if(!r.customer_id) r.customer_id=nextCustomerId(T,r.company); }
-          const i=rows.findIndex(x=>keys.every(k=>r[k]!=null&&String(x[k])===String(r[k]))); if(i>=0) rows[i]={...rows[i],...r}; else rows.push(r); }); return send(201,arr); }
-      if(req.method==='PATCH'){ const d=JSON.parse(body); rows.filter(r=>match(r,f)).forEach(r=>Object.assign(r,d)); return send(204,{}); }
-      if(req.method==='DELETE'){ for(let i=rows.length-1;i>=0;i--) if(match(rows[i],f)) rows.splice(i,1); return send(204,{}); }
+          const i=rows.findIndex(x=>keys.every(k=>r[k]!=null&&String(x[k])===String(r[k]))); if(i>=0){ const was={...rows[i]}; rows[i]={...rows[i],...r}; audit(T,t,was,rows[i]); } else { rows.push(r); audit(T,t,null,r); } }); return send(201,arr); }
+      if(req.method==='PATCH'){ const d=JSON.parse(body); rows.filter(r=>match(r,f)).forEach(r=>{ const was={...r}; Object.assign(r,d); audit(T,t,was,r); }); return send(204,{}); }
+      if(req.method==='DELETE'){ for(let i=rows.length-1;i>=0;i--) if(match(rows[i],f)){ audit(T,t,rows[i],null); rows.splice(i,1); } return send(204,{}); }
     }
     if(u.pathname.startsWith('/storage/v1/object/dispatch-pods/')){ calls.push(['upload',u.pathname]); return send(200,{Key:u.pathname.replace('/storage/v1/object/','')}); }
     if(u.pathname==='/api/feed'){ const co=JSON.parse(body||'{}').company||'adchem'; T.dispatch_sites=T.dispatch_sites.filter(s=>s.company!==co).concat(SITES.map(r=>({company:co,site_key:r[13],customer:r[0],code_raw:r[1],code:r[1].split(' - ')[0],addr:r[2].replace(/\s*\(billing address[^)]*\)\s*/,'').trim(),unconfirmed:/confirm the delivery/.test(r[2]),city:r[3],hub:r[4],contact:r[5],phone:r[6],gate:r[7],hours:r[8],instr:r[11],site_label:r[12],copy_to:'',synced_at:new Date().toISOString()}))); return send(200,{ok:true,sites:SITES.length,customers:5,unconfirmed:1}); }

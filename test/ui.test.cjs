@@ -321,6 +321,28 @@ const flat = s => s.replace(/\s+/g, ' ').trim();
     await w.click('#tab-today'); await w.waitForTimeout(400);
     const stop=id=>w.$$eval('#todayList .stop',(e,id)=>e.filter(x=>x.querySelector('#more-'+CSS.escape(id))).map(x=>x.querySelector('.qr-code').textContent),id);
     assert.match((await stop(o2.id))[0], /⚠ docs/, 'Today stop flagged'); assert.doesNotMatch((await stop(o1.id))[0], /⚠ docs/);
+    // the status read fails for one pick: a grey "couldn't check" line, nothing stamped, no flag
+    await w.route('**/rest/v1/dispatch_customer_status*', r=>r.fulfill({status:500,contentType:'application/json',body:JSON.stringify({message:'view down'})}));
+    await pickType7();
+    assert.equal(flat(await w.textContent('#warnStrip')), "Couldn't check documents", 'unknown status: one grey line');
+    assert.equal(await w.$$eval('#warnStrip .chip',e=>e.length), 0, 'no level chip when the status is unknown');
+    const o3=await submitButane();
+    assert.deepEqual(o3.data.warningsShown, [], 'an unknown status stamps nothing');
+    await w.unroute('**/rest/v1/dispatch_customer_status*');
+    await w.click('#tab-open'); await w.waitForTimeout(300);
+    assert.doesNotMatch((await orow(o3.id))[0], /⚠ docs/, 'no flag for an unknown status');
+    // a license added elsewhere after the cache filled: the next pick reads it fresh
+    await pickType7();
+    assert.match(flat(await w.textContent('#warnStrip')), /License EXPIRED/, 'still expired before the new license');
+    TW.dispatch_documents.push({id:'0b5e0c9a-7d1e-4c55-9a51-3f2b8f1c0d78',company:'adchem',subject_type:'customer',subject_id:'c-w7',doc_type:'cannabis_license',title:'',number:'C11-0000124-LIC',status:'',
+      expires:'2027-09-30',review_status:'live',extra:{},created_at:new Date().toISOString()});
+    await pickType7();
+    assert.equal(flat(await w.textContent('#warnStrip')), 'License expires 09/30/2027', 'the fresh status');
+    assert.equal(await w.$eval('#warnStrip .chip',e=>e.className), 'chip k-D', 'green');
+    const o4=await submitButane();
+    assert.deepEqual(o4.data.warningsShown, [{type:'cannabis_license',status:'valid',level:'green',text:'License expires 09/30/2027'}], 'the order stamps the fresh status');
+    await w.click('#tab-open'); await w.waitForTimeout(300);
+    assert.doesNotMatch((await orow(o4.id))[0], /⚠ docs/, 'no flag for a valid license');
     // the rules, type by type
     const rules=await w.evaluate(()=>{ const on={warnings:{cannabis_license:{orderTime:true,note:''},psa:{orderTime:true,note:'Ask for the countersigned copy'},entity_status:{orderTime:true,note:''}}};
       const f=st=>warnStatusFor(st,on).map(x=>[x.type,x.level,x.text].concat(x.note?[x.note]:[]));
@@ -333,7 +355,8 @@ const flat = s => s.replace(/\s+/g, ' ').trim();
     assert.deepEqual(rules.missing, [['cannabis_license','red','No license on file'],['psa','amber','PSA sent, not signed','Ask for the countersigned copy'],['entity_status','red','Entity status (SOS): Suspended']]);
     assert.deepEqual(rules.valid, [['cannabis_license','green','License expires 01/02/2027'],['psa','red','PSA not signed','Ask for the countersigned copy']], 'a blank entity status warns about nothing');
     assert.deepEqual(rules.off, [], 'a type switched off yields no entry'); assert.deepEqual(rules.none, [], 'no settings: every type off');
-    assert.deepEqual(w.errs, [], 'unexpected page errors (warnings)');
+    assert.deepEqual(w.errs.filter(e=>!/status of 500/.test(e)), [], 'unexpected page errors (warnings)');
+    assert.ok(w.errs.some(e=>/status of 500/.test(e)), 'the failed status read case ran');   // one per input event of that pick
     await w.close();
   } finally { await fw.stop(); }
   // no page errors except the deliberate Gmail 502

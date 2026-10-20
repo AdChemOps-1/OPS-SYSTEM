@@ -458,15 +458,18 @@ async function renderWarnStrip(c){
   var seq=++warnSeq, co=state.company;
   if(!c){ state.form.warnings=[]; state.form.warnFor=null; host.innerHTML=""; host.hidden=true; return; }
   try{ takeWarnSettings(await DB.settings()); }catch(e){}   // a super admin may have just switched a type on: no reload needed
-  var st=state.custStatus[c.id];
-  if(!st){ try{ st=await CDB.statusFor(c.id); if(st) state.custStatus[st.id]=st; }catch(e){} }
+  var st=null;   // always fresh: a license added elsewhere since the cache filled must not warn
+  try{ st=await CDB.statusFor(c.id); if(st) state.custStatus[st.id]=st; }catch(e){ st=null; }
   if(seq!==warnSeq||co!==state.company) return;   // the customer changed meanwhile
-  var list=warnStatusFor(st,state.settings);
+  var anyOn=WARN_TYPES.some(function(t){ return warnCfg(state.settings,t[0]).orderTime===true; });
+  // status unknown (the read failed or found nothing): say so in grey, never guess red, stamp nothing
+  var list=st?warnStatusFor(st,state.settings):[];
   state.form.warnings=list; state.form.warnFor=c.id;
+  var unknown=!st&&anyOn?'<span class="hint warn-note" data-warnunknown>Couldn\'t check documents</span>':"";
   var notes=WARN_TYPES.filter(function(t){ var w=warnCfg(state.settings,t[0]); return w.orderTime!==true&&String(w.note||"").trim(); })
     .map(function(t){ return '<span class="hint warn-note">'+esc(t[1])+": "+esc(String(warnCfg(state.settings,t[0]).note).trim())+"</span>"; });
   host.innerHTML=list.map(function(w){ return '<span class="chip '+WARN_CLS[w.level]+'" data-warnlevel="'+esc(w.level)+'">'+esc(w.text)+"</span>"+
-    (w.note?'<span class="hint warn-note">'+esc(w.note)+"</span>":""); }).join("")+notes.join("");
+    (w.note?'<span class="hint warn-note">'+esc(w.note)+"</span>":""); }).join("")+unknown+notes.join("");
   host.hidden=!host.innerHTML;
 }
 // Setup → Warnings: shown to super admins only (the RPC refuses anyone else)

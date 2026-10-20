@@ -45,6 +45,15 @@ begin
     ('adchem', cust, 'T005-EB', 'owner', 'Otto', '510-555-0103', '');
   insert into public.dispatch_customer_activity (company, customer_id, method, summary, logged_by)
     values ('adchem', cust, 'call', 'coordinator called', co) returning id into act_other;
+  -- ---- audit ignores synced_at: a feed re-sync that changes nothing else writes no log row; a real feed change still logs ----
+  select count(*) into n from public.dispatch_log;
+  update public.dispatch_sites set synced_at = now() + interval '1 hour' where company = 'adchem' and site_key = 'T005-EB';
+  if (select count(*) from public.dispatch_log) <> n then raise exception 'synced_at-only site update wrote a dispatch_log row'; end if;
+  update public.dispatch_sites set synced_at = now() + interval '2 hours', hours = '7-3' where company = 'adchem' and site_key = 'T005-EB';
+  select * into lg from public.dispatch_log order by id desc limit 1;
+  if (select count(*) from public.dispatch_log) <> n + 1 or lg.table_name <> 'dispatch_sites' or lg.row_id <> 'T005-EB'
+     or lg.changes->'hours'->>'to' is distinct from '7-3' or lg.changes ? 'synced_at' then
+    raise exception 'feed column change not logged correctly: %', lg.changes; end if;
   update public.dispatch_members set is_super_admin = true where user_id = su and company = 'adchem';
   update public.dispatch_company_settings set data = jsonb_set(data, '{nextCustomerNumber}', '101') where company = 'adchem';
 

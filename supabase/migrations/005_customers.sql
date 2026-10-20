@@ -158,14 +158,15 @@ create or replace trigger dispatch_customer_activity_keep_company before update 
 create or replace trigger dispatch_site_hub_notes_keep_company before update on public.dispatch_site_hub_notes for each row execute function public.dispatch_keep_company();
 
 -- Audit: one dispatch_log row per insert/update/delete, changes = {field: {from, to}} for every top-level key that differs
--- (inserts have from null, deletes to null). updated_at/updated_by are noise and left out; an update that changes nothing else is not logged.
+-- (inserts have from null, deletes to null). updated_at/updated_by are noise and left out, and so is synced_at
+-- (/api/feed re-upserts every site on each sync); an update that changes nothing else is not logged.
 create or replace function public.dispatch_audit() returns trigger language plpgsql security definer set search_path = public as $fn$
 declare o jsonb := case when tg_op <> 'INSERT' then to_jsonb(old) end; n jsonb := case when tg_op <> 'DELETE' then to_jsonb(new) end;
         r jsonb := coalesce(n, o); ch jsonb;
 begin
   select coalesce(jsonb_object_agg(k, jsonb_build_object('from', o->k, 'to', n->k)), '{}'::jsonb) into ch
     from (select jsonb_object_keys(coalesce(o, '{}'::jsonb) || coalesce(n, '{}'::jsonb)) k) keys
-   where k not in ('updated_at','updated_by') and (o->k) is distinct from (n->k);
+   where k not in ('updated_at','updated_by','synced_at') and (o->k) is distinct from (n->k);
   if tg_op = 'UPDATE' and ch = '{}'::jsonb then return null; end if;
   insert into public.dispatch_log (company, who, what, detail, table_name, row_id, changes) values (r->>'company', auth.uid(), 'change',
     jsonb_build_object('op', lower(tg_op)), tg_table_name,

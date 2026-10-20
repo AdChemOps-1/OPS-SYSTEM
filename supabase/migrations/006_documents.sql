@@ -346,7 +346,10 @@ do $$ begin   -- one statement, so the flag and the writes share a transaction h
   perform set_config('dispatch.set_warnings', '', true);
 end $$;
 
--- Applied: pending — run the security advisor after the real apply and record the result here. Development branches are not
--- available on this project, so this file was tested only inside a rolled-back transaction (supabase/tests/006_policies.sql),
--- which the advisor cannot see. Expected: no new "RLS disabled" or "function callable by anon" findings for dispatch_* — every new
--- table above enables RLS and every new function revokes execute from anon and public.
+-- Applied: 10/20/26 (migration 006_documents on project adchem-hours) through the Supabase MCP after a rolled-back double run with
+-- supabase/tests/006_policies.sql. Security advisor afterwards: no new finding for anything created here. The two classes that mention
+-- dispatch_* functions ("signed-in users can execute a security definer function") already covered every Ops RPC since 002; each of
+-- them checks the caller's company role itself. New informational line: pg_net reports its schema as public (Supabase installs it so;
+-- its functions live in the net schema). The eight anon-executable functions listed belong to AdChem Time, not Ops.
+-- The cron job is scheduled separately: select public.dispatch_schedule_expiry('<app url>/api/expiry', '<EXPIRY_SECRET>') from the SQL
+-- editor (session_user postgres), which also stores the secret in Vault.

@@ -59,7 +59,8 @@ export function rowsFor(c, sites, contacts, status, tz, now) {
   const ordered = list.length ? [list[pi >= 0 ? pi : 0]].concat(list.filter((_, i) => i !== (pi >= 0 ? pi : 0))) : [null];
   const stamp = stampSerial(now || new Date(), tz);
   return ordered.map(site => {
-    const recv = (site && receiving.find(x => x.site_key === site.site_key)) || receiving.find(x => !x.site_key) || receiving[0] || null;
+    // the site's own receiving contact, else a customer-wide one; never another site's
+    const recv = (site && receiving.find(x => x.site_key === site.site_key)) || receiving.find(x => !x.site_key) || null;
     return [
       s(c.customer_id), s(c.name), s(c.also_known_as), s(c.legal_name), s(c.account_status), s(c.primary_hub), s(c.parent_name),
       s(c.billing_street), s(c.billing_city), s(c.billing_state), s(c.billing_zip),
@@ -79,7 +80,8 @@ const keyOf = (r) => s(r[0]) + "\u0000" + s(r[DELIVERY_STREET]);
 
 // Write the given customers' rows (or every customer, when rebuild is true). customerIds are dispatch_customers.id uuids.
 // Incremental: a sheet row with the same (Customer ID, Delivery Street) is rewritten in place, new pairs are appended, and
-// rows of a listed customer whose site is gone (merged, relabelled, deleted) are deleted, so no pair is ever duplicated.
+// rows of a listed customer whose site is gone (merged, relabelled, deleted) are blanked, so no pair is ever duplicated.
+// Rows are never deleted here: row numbers then never shift under a concurrent write. Rebuild compacts the blanks away.
 // Values are written RAW: ZIPs and phones keep their leading zeros and a name starting with "=" is never a formula.
 export async function writeCustomersOut(env, db, ctx, company, customerIds, rebuild) {
   const sheetId = sheetIdFrom(ctx.settings.customersOutSheetId);
@@ -91,14 +93,14 @@ export async function writeCustomersOut(env, db, ctx, company, customerIds, rebu
   const json = (body) => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
   const ids = rebuild ? null : [...new Set((customerIds || []).map(String).filter(x => UUID.test(x)))];
-  if (ids && !ids.length) return { ok: true, updated: 0, appended: 0, deleted: 0 };
+  if (ids && !ids.length) return { ok: true, updated: 0, appended: 0, cleared: 0 };
   const inIds = ids ? `&id=in.(${ids.join(",")})` : "";
   const inCust = ids ? `&customer_id=in.(${ids.join(",")})` : "&customer_id=not.is.null";
   const want = (r, k) => !ids || ids.includes(r[k]);
-  const customers = (await db.get(`dispatch_customers?select=*&company=eq.${co}${inIds}&order=name.asc,customer_id.asc&limit=10000`) || []).filter(c => want(c, "id"));
-  const sites = groupBy((await db.get(`dispatch_sites?select=*&company=eq.${co}${inCust}&order=site_key.asc&limit=20000`) || []).filter(x => want(x, "customer_id")), "customer_id");
-  const contacts = groupBy((await db.get(`dispatch_contacts?select=*&company=eq.${co}${inCust}&active=eq.true&order=created_at.asc&limit=50000`) || []).filter(x => want(x, "customer_id")), "customer_id");
-  const status = new Map((await db.get(`dispatch_customer_status?select=*&company=eq.${co}${inIds}`) || []).map(r => [r.id, r]));
+  const customers = (await db.getAll(`dispatch_customers?select=*&company=eq.${co}${inIds}&order=name.asc,customer_id.asc`) || []).filter(c => want(c, "id"));
+  const sites = groupBy((await db.getAll(`dispatch_sites?select=*&company=eq.${co}${inCust}&order=site_key.asc`) || []).filter(x => want(x, "customer_id")), "customer_id");
+  const contacts = groupBy((await db.getAll(`dispatch_contacts?select=*&company=eq.${co}${inCust}&active=eq.true&order=created_at.asc,id.asc`) || []).filter(x => want(x, "customer_id")), "customer_id");
+  const status = new Map((await db.getAll(`dispatch_customer_status?select=*&company=eq.${co}${inIds}&order=id.asc`) || []).map(r => [r.id, r]));
   // parent names: in a rebuild every customer is at hand; otherwise read just the parents
   const names = new Map(customers.map(c => [c.id, c.name]));
   const parents = [...new Set(customers.map(c => c.parent_customer_id).filter(p => p && UUID.test(p) && !names.has(p)))];
@@ -107,7 +109,7 @@ export async function writeCustomersOut(env, db, ctx, company, customerIds, rebu
   const now = new Date();
   const rowsOf = (c) => rowsFor({ ...c, parent_name: names.get(c.parent_customer_id) || "" }, sites.get(c.id), contacts.get(c.id), status.get(c.id), tz, now);
 
-  // the tab's numeric sheetId (gid), for row deletes and formats
+  // the tab's numeric sheetId (gid), for the date formats
   const tabId = async () => {
     const meta = await gfetch(env, `${base}?fields=sheets.properties`);
     const tab = (meta && meta.sheets || []).map(x => x.properties || {}).find(p => p.title === TAB);
@@ -140,14 +142,13 @@ export async function writeCustomersOut(env, db, ctx, company, customerIds, rebu
     if (hit) updates.push({ range: `'${TAB}'!A${hit}:${LAST}${hit}`, values: [row] });
     else appends.push(row);
   }
-  const stale = [...index.values()].flat().sort((a, b) => b - a);   // bottom-up so earlier deletes don't shift later ones
+  // stale rows are blanked in the same write (A..AG = ""), never deleted
+  const stale = [...index.values()].flat().sort((a, b) => a - b);
+  const blank = new Array(HEADER.length).fill("");
+  for (const r of stale) updates.push({ range: `'${TAB}'!A${r}:${LAST}${r}`, values: [blank] });
   if (updates.length) await gfetch(env, `${base}/values:batchUpdate`, json({ valueInputOption: "RAW", data: updates }));
-  if (stale.length) {
-    const gid = await tabId();
-    await gfetch(env, `${base}:batchUpdate`, json({ requests: stale.map(r => ({ deleteDimension: { range: { sheetId: gid, dimension: "ROWS", startIndex: r - 1, endIndex: r } } })) }));
-  }
   if (appends.length) await gfetch(env, `${base}/values/${rng(`A2:${LAST}`)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, json({ values: appends }));
-  return { ok: true, updated: updates.length, appended: appends.length, deleted: stale.length };
+  return { ok: true, updated: updates.length - stale.length, appended: appends.length, cleared: stale.length };
 }
 
 // Best effort from other routes (the import, later document saves): never let the sheet break the thing that triggered it.

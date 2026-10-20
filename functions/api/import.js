@@ -14,10 +14,10 @@ const batches = async (rows, fn) => { for (let i = 0; i < rows.length; i += BATC
 export async function existingFor(db, company) {
   const co = encodeURIComponent(company);
   const [customers, sites, contacts, hubNotes] = await Promise.all([
-    db.get(`dispatch_customers?select=*&company=eq.${co}&limit=20000`),
-    db.get(`dispatch_sites?select=*&company=eq.${co}&limit=20000`),
-    db.get(`dispatch_contacts?select=id,customer_id,type,first_name,last_name,phone,email&company=eq.${co}&limit=50000`),
-    db.get(`dispatch_site_hub_notes?select=*&company=eq.${co}&limit=50000`),
+    db.getAll(`dispatch_customers?select=*&company=eq.${co}&order=id.asc`),
+    db.getAll(`dispatch_sites?select=*&company=eq.${co}&order=site_key.asc`),
+    db.getAll(`dispatch_contacts?select=id,customer_id,type,first_name,last_name,phone,email&company=eq.${co}&order=id.asc`),
+    db.getAll(`dispatch_site_hub_notes?select=*&company=eq.${co}&order=site_key.asc,hub.asc`),
   ]);
   return { customers: customers || [], sites: sites || [], contacts: contacts || [], hubNotes: hubNotes || [] };
 }
@@ -60,7 +60,9 @@ export async function onRequestPost({ request, env }) {
     const co = encodeURIComponent(company);
     const now = new Date().toISOString();
     const applied = applyPlan(plan, await existingFor(db, company), user.id);
-    const src = (r) => ({ ...r, import_source: { ...(r.import_source || {}), sheetId, at: now } });
+    // import_source.at is when the import last wrote the row; applyPlan keeps an app-edited row's earlier stamp, so the edit
+    // (updated_at after it) still counts on the next run
+    const src = (r) => ({ ...r, import_source: { ...(r.import_source || {}), sheetId, at: (r.import_source && r.import_source.at) || now } });
 
     // 1. customers, then their ids
     const head = bindRows({ customers: applied.customers }, new Map(), company, now);
@@ -71,10 +73,13 @@ export async function onRequestPost({ request, env }) {
     const data = (srow && srow.data) || {};
     const next = Math.max(Number(data.nextCustomerNumber) || 1, applied.nextCustomerNumber);
     await db.upsert("dispatch_company_settings", [{ company, data: { ...data, nextCustomerNumber: next }, updated_at: now }], "company");
-    const ids = new Map((await db.get(`dispatch_customers?select=id,customer_id&company=eq.${co}&limit=20000`) || []).map(r => [r.customer_id, r.id]));
+    const ids = new Map((await db.getAll(`dispatch_customers?select=id,customer_id&company=eq.${co}&order=id.asc`) || []).map(r => [r.customer_id, r.id]));
     const rows = bindRows(applied, ids, company, now);
-    for (const p of rows.parents)
-      await db.patch("dispatch_customers", `company=eq.${co}&customer_id=eq.${encodeURIComponent(p.customer_id)}`, { parent_customer_id: p.parent_customer_id });
+    // parent links, now that every customer has an id: the same rows again with parent_customer_id, as one batched upsert
+    // (an upsert row must carry the NOT NULL columns, so it is the whole row, unchanged but for the parent)
+    const written = new Map(head.customers.map(c => [c.customer_id, src(c)]));
+    const parentRows = rows.parents.filter(p => written.has(p.customer_id)).map(p => ({ ...written.get(p.customer_id), parent_customer_id: p.parent_customer_id }));
+    await batches(parentRows, r => db.upsert("dispatch_customers", r, "company,customer_id"));
     // 3. sites, hub notes, contacts
     await batches(rows.sites.map(src), r => db.upsert("dispatch_sites", r, "company,site_key"));
     await batches(rows.siteHubNotes, r => db.upsert("dispatch_site_hub_notes", r, "company,site_key,hub"));
@@ -82,7 +87,7 @@ export async function onRequestPost({ request, env }) {
 
     const counts = { customers: rows.customers.length, sites: rows.sites.length, hubNotes: rows.siteHubNotes.length, contacts: rows.contacts.length,
       skipped: plan.items.filter(i => i && i.decision === "skip").length };
-    await db.insert("dispatch_log", [{ company, who: user.id, what: "import", detail: { counts, sheetId } }]);
+    await db.insert("dispatch_log", [{ company, who: user.id, what: "import", detail: { counts, sheetId } }], true);   // minimal: only admins read the log's import rows
     // 4. Customers Out, best effort
     const customersOut = await tryWriteCustomersOut(env, db, { ...ctx, settings: { ...ctx.settings, ...data } }, company, [], true);
     return json({ ok: true, counts, nextCustomerNumber: next, problems: applied.problems, customersOut });

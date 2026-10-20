@@ -59,7 +59,8 @@ test('planImport: customers, the LA site, parent, Customers-only row, skipped ta
   assert.equal(la.fields.site_label, 'LA'); assert.equal(la.fields.delivery_street, '1200 E 7th St');
   assert.deepEqual([costa.action, costa.parent, costa.customer_id], ['customer', t7.key, 'ADC-0007']);
   assert.deepEqual([bio.action, bio.source.tab, bio.customer_id, bio.fields.legal_name, bio.fields.billing_city], ['customer', 'Customers', 'ADC-0008', 'Bio-Rad Laboratories, Inc.', 'Hercules'], 'Customers-only row, numbered max+1');
-  assert.ok(bio.contacts.some(c => c.type === 'billing' && c.first_name === 'Dana' && c.email === 'ap@bio-rad.example'));
+  assert.ok(bio.contacts.some(c => c.type === 'other' && c.first_name === 'Dana' && c.email === 'ap@bio-rad.example'), 'a Customers-tab contact is type other (spec §8), not billing (I10c)');
+  assert.ok(!bio.contacts.some(c => c.type === 'billing'));
   // the Customers-tab duplicate of Type 7 merges (no own item) and fills only blanks: the Directory's AKA "T7" wins
   assert.equal(plan.items.filter(i => i.name === 'Type 7 Manufacturing').length, 1);
   assert.equal(t7.fields.also_known_as, 'T7');
@@ -243,7 +244,7 @@ async function route(body, member) {
       if (t === 'dispatch_customers') return res(db.dispatch_customers);
       return res([]);
     }
-    writes.push({ method, t, q: m[2] || '', body });
+    writes.push({ method, t, q: m[2] || '', body, prefer: init.headers && init.headers.prefer });
     if (t === 'dispatch_customers' && method === 'POST') body.forEach((r, i) => db.dispatch_customers.push({ ...r, id: 'uuid-' + r.customer_id }));
     return method === 'POST' ? res(body, 201) : new Response(null, { status: 204 });
   };
@@ -275,12 +276,17 @@ test('/api/import commit: customers first, then sites, hub notes, contacts; log;
   assert.equal(r.json.nextCustomerNumber, 9);
   assert.match(r.json.customersOut.skipped, /No Customers Out sheet/, 'Customers Out attempted (best effort)');
   const order = r.writes.map(w => w.t + (w.q.includes('on_conflict') ? '?' + w.q.split('on_conflict=')[1] : '') + ' ' + w.method);
-  assert.deepEqual(order, ['dispatch_customers?company,customer_id POST', 'dispatch_company_settings?company POST', 'dispatch_customers PATCH', 'dispatch_sites?company,site_key POST',
+  assert.deepEqual(order, ['dispatch_customers?company,customer_id POST', 'dispatch_company_settings?company POST', 'dispatch_customers?company,customer_id POST', 'dispatch_sites?company,site_key POST',
     'dispatch_site_hub_notes?company,site_key,hub POST', 'dispatch_contacts POST', 'dispatch_log POST']);
   assert.ok(order.indexOf('dispatch_company_settings?company POST') < order.indexOf('dispatch_sites?company,site_key POST'), 'numbering moves before any site/note/contact write');
   const [cust, settings, parent, sites, , contacts, log] = r.writes;
   assert.ok(cust.body.every(c => c.company === 'adchem' && c.updated_by === 'u1' && c.import_source.sheetId === '1IMPORTworkbookAAAAAAAAAA' && !('id' in c) && !('parent_ref' in c)));
-  assert.match(parent.q, /customer_id=eq\.ADC-0007/); assert.deepEqual(parent.body, { parent_customer_id: 'uuid-ADC-0001' });
+  // parent links: one batched upsert of the linked rows (I9), not a PATCH per row
+  assert.equal(r.writes.filter(w => w.method === 'PATCH').length, 0, 'no per-row PATCH');
+  assert.deepEqual(parent.body.map(p => [p.customer_id, p.parent_customer_id, p.name, p.company]), [['ADC-0007', 'uuid-ADC-0001', 'Costa Cannabis', 'adchem']]);
+  assert.deepEqual(Object.keys(parent.body[0]).sort(), [...Object.keys(cust.body[0]), 'parent_customer_id'].sort(), 'the whole row (NOT NULL columns), plus the parent');
+  assert.ok(r.gets.filter(u => /dispatch_(customers|sites|contacts|site_hub_notes)\?/.test(u)).every(u => !/limit=/.test(u) && /order=/.test(u)), 'paged, ordered reads (getAll), no row cap');
+  assert.equal(log.prefer, 'return=minimal', 'the log row is inserted without reading it back (a coordinator cannot read import rows)');
   assert.ok(sites.body.every(s => /^uuid-ADC-/.test(s.customer_id) && s.company === 'adchem'));
   assert.ok(contacts.body.every(c => /^uuid-ADC-/.test(c.customer_id)));
   assert.deepEqual(log.body, [{ company: 'adchem', who: 'u1', what: 'import', detail: { counts: r.json.counts, sheetId: '1IMPORTworkbookAAAAAAAAAA' } }]);
@@ -330,4 +336,61 @@ test('applyPlan twice (first result fed back as existing): a flipped row with no
   assert.equal(out2.customers.length, out1.customers.length);
   assert.equal(out2.contacts.length, 0, 'no duplicate contacts');
   assert.equal(out2.nextCustomerNumber, 10);
+});
+
+// ---------- final-review fixes ----------
+test('planImport: a sheet Customer ID held by an app-made customer with another name and legal name is a problem, not an update (I3)', () => {
+  const appMade = { id: 'c-app', company: 'adchem', customer_id: 'ADC-0001', name: 'Zed Welding', legal_name: 'Zed Welding Co', account_status: 'active', primary_hub: 'EB',
+    billing_street: '', billing_city: '', billing_state: '', billing_zip: '', last_verified: null, notes: '', updated_by: 'u9', import_source: null, parent_customer_id: null };
+  const existing = { ...NONE, customers: [appMade] };
+  const plan = planImport(WB, existing);
+  const t7 = byName(plan, 'Type 7 Manufacturing');
+  assert.deepEqual([t7.action, t7.decision, t7.options, t7.existing], ['problem', 'skip', ['skip'], false]);
+  assert.match(t7.detail, /ADC-0001 already belongs to “Zed Welding”/);
+  assert.ok(plan.problems.some(p => /ADC-0001 already belongs to “Zed Welding”/.test(p)), plan.problems.join(' | '));
+  const out = applyPlan(plan, existing, 'u1');
+  assert.ok(!out.customers.some(c => c.customer_id === 'ADC-0001'), 'the app customer is not overwritten');
+  assert.ok(!out.contacts.some(c => c.customer_ref === 'ADC-0001'));
+  // the same number on a customer the import wrote before (import_source set), or with the same legal name, still updates
+  for (const e of [{ ...appMade, import_source: { tab: 'Customer Directory', row: 5 } }, { ...appMade, legal_name: 'Type 7 Manufacturing, Inc' }]) {
+    const p2 = planImport(WB, { ...NONE, customers: [e] });
+    assert.deepEqual([byName(p2, 'Type 7 Manufacturing').action, byName(p2, 'Type 7 Manufacturing').existing], ['customer', true]);
+  }
+});
+
+test('applyPlan: the importer\'s own app edit after an import is kept on the next run (I4)', () => {
+  const T1 = '2026-10-20T10:00:00.000Z', T2 = '2026-10-20T11:30:00.123456+00:00', T3 = '2026-10-21T09:00:00.000Z';
+  const plan = planImport(WB, NONE);
+  const out1 = applyPlan(plan, NONE, 'u1');
+  const ids = new Map(out1.customers.map(c => [c.customer_id, 'uuid-' + c.customer_id]));
+  const b1 = bindRows(out1, ids, 'adchem', T1);
+  const stamp = (r) => ({ ...r, import_source: { ...r.import_source, sheetId: 'S', at: (r.import_source && r.import_source.at) || T1 } });   // what /api/import adds
+  let db = { customers: b1.customers.map(c => stamp({ ...c, id: ids.get(c.customer_id) })), sites: b1.sites.map(stamp), contacts: b1.contacts, hubNotes: b1.siteHubNotes };
+  assert.ok(db.customers.every(c => c.updated_by === 'u1' && c.updated_at === T1 && c.import_source.at === T1));
+  // the importer (u1) edits Type 7's billing ZIP and its site's receiving hours in the app
+  db.customers = db.customers.map(c => c.customer_id === 'ADC-0001' ? { ...c, billing_zip: '94999', updated_at: T2, updated_by: 'u1' } : c);
+  db.sites = db.sites.map(x => x.site_key === 'ADC-0001 — Primary' ? { ...x, receiving_hours: 'By appointment', updated_at: T2, updated_by: 'u1' } : x);
+  const out2 = applyPlan(planImport(WB, db), db, 'u1');
+  const t7 = out2.customers.find(c => c.customer_id === 'ADC-0001'), s7 = out2.sites.find(x => x.site_key === 'ADC-0001 — Primary');
+  assert.equal(t7.billing_zip, '94999', 'importer\'s own customer edit kept');
+  assert.equal(s7.receiving_hours, 'By appointment', 'importer\'s own site edit kept');
+  assert.equal(t7.import_source.at, T1, 'the edited row keeps the earlier import stamp, so the edit still counts next time');
+  assert.equal(out2.customers.find(c => c.customer_id === 'ADC-0002').import_source.at, undefined, 'an untouched row takes the new stamp (the route adds it)');
+  // a third run (after the second wrote everything at T3) still keeps the edit
+  const b2 = bindRows(out2, ids, 'adchem', T3);
+  const stamp3 = (r) => ({ ...r, import_source: { ...r.import_source, sheetId: 'S', at: (r.import_source && r.import_source.at) || T3 } });
+  const db3 = { customers: b2.customers.map(c => stamp3({ ...c, id: ids.get(c.customer_id) })), sites: b2.sites.map(stamp3), contacts: db.contacts, hubNotes: b2.siteHubNotes };
+  const out3 = applyPlan(planImport(WB, db3), db3, 'u1');
+  assert.equal(out3.customers.find(c => c.customer_id === 'ADC-0001').billing_zip, '94999');
+  assert.equal(out3.sites.find(x => x.site_key === 'ADC-0001 — Primary').receiving_hours, 'By appointment');
+  assert.equal(out3.customers.find(c => c.customer_id === 'ADC-0002').billing_zip, '90813', 'an unedited row is still refreshed from the sheet');
+  assert.ok(b1.sites.every(x => x.updated_at === T1), 'sites carry updated_at so the test can compare it');
+});
+
+test('planImport: feed sites no customer claims are listed for later linking', () => {
+  const feed = (key, customer, extra) => ({ company: 'adchem', site_key: key, customer, customer_id: null, code_raw: 'D - Deliver', addr: '1 Feed St, Oakland CA 94601', site_label: 'Primary', ...extra });
+  const existing = { ...NONE, sites: [feed('Type 7 — Primary', 'Type 7 Manufacturing'), feed('Upside — Primary', 'The Upside Group, Inc.'), feed('Linked — Primary', 'Somebody', { customer_id: 'c-x' })] };
+  const plan = planImport(WB, existing);
+  assert.deepEqual(plan.unlinkedSites, [{ site_key: 'Upside — Primary', customer: 'The Upside Group, Inc.', addr: '1 Feed St, Oakland CA 94601' }]);
+  assert.deepEqual(planImport(WB, NONE).unlinkedSites, []);
 });

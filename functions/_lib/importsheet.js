@@ -115,7 +115,7 @@ function detailOf(it) {
 }
 
 // workbook = {directory, customers, delivery, licensing, terms} as values arrays (a missing tab is null);
-// existing = {customers, sites} from the database. Returns {items, problems, missingHeaders}.
+// existing = {customers, sites} from the database. Returns {items, problems, missingHeaders, unlinkedSites}.
 export function planImport(workbook, existing) {
   const wb = workbook || {}, ex = existing || {};
   const exCustomers = ex.customers || [];
@@ -193,12 +193,13 @@ export function planImport(workbook, existing) {
     const vals = { also_known_as: r["Also Known As"], legal_name: r["Legal Name"], account_status: status(r["Account Status"]),
       billing_street: r["Street"], billing_city: r["City"], billing_state: r["State"], billing_zip: r["ZIP"] };
     const [cf, cl] = splitName(r["Contact"]);
-    const contact = (r["Contact"] || r["Phone"] || r["Email"]) ? { type: "billing", first_name: cf, last_name: cl, phone: r["Phone"], email: r["Email"], preferred_method: null, cc_on_statements: false, at_site: false } : null;
+    // the Customers tab's one contact has no role column, so it is "other" (spec §8), never billing
+    const contact = (r["Contact"] || r["Phone"] || r["Email"]) ? { type: "other", first_name: cf, last_name: cl, phone: r["Phone"], email: r["Email"], preferred_method: null, cc_on_statements: false, at_site: false } : null;
     let it = byName.get(lc(name));
     if (it) {
       const filled = [];
       for (const [k, v] of Object.entries(vals)) if (blank(it.fields[k]) && !blank(v)) { it.fields[k] = v; filled.push(k.replace(/_/g, " ")); }
-      if (contact && !it.contacts.some(c => c.type === "billing" && !c.cc_on_statements)) { it.contacts.push(contact); filled.push("billing contact"); }
+      if (contact && !it.contacts.some(c => c.type === "billing" && !c.cc_on_statements)) { it.contacts.push(contact); filled.push("contact"); }
       if (filled.length) it.merged.push(`Customers row ${r._row} filled ${filled.join(", ")}`);
       continue;
     }
@@ -239,19 +240,42 @@ export function planImport(workbook, existing) {
     if (!it.customer_id && it.action !== "site") it.customer_id = fmtId(++max);
     if (it.customer_id) used.add(it.customer_id);
     it.existing = exById.has(it.customer_id);
+    // the sheet's number already belongs to a customer made in the app (no import_source) with another name and legal name:
+    // a different customer, so the row is reported, never merged into it
+    const e = it.existing && it.action !== "site" ? exById.get(it.customer_id) : null;
+    if (e && !e.import_source && lc(e.name) !== lc(it.name) && !(s(e.legal_name) && s(it.fields.legal_name) && legalKey(e.legal_name) === legalKey(it.fields.legal_name))) {
+      const msg = `${it.source.tab} row ${it.source.row}: Customer ID ${it.customer_id} already belongs to “${e.name}”, a customer added in the app; this row is not imported. Clear its Customer ID to give it a new number, or fix the sheet.`;
+      problems.push(msg); Object.assign(it, { action: "problem", decision: "skip", detail: msg, existing: false });
+    }
   }
   for (const it of [...dirItems, ...custItems]) {
+    if (it.action === "problem") { it.options = ["skip"]; continue; }
     it.options = it.action === "site" ? ["site", "customer", "related", "skip"] : it.relatedTo ? ["customer", "related", "skip"] : ["customer", "skip"];
     it.detail = detailOf(it);
   }
   items.push(...dirItems, ...custItems, ...delProblems);
   for (const tab of ["licensing", "terms"]) if (Array.isArray(wb[tab]) && wb[tab].length)
     items.push({ key: "skip:" + tab, source: { tab: TABS[tab], row: 1 }, action: "skip", decision: "skip", options: ["skip"], customer_id: "", name: TABS[tab], detail: "later stage", fields: {}, contacts: [], hubNotes: [], merged: [] });
-  return { items, problems, missingHeaders };
+  // feed sites (FEED_ORDERS) no customer will claim: no Ops link and a customer name matching no row and no existing customer.
+  // Listed in the review; they stay unlinked until a later stage links them by hand (spec §8).
+  const names = new Set([...dirItems, ...custItems].map(i => lc(i.name)).concat(exCustomers.map(c => lc(c.name))));
+  const unlinkedSites = (ex.sites || []).filter(x => !x.customer_id && !names.has(lc(x.customer)))
+    .map(x => ({ site_key: s(x.site_key), customer: s(x.customer), addr: s(x.addr) }));
+  return { items, problems, missingHeaders, unlinkedSites };
 }
 
-// A row counts as app-edited when someone other than the importer last wrote it: its fields are kept and only blanks are filled.
-const appEdited = (row, uid) => !!(row && row.updated_by != null && row.updated_by !== uid);
+// A row counts as app-edited — its fields are kept and only blanks are filled — when it changed after the import last wrote it
+// (updated_at later than import_source.at, which /api/import stamps), so the importer's own app edits count too; or when someone
+// other than the importer last wrote it (the only test for a row the import never wrote).
+const ms = (v) => { const t = v ? Date.parse(v) : NaN; return isNaN(t) ? null : t; };
+function appEdited(row, uid) {
+  if (!row) return false;
+  const at = ms(row.import_source && row.import_source.at), up = ms(row.updated_at);
+  if (at !== null && up !== null && up > at) return true;
+  return row.updated_by != null && row.updated_by !== uid;
+}
+// an app-edited row keeps the stamp of the import that last wrote it, so its edit still counts on the next run
+const stamp = (srcObj, e, edited) => edited && e && e.import_source && e.import_source.at ? { ...srcObj, at: e.import_source.at } : srcObj;
 function merge(e, v, edited) {
   if (!e) return v;
   if (edited) return blank(e) ? v : e;
@@ -295,7 +319,7 @@ export function applyPlan(plan, existing, importUserId) {
     if (!STATUSES.includes(row.account_status)) row.account_status = "active";
     if (!HUBS.includes(row.primary_hub) && !e) row.primary_hub = "";
     if (!row.name) row.name = s(it.name) || cid;
-    row.import_source = src(it); row.updated_by = edited ? e.updated_by : uid;
+    row.import_source = stamp(src(it), e, edited); row.updated_by = edited ? e.updated_by : uid;
     const pKey = d === "related" ? (it.relatedTo || it.siteOf) : it.parent;
     let parent = pKey && cidOf.get(pKey) || (d !== "related" && normId(it.parentCustomerId)) || null;
     if (parent === cid) parent = null;
@@ -340,7 +364,7 @@ export function applyPlan(plan, existing, importUserId) {
       site_label: e ? (s(e.site_label) || label) : label, code_raw: e ? s(e.code_raw) : "", code: e ? (e.code || null) : null };
     for (const k of SITE_OPS) row[k] = merge(e && s(e[k]), s(f[k]), edited);
     row.last_verified = merge(e && (e.last_verified || null), isoDate(f.site_last_verified), edited);
-    row.import_source = src(it); row.updated_by = edited ? e.updated_by : uid;
+    row.import_source = stamp(src(it), e, edited); row.updated_by = edited ? e.updated_by : uid;
     if (prev) for (const k of [...SITE_OPS, "addr", "city", "hub", "last_verified"]) if (!blank(prev[k])) row[k] = prev[k];
     sites.set(key, row);
     for (const n of it.hubNotes || []) {
@@ -380,7 +404,7 @@ export function bindRows(applied, idMap, company, now) {
   const a = applied || {};
   const customers = (a.customers || []).map(({ parent_ref, ...c }) => ({ ...c, company, updated_at: now }));
   const parents = (a.customers || []).filter(c => c.parent_ref && get(c.parent_ref)).map(c => ({ customer_id: c.customer_id, parent_customer_id: get(c.parent_ref) }));
-  const sites = (a.sites || []).filter(x => get(x.customer_ref)).map(({ customer_ref, ...x }) => ({ ...x, company, customer_id: get(customer_ref), synced_at: now }));
+  const sites = (a.sites || []).filter(x => get(x.customer_ref)).map(({ customer_ref, ...x }) => ({ ...x, company, customer_id: get(customer_ref), synced_at: now, updated_at: now }));
   const siteHubNotes = (a.siteHubNotes || []).map(n => ({ ...n, company, updated_at: now }));
   const contacts = (a.contacts || []).filter(x => get(x.customer_ref)).map(({ customer_ref, ...x }) => ({ ...x, company, customer_id: get(customer_ref) }));
   return { customers, parents, sites, siteHubNotes, contacts };

@@ -104,11 +104,8 @@ async function run(sheetRows, customerIds, rebuild, data) {
     if (method === 'GET' && u.includes('fields=sheets.properties')) return ok({ sheets: [{ properties: { sheetId: 0, title: 'Other' } }, { properties: { sheetId: 777, title: TAB } }] });
     return ok({});
   };
-  const db = { async get(p) {
-    seen.push({ method: 'DB', url: p });
-    const t = p.split('?')[0];
-    return (data[t] || []).slice();
-  } };
+  const read = async (p) => { seen.push({ method: 'DB', url: p }); return (data[p.split('?')[0]] || []).slice(); };
+  const db = { get: read, getAll: read };
   const ctx = { settings: { customersOutSheetId: 'https://docs.google.com/spreadsheets/d/1COUTsheetIdAAAAAAAAAAA/edit#gid=0', tz: 'America/Los_Angeles' } };
   try { return { r: await writeCustomersOut(env, db, ctx, 'adchem', customerIds, rebuild), seen: seen.filter(s => s.method !== 'DB'), db: seen.filter(s => s.method === 'DB') }; }
   finally { globalThis.fetch = real; }
@@ -142,38 +139,60 @@ test('rebuild clears A2:AG then writes every row under the header', async () => 
 test('incremental: an existing (Customer ID, Delivery Street) row is rewritten in place, never duplicated', async () => {
   const sheet = [blankRow('ADC-0001', ''), blankRow('ADC-0007', '100 Main St'), blankRow('ADC-0007', '6201 Shellmound St')];
   const { r, seen, db } = await run(sheet, ['c1000000-0000-4000-8000-000000000001'], false, DATA);
-  assert.deepEqual(r, { ok: true, updated: 2, appended: 0, deleted: 0 });
+  assert.deepEqual(r, { ok: true, updated: 2, appended: 0, cleared: 0 });
   const bu = seen.filter(s => s.url.endsWith('/values:batchUpdate'));
   assert.equal(bu.length, 1);
   assert.equal(bu[0].body.valueInputOption, 'RAW');
   assert.deepEqual(bu[0].body.data.map(d => [d.range, d.values[0][0], d.values[0][11]]), [[`'${TAB}'!A3:AG3`, 'ADC-0007', '100 Main St'], [`'${TAB}'!A4:AG4`, 'ADC-0007', '6201 Shellmound St']]);
   assert.ok(!seen.some(s => s.url.includes(':append')), 'no append');
   assert.ok(!seen.some(s => s.body && s.body.requests), 'no delete');
+  assert.ok(db.every(d => !/limit=/.test(d.url)), 'paged reads, no row cap');
   assert.ok(db.some(d => d.url.startsWith('dispatch_customer_status?select=*&company=eq.adchem')), 'status read from the view');
 });
 
-test('incremental: a new site is appended; a row for a site the customer no longer has is deleted (Review Focus 4)', async () => {
+test('incremental: a new site is appended; a row for a site the customer no longer has is blanked, never deleted (I2)', async () => {
   const sheet = [blankRow('ADC-0007', '100 Main St'), blankRow('ADC-0001', ''), blankRow('ADC-0007', '9 Old Merged Rd'), blankRow('ADC-0007', '8 Older Rd')];
   const { r, seen } = await run(sheet, ['c1000000-0000-4000-8000-000000000001'], false, DATA);
-  assert.deepEqual(r, { ok: true, updated: 1, appended: 1, deleted: 2 });
-  const del = seen.find(s => s.url.endsWith(':batchUpdate') && !s.url.endsWith('/values:batchUpdate'));
-  assert.ok(del, 'spreadsheet batchUpdate issued');
-  assert.deepEqual(del.body.requests, [
-    { deleteDimension: { range: { sheetId: 777, dimension: 'ROWS', startIndex: 4, endIndex: 5 } } },   // sheet row 5 first (bottom-up)
-    { deleteDimension: { range: { sheetId: 777, dimension: 'ROWS', startIndex: 3, endIndex: 4 } } }]);
+  assert.deepEqual(r, { ok: true, updated: 1, appended: 1, cleared: 2 });
+  assert.ok(!seen.some(s => s.body && s.body.requests), 'no spreadsheet batchUpdate: nothing is deleted, so no row number shifts');
+  assert.ok(!seen.some(s => s.url.includes('fields=sheets.properties')), 'no gid lookup needed');
+  const bu = seen.filter(s => s.url.endsWith('/values:batchUpdate'));
+  assert.equal(bu.length, 1, 'one values write: the update and the blanks together');
+  const blank = new Array(33).fill('');
+  assert.deepEqual(bu[0].body.data.map(d => [d.range, d.values[0][0], d.values[0][11]]), [[`'${TAB}'!A2:AG2`, 'ADC-0007', '100 Main St'], [`'${TAB}'!A4:AG4`, '', ''], [`'${TAB}'!A5:AG5`, '', '']]);
+  assert.deepEqual(bu[0].body.data.slice(1).map(d => d.values), [[blank], [blank]], 'stale rows 4 and 5 blanked A..AG');
   const ap = seen.find(s => s.url.includes(':append'));
   assert.equal(ap.body.values.length, 1); assert.equal(ap.body.values[0][11], '6201 Shellmound St');
-  const order = seen.map(s => s.url.endsWith('/values:batchUpdate') ? 'update' : s.body && s.body.requests ? 'delete' : s.url.includes(':append') ? 'append' : null).filter(Boolean);
-  assert.deepEqual(order, ['update', 'delete', 'append'], 'row numbers are used before any delete shifts them');
-  assert.ok(!seen.some(s => s.url.includes(':clear')), 'incremental never clears');
+  const order = seen.map(s => s.url.endsWith('/values:batchUpdate') ? 'update' : s.url.includes(':append') ? 'append' : null).filter(Boolean);
+  assert.deepEqual(order, ['update', 'append']);
+  assert.ok(!seen.some(s => s.url.includes(':clear')), 'incremental never clears the tab');
+});
+
+test('incremental: a blanked row is ignored on the next write; rebuild compacts it away', async () => {
+  const sheet = [blankRow('ADC-0007', '100 Main St'), new Array(33).fill(''), blankRow('ADC-0007', '6201 Shellmound St')];
+  const { r } = await run(sheet, ['c1000000-0000-4000-8000-000000000001'], false, DATA);
+  assert.deepEqual(r, { ok: true, updated: 2, appended: 0, cleared: 0 });
+  const rb = await run(sheet, [], true, DATA);
+  const put = rb.seen.find(s => s.method === 'PUT');
+  assert.ok(put.body.values.slice(1).every(v => v[0] !== ''), 'rebuild writes no blank rows');
+});
+
+test('rowsFor: a site with no receiving contact of its own never borrows another site\'s (I11)', () => {
+  const plantOnly = CONTACTS.filter(x => !(x.type === 'receiving' && x.site_key === 'ADC-0007 — Primary'));
+  const [primary, plant] = rowsFor(C, SITES, plantOnly, STATUS, 'America/Los_Angeles', NOW);
+  assert.deepEqual([primary[col('Delivery Contact')], primary[col('Delivery Phone')]], ['', ''], 'Primary has none: blank, not the plant\'s Rae');
+  assert.equal(plant[col('Delivery Contact')], 'Rae Lin');
+  const wide = plantOnly.concat([{ customer_id: C.id, type: 'receiving', first_name: 'Desk', last_name: '', phone: '(510) 555-0000', site_key: null, active: true }]);
+  const [p2] = rowsFor(C, SITES, wide, STATUS, 'America/Los_Angeles', NOW);
+  assert.equal(p2[col('Delivery Contact')], 'Desk', 'a customer-wide receiving contact (no site) still fills in');
 });
 
 test('no sheet set → skipped; tryWriteCustomersOut never throws', async () => {
-  const r = await writeCustomersOut({}, { get: async () => [] }, { settings: {} }, 'adchem', ['c1000000-0000-4000-8000-000000000001'], false);
+  const r = await writeCustomersOut({}, { get: async () => [], getAll: async () => [] }, { settings: {} }, 'adchem', ['c1000000-0000-4000-8000-000000000001'], false);
   assert.match(r.skipped, /No Customers Out sheet/);
   const real = globalThis.fetch; globalThis.fetch = async () => { throw new Error('network down'); };
   try {
-    const t = await tryWriteCustomersOut({ GOOGLE_SA_JSON: await serviceAccount() }, { get: async () => [] }, { settings: { customersOutSheetId: '1COUTsheetIdAAAAAAAAAAA' } }, 'adchem', ['c1000000-0000-4000-8000-000000000001']);
+    const t = await tryWriteCustomersOut({ GOOGLE_SA_JSON: await serviceAccount() }, { get: async () => [], getAll: async () => [] }, { settings: { customersOutSheetId: '1COUTsheetIdAAAAAAAAAAA' } }, 'adchem', ['c1000000-0000-4000-8000-000000000001']);
     assert.equal(t.ok, false); assert.match(t.error, /network down|Google token/);
   } finally { globalThis.fetch = real; }
 });

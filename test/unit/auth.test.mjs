@@ -44,3 +44,32 @@ test('hasPerm', () => {
   assert.equal(hasPerm({ isSuper: false, perms: { a: true } }, 'a'), true);
   assert.equal(hasPerm({ isSuper: false, perms: { a: true } }, 'b'), false);
 });
+
+test('sb().getAll pages with Range headers until a short page (I9)', async () => {
+  const { sb, PAGE } = await import('../../functions/_lib/auth.js');
+  assert.equal(PAGE, 1000);
+  const seen = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    seen.push({ url: String(url), range: init.headers && init.headers.range, unit: init.headers && init.headers['range-unit'], auth: init.headers && init.headers.authorization });
+    const from = Number(String(init.headers.range).split('-')[0]);
+    const n = from === 0 ? 1000 : from === 1000 ? 2 : 0;
+    return ok(Array.from({ length: n }, (_, i) => ({ id: from + i })));
+  };
+  try {
+    const rows = await sb(env, 'tok').getAll('dispatch_customers?select=id&company=eq.adchem&order=id.asc');
+    assert.equal(rows.length, 1002);
+    assert.equal(rows[1001].id, 1001);
+    assert.deepEqual(seen.map(s => [s.range, s.unit]), [['0-999', 'items'], ['1000-1999', 'items']], 'two pages, then stops on the short one');
+    assert.ok(seen.every(s => s.url === 'http://sb/rest/v1/dispatch_customers?select=id&company=eq.adchem&order=id.asc' && s.auth === 'Bearer tok'));
+  } finally { globalThis.fetch = real; }
+});
+
+test('sb().insert(table, rows, true) asks for no rows back', async () => {
+  const { sb } = await import('../../functions/_lib/auth.js');
+  let prefer;
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => { prefer = init.headers.prefer; return new Response(null, { status: 201 }); };
+  try { assert.equal(await sb(env, 'tok').insert('dispatch_log', [{ what: 'import' }], true), null); assert.equal(prefer, 'return=minimal'); }
+  finally { globalThis.fetch = real; }
+});

@@ -110,6 +110,17 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   await page.fill(sf+' [data-k=special_instructions]','Dock B'); await page.click(sf+' [data-save-site]'); await page.waitForTimeout(700);
   assert.equal(T.dispatch_sites.length, 1, 'site edit updates'); assert.equal(T.dispatch_sites[0].special_instructions, 'Dock B');
   assert.deepEqual(T.dispatch_log.slice(sl).map(l=>[l.table_name,l.row_id,l.changes]), [['dispatch_sites','ADC-0001 — Primary',{special_instructions:{from:'',to:'Dock B'}}]], 'site edit audited, hub notes untouched');
+  // a label with a comma keeps it in the key (the import builds the same key); its hub notes and history still resolve
+  await page.click('#btnAddSite'); await page.waitForTimeout(150);
+  await page.fill('#siteNew [data-k=site_label]','Plant 2, Dock B'); await page.fill('#siteNew [data-k=addr]','200 Side St'); await page.fill('#siteNew [data-k=city]','San Leandro');
+  await page.fill('#siteNew [data-hubnote=LA] [data-n=route_notes]','Via 880');
+  await page.click('#siteNew [data-save-site]'); await page.waitForTimeout(800);
+  assert.equal(T.dispatch_sites.length, 2);
+  assert.equal(T.dispatch_sites[1].site_key, 'ADC-0001 — Plant 2, Dock B', 'key is customer_id — label, exactly');
+  assert.deepEqual(T.dispatch_site_hub_notes.filter(n=>n.site_key==='ADC-0001 — Plant 2, Dock B').map(n=>[n.hub,n.route_notes,n.scale_on_route]), [['LA','Via 880',null]]);
+  const sf2 = '#siteList form[data-site="ADC-0001 — Plant 2, Dock B"]';
+  assert.equal(await page.inputValue(sf2+' [data-hubnote=LA] [data-n=route_notes]'), 'Via 880', 'hub note read back for a comma key');
+  assert.equal(await page.inputValue(sf+' [data-hubnote=EB] [data-n=route_notes]'), 'Scale on 580', 'first site unaffected');
   // contacts: receiving with phone, billing with email
   await page.click('#ctab-contacts'); await page.waitForTimeout(400);
   const b0 = await badge();
@@ -169,6 +180,8 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.match(hist, /Primary.*gate_code: — → 4321/, 'site insert in history');
   assert.match(hist, /special_instructions: → Dock B|special_instructions: — → Dock B/, 'site edit in history');
   assert.match(hist, /route_notes: — → Scale on 580/, 'hub note in history');
+  assert.match(hist, /site ADC-0001 — Plant 2, Dock B › addr: — → 200 Side St/, 'comma-key site in history');
+  assert.match(hist, /site ADC-0001 — Plant 2, Dock B › hub LA › route_notes: — → Via 880/, 'comma-key hub note in history');
   assert.match(hist, /active: true → false/, 'contact change in history');
   assert.match(hist, /status: pending → rejected/, 'activity review in history');
   assert.ok(await page.$$eval('#histList .hist-line',e=>e.every(x=>/ · /.test(x.textContent))), 'when · who · change lines');

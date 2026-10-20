@@ -19,16 +19,24 @@ const SITES=[['Type 7 Manufacturing','D - Deliver; no holds','100 Main St, Oakla
  ['The Upside Group, Inc.','D - Deliver; no holds','804 Heinz Ave, Berkeley CA 94710','Berkeley','','','','','','','','','Primary','Upside — Primary'],
  ['The Upside Group, Inc.','D - Deliver; no holds','6201 Shellmound St, Emeryville CA 94608','Emeryville','','Receiving','(510) 555-0144','','8–3','','','Plant','Shellmound plant','Upside — Shellmound']];
 
-// ---- REST filters: eq neq gte lte in ilike is, plus or=(a.eq.x,b.eq.y); select= (embeds ignored), order=, limit= ----
+// ---- REST filters: eq neq gte lte in (quoted values ok) ilike is, plus or=(a.eq.x,b.eq.y); select= (embeds ignored), order=, limit= ----
 function cmpOp(x,op,val){
   if(op==='eq') return String(x)===String(val);
   if(op==='neq') return String(x)!==String(val);
   if(op==='gte') return String(x)>=val;
   if(op==='lte') return String(x)<=val;
-  if(op==='in') return val.replace(/^\(|\)$/g,'').split(',').includes(String(x));
+  if(op==='in') return parseIn(val).includes(String(x));
   if(op==='ilike'){ const re=new RegExp('^'+String(val).replace(/[.+^${}()|[\]\\]/g,'\\$&').replace(/\*/g,'.*').replace(/%/g,'.*')+'$','i'); return re.test(x==null?'':String(x)); }
   if(op==='is'){ if(val==='null') return x==null; if(val==='true') return x===true; if(val==='false') return x===false; return false; }
   return true; }
+// in.(a,"b, c",d): PostgREST list; supabase-js double-quotes values containing , ( or )
+function parseIn(val){ const s=val.replace(/^\(|\)$/g,''), out=[]; let cur='', q=false;
+  for(let i=0;i<s.length;i++){ const ch=s[i];
+    if(q&&ch==='\\'&&i+1<s.length){ cur+=s[++i]; continue; }
+    if(ch==='"'){ q=!q; continue; }
+    if(ch===','&&!q){ out.push(cur); cur=''; continue; }
+    cur+=ch; }
+  out.push(cur); return out; }
 function parseOr(v){ return v.replace(/^\(|\)$/g,'').split(',').map(p=>{ const m=p.match(/^([^.]+)\.([a-z]+)\.(.*)$/); return m?[m[1],m[2],m[3]]:null; }).filter(Boolean); }
 function parseFilters(q){ const f=[]; for(const [k,v] of q){ if(['select','order','limit','offset','on_conflict'].includes(k)) continue; if(k==='or'){ f.push(['__or',null,parseOr(v)]); continue; } const m=v.match(/^(eq|neq|gte|lte|in|ilike|is)\.(.*)$/); if(m) f.push([k,m[1],m[2]]); } return f; }
 function match(row,f){ return f.every(([k,op,val])=>{ if(k==='__or') return val.some(([k2,op2,v2])=>cmpOp(row[k2],op2,v2)); return cmpOp(row[k],op,val); }); }

@@ -232,7 +232,7 @@ async function saveSiteForm(form,btn){
   var c=state.customer, key=form.getAttribute("data-site"), isNew=!key, v=readSiteForm(form);
   if(isNew){
     if(!v.fields.site_label){ banner("warn","Label the site first","<div>A label such as <b>Primary</b> or <b>Plant 2</b> names the site.</div>",{autoclose:6000}); form.querySelector('[data-k="site_label"]').focus(); return; }
-    key=c.customer_id+" — "+v.fields.site_label.replace(/,/g," ").replace(/\s+/g," ").trim();   // keys stay comma-free (they go through in.(…) filters)
+    key=c.customer_id+" — "+v.fields.site_label;   // the import (Task 9) builds the same key; supabase-js quotes in.(…) values with commas
     if(state.custSites.some(function(s){return s.site_key===key;})){ banner("warn","That site already exists","<div>"+esc(key)+" is already one of this customer's sites. Pick another label.</div>",{autoclose:6000}); return; }
   }
   btn.disabled=true; btn.textContent="Saving…";

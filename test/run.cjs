@@ -6,8 +6,9 @@ for (const f of fs.readdirSync(__dirname).filter(n => /\.test\.cjs$/.test(n)).so
   if (r.status !== 0) { failed++; console.error(f + ': FAILED'); }
 }
 const unit = path.join(__dirname, 'unit');
-if (fs.existsSync(unit) && fs.readdirSync(unit).some(n => /\.test\.mjs$/.test(n))) {
-  const r = spawnSync(process.execPath, ['--test', unit], { stdio: 'inherit' });
+const unitFiles = fs.existsSync(unit) ? fs.readdirSync(unit).filter(n => /\.test\.mjs$/.test(n)).sort().map(n => path.join(unit, n)) : [];
+if (unitFiles.length) {
+  const r = spawnSync(process.execPath, ['--test', ...unitFiles], { stdio: 'inherit' });
   if (r.status !== 0) { failed++; console.error('unit tests: FAILED'); }
 }
 process.exit(failed ? 1 : 0);

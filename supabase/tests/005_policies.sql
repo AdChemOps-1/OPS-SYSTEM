@@ -144,6 +144,61 @@ begin
   insert into public.dispatch_customers (company, name) values ('adchem', 'T005 Ten Thousand') returning customer_id into s;
   if s is distinct from 'ADC-10000' then raise exception 'customer id % (want ADC-10000)', s; end if;
 
+  -- ---- a stale counter heals itself: north has ADC-0005 and its counter says 1 → the next is ADC-0006 (C1) ----
+  insert into public.dispatch_customers (company, customer_id, name) values ('north', 'ADC-0005', 'T005 North Five');
+  insert into public.dispatch_company_settings (company) values ('north') on conflict (company) do nothing;
+  update public.dispatch_company_settings set data = jsonb_set(coalesce(data, '{}'::jsonb), '{nextCustomerNumber}', '1') where company = 'north';
+  insert into public.dispatch_customers (company, name) values ('north', 'T005 North Six') returning customer_id into s;
+  if s is distinct from 'ADC-0006' then raise exception 'customer id % after a stale counter (want ADC-0006)', s; end if;
+  if (select (data->>'nextCustomerNumber')::int from public.dispatch_company_settings where company = 'north') <> 7 then raise exception 'north counter not moved to 7'; end if;
+
+  -- ---- a customer's number never changes ----
+  ok := false;
+  begin update public.dispatch_customers set customer_id = 'ADC-9999' where id = cust;
+  exception when others then ok := sqlerrm = 'customer_id cannot change'; end;
+  if not ok then raise exception 'customer_id changed on update'; end if;
+
+  -- ---- permissions: only JSON true grants; the RPC refuses non-boolean values ----
+  update public.dispatch_members set permissions = '{"run_imports":"yes","approve_driver_notes":1}' where user_id = co and company = 'adchem';
+  perform set_config('request.jwt.claims', json_build_object('sub', co, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  if public.dispatch_perm_in('adchem', 'run_imports') or public.dispatch_perm_in('adchem', 'approve_driver_notes') then raise exception 'a non-boolean permission value granted the permission'; end if;
+  reset role;
+  update public.dispatch_members set permissions = '{"manage_customers":true}' where user_id = co and company = 'adchem';
+  perform set_config('request.jwt.claims', json_build_object('sub', su, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  ok := false;
+  begin perform public.dispatch_set_permissions(co, 'adchem', '{"manage_customers":"true"}');
+  exception when others then ok := sqlerrm = 'permission values must be true or false'; end;
+  if not ok then raise exception 'dispatch_set_permissions accepted a string value'; end if;
+  reset role;
+
+  -- ---- dispatch_log: no forged audit rows; plain rows (the import's) still insert (I5) ----
+  perform set_config('request.jwt.claims', json_build_object('sub', dr, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  ok := false;
+  begin insert into public.dispatch_log (company, who, what, detail, table_name, row_id, changes)
+    values ('adchem', dr, 'change', '{"op":"update"}', 'dispatch_customers', cust::text, '{"name":{"from":"a","to":"b"}}');
+  exception when insufficient_privilege then ok := true; end;
+  if not ok then raise exception 'driver forged a change row in dispatch_log'; end if;
+  ok := false;
+  begin insert into public.dispatch_log (company, who, what, detail) values ('adchem', co, 'note', '{}');
+  exception when insufficient_privilege then ok := true; end;
+  if not ok then raise exception 'driver wrote a dispatch_log row as someone else'; end if;
+  insert into public.dispatch_log (company, who, what, detail) values ('adchem', dr, 'note', '{}');   -- a plain row as themselves is fine
+  select count(*) into n from public.dispatch_log;  if n <> 0 then raise exception 'driver reads % dispatch_log rows', n; end if;
+  reset role;
+  perform set_config('request.jwt.claims', json_build_object('sub', co, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  insert into public.dispatch_log (company, who, what, detail) values ('adchem', co, 'import', '{"counts":{"customers":0}}');
+  -- ---- coordinators read the change rows (History), not grant / invite / permission / import rows (I6) ----
+  select count(*) into n from public.dispatch_log where table_name = 'dispatch_customers' and row_id = cust::text;
+  if n < 1 then raise exception 'coordinator cannot read the customer''s change rows'; end if;
+  select count(*) into n from public.dispatch_log where what <> 'change' or table_name is null;
+  if n <> 0 then raise exception 'coordinator reads % non-change dispatch_log rows', n; end if;
+  reset role;
+  if not exists (select 1 from public.dispatch_log where what = 'import' and who = co) then raise exception 'import row not written'; end if;
+
   -- ---- a member of `north` only sees nothing of adchem ----
   perform set_config('request.jwt.claims', json_build_object('sub', nm, 'role', 'authenticated')::text, true);
   set local role authenticated;

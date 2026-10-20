@@ -32,8 +32,14 @@ alter table public.dispatch_sites add column if not exists special_instructions 
 alter table public.dispatch_sites add column if not exists last_verified date;
 alter table public.dispatch_sites add column if not exists import_source jsonb;
 alter table public.dispatch_sites add column if not exists updated_by uuid;
-alter table public.dispatch_sites add constraint dispatch_sites_customer_fkey
-  foreign key (company, customer_id) references public.dispatch_customers(company, id) on delete set null (customer_id);
+alter table public.dispatch_sites add column if not exists updated_at timestamptz not null default now();   -- set by app edits and the import; the import compares it with import_source.at
+-- guarded so the file can be re-run as is
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'dispatch_sites_customer_fkey' and conrelid = 'public.dispatch_sites'::regclass) then
+    alter table public.dispatch_sites add constraint dispatch_sites_customer_fkey
+      foreign key (company, customer_id) references public.dispatch_customers(company, id) on delete set null (customer_id);
+  end if;
+end $$;
 create index if not exists dispatch_sites_company_customer_idx on public.dispatch_sites (company, customer_id);
 
 -- ---------- per-hub route notes for a site ----------
@@ -87,9 +93,9 @@ create index if not exists dispatch_log_row_idx on public.dispatch_log (table_na
 -- ---------- helpers (security definer; authenticated only) ----------
 create or replace function public.dispatch_is_super_in(c text) returns boolean language sql stable security definer set search_path = public as $$
   select coalesce((select is_super_admin from public.dispatch_members where user_id = auth.uid() and company = c and active), false) $$;
--- a super admin has every permission; anyone else has what their permissions map says (absent = no)
+-- a super admin has every permission; anyone else has what their permissions map says (absent, or anything but JSON true = no)
 create or replace function public.dispatch_perm_in(c text, p text) returns boolean language sql stable security definer set search_path = public as $$
-  select coalesce((select is_super_admin or coalesce((permissions->>p)::boolean, false)
+  select coalesce((select is_super_admin or coalesce(permissions->p = 'true'::jsonb, false)
                      from public.dispatch_members where user_id = auth.uid() and company = c and active), false) $$;
 
 -- ---------- RPCs: permissions and super admin (dispatch_members has no update policy; these are the only way in) ----------
@@ -101,6 +107,7 @@ begin
   if not found then raise exception 'not a member of this company'; end if;
   if tgt.is_super_admin and not public.dispatch_is_super_in(p_company) then raise exception 'not allowed'; end if;   -- admins cannot edit a super admin
   if jsonb_typeof(coalesce(p_perms, '{}'::jsonb)) <> 'object' then raise exception 'permissions must be an object'; end if;
+  if exists (select 1 from jsonb_each(coalesce(p_perms, '{}'::jsonb)) e where jsonb_typeof(e.value) <> 'boolean') then raise exception 'permission values must be true or false'; end if;
   update public.dispatch_members set permissions = coalesce(p_perms, '{}'::jsonb) where user_id = p_user and company = p_company;
   insert into public.dispatch_log (company, who, what, detail, table_name, row_id, changes) values (p_company, auth.uid(), 'permissions',
     jsonb_build_object('user', p_user), 'dispatch_members', p_user::text, jsonb_build_object('permissions', jsonb_build_object('from', tgt.permissions, 'to', coalesce(p_perms, '{}'::jsonb))));
@@ -119,14 +126,17 @@ end $fn$;
 
 -- ---------- triggers ----------
 -- Customer numbers: one atomic update … returning on the company's settings row, so two concurrent inserts get different numbers
--- (the second waits on the first's row lock). nextCustomerNumber lives in dispatch_company_settings.data.
+-- (the second waits on the first's row lock). nextCustomerNumber lives in dispatch_company_settings.data. The number is never
+-- below one past the highest ADC-n the company already has, so a counter written back stale (an old Setup save) heals itself.
 create or replace function public.dispatch_assign_customer_id() returns trigger language plpgsql security definer set search_path = public as $fn$
 declare n int;
 begin
   if coalesce(new.customer_id, '') <> '' then return new; end if;
   insert into public.dispatch_company_settings (company) values (new.company) on conflict (company) do nothing;
   update public.dispatch_company_settings
-     set data = jsonb_set(data, '{nextCustomerNumber}', to_jsonb(coalesce((data->>'nextCustomerNumber')::int, 1) + 1)), updated_at = now()
+     set data = jsonb_set(data, '{nextCustomerNumber}', to_jsonb(greatest(coalesce((data->>'nextCustomerNumber')::int, 1),
+           (select coalesce(max(substring(c.customer_id from '^ADC-(\d{1,9})$')::int), 0) + 1 from public.dispatch_customers c where c.company = new.company)) + 1)),
+         updated_at = now()
    where company = new.company
    returning (data->>'nextCustomerNumber')::int - 1 into n;
   new.customer_id := 'ADC-' || lpad(n::text, greatest(4, length(n::text)), '0');   -- lpad truncates, so widen past 9999
@@ -146,10 +156,12 @@ end $fn$;
 create or replace trigger dispatch_customer_activity_guard before insert on public.dispatch_customer_activity for each row execute function public.dispatch_driver_note_guard();
 
 -- A row never moves to another company (update policies check the new row's company, so a move would otherwise need only
--- rights in the destination).
+-- rights in the destination), and a customer's number never changes once given (Customers Out, the AR Command Center and
+-- the Order Log key on it).
 create or replace function public.dispatch_keep_company() returns trigger language plpgsql security definer set search_path = public as $fn$
 begin
   if new.company is distinct from old.company then raise exception 'company cannot change'; end if;
+  if tg_table_name = 'dispatch_customers' and new.customer_id is distinct from old.customer_id then raise exception 'customer_id cannot change'; end if;
   return new;
 end $fn$;
 create or replace trigger dispatch_customers_keep_company before update on public.dispatch_customers for each row execute function public.dispatch_keep_company();
@@ -205,29 +217,71 @@ revoke execute on function public.dispatch_assign_customer_id(), public.dispatch
 -- ---------- row-level security ----------
 alter table public.dispatch_customers enable row level security;        alter table public.dispatch_site_hub_notes enable row level security;
 alter table public.dispatch_contacts enable row level security;         alter table public.dispatch_customer_activity enable row level security;
--- Writes need manage_customers. Update policies see the row as an editor (using) and require the permission on the new row
--- (with check), so a coordinator without it gets an error rather than a silent zero-row update.
-create policy dc_read on public.dispatch_customers for select using (public.dispatch_can_edit_in(company));
-create policy dc_insert on public.dispatch_customers for insert with check (public.dispatch_perm_in(company, 'manage_customers'));
-create policy dc_update on public.dispatch_customers for update using (public.dispatch_can_edit_in(company)) with check (public.dispatch_perm_in(company, 'manage_customers'));
-create policy dc_delete on public.dispatch_customers for delete using (public.dispatch_perm_in(company, 'manage_customers'));
--- Sites: dsi_read/dsi_write stay as they are (dispatch_can_edit_in), because /api/feed upserts sites as the calling coordinator.
--- manage_customers gates site edits in the app, not here. Drivers now read their hub's sites (gate codes, receiving hours).
-create policy dsi_driver_read on public.dispatch_sites for select using (public.dispatch_role_in(company) = 'driver' and (public.dispatch_hub_in(company) = '' or hub = public.dispatch_hub_in(company)));
-create policy dshn_read on public.dispatch_site_hub_notes for select using (public.dispatch_can_edit_in(company) or (public.dispatch_role_in(company) = 'driver' and (public.dispatch_hub_in(company) = '' or hub = public.dispatch_hub_in(company))));
-create policy dshn_write on public.dispatch_site_hub_notes for all using (public.dispatch_can_edit_in(company)) with check (public.dispatch_can_edit_in(company));
--- Contacts: editors read all; a driver reads only receiving / site-manager contacts at sites of their hub (never billing, AP, owner).
-create policy dct_read on public.dispatch_contacts for select using (public.dispatch_can_edit_in(company)
-  or (public.dispatch_role_in(company) = 'driver' and type in ('receiving','site_manager') and site_key in
-      (select s.site_key from public.dispatch_sites s where s.company = dispatch_contacts.company and (public.dispatch_hub_in(s.company) = '' or s.hub = public.dispatch_hub_in(s.company)))));
-create policy dct_insert on public.dispatch_contacts for insert with check (public.dispatch_perm_in(company, 'manage_customers'));
-create policy dct_update on public.dispatch_contacts for update using (public.dispatch_can_edit_in(company)) with check (public.dispatch_perm_in(company, 'manage_customers'));
-create policy dct_delete on public.dispatch_contacts for delete using (public.dispatch_perm_in(company, 'manage_customers'));
--- Activity: editors read all, a current member reads what they logged (a removed member reads nothing); any member logs (drivers' notes forced pending by the guard);
--- reviewing (update) needs approve_driver_notes. No delete policy: the log is kept.
-create policy dca_read on public.dispatch_customer_activity for select using (public.dispatch_can_edit_in(company) or (public.dispatch_role_in(company) is not null and logged_by = (select auth.uid())));
-create policy dca_insert on public.dispatch_customer_activity for insert with check (public.dispatch_role_in(company) is not null);
-create policy dca_update on public.dispatch_customer_activity for update using (public.dispatch_perm_in(company, 'approve_driver_notes')) with check (public.dispatch_perm_in(company, 'approve_driver_notes'));
+-- Each create policy is guarded by pg_policies so the file can be re-run as is (nothing is removed first).
+do $$ begin
+  -- Writes need manage_customers. Update policies see the row as an editor (using) and require the permission on the new row
+  -- (with check), so a coordinator without it gets an error rather than a silent zero-row update.
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_customers' and policyname = 'dc_read') then
+    create policy dc_read on public.dispatch_customers for select using (public.dispatch_can_edit_in(company));
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_customers' and policyname = 'dc_insert') then
+    create policy dc_insert on public.dispatch_customers for insert with check (public.dispatch_perm_in(company, 'manage_customers'));
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_customers' and policyname = 'dc_update') then
+    create policy dc_update on public.dispatch_customers for update using (public.dispatch_can_edit_in(company)) with check (public.dispatch_perm_in(company, 'manage_customers'));
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_customers' and policyname = 'dc_delete') then
+    create policy dc_delete on public.dispatch_customers for delete using (public.dispatch_perm_in(company, 'manage_customers'));
+  end if;
+  -- Sites: dsi_read/dsi_write stay as they are (dispatch_can_edit_in), because /api/feed upserts sites as the calling coordinator.
+  -- manage_customers gates site edits in the app, not here. Drivers now read their hub's sites (gate codes, receiving hours).
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_sites' and policyname = 'dsi_driver_read') then
+    create policy dsi_driver_read on public.dispatch_sites for select using (public.dispatch_role_in(company) = 'driver' and (public.dispatch_hub_in(company) = '' or hub = public.dispatch_hub_in(company)));
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_site_hub_notes' and policyname = 'dshn_read') then
+    create policy dshn_read on public.dispatch_site_hub_notes for select using (public.dispatch_can_edit_in(company) or (public.dispatch_role_in(company) = 'driver' and (public.dispatch_hub_in(company) = '' or hub = public.dispatch_hub_in(company))));
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_site_hub_notes' and policyname = 'dshn_write') then
+    create policy dshn_write on public.dispatch_site_hub_notes for all using (public.dispatch_can_edit_in(company)) with check (public.dispatch_can_edit_in(company));
+  end if;
+  -- Contacts: editors read all; a driver reads only receiving / site-manager contacts at sites of their hub (never billing, AP, owner).
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_contacts' and policyname = 'dct_read') then
+    create policy dct_read on public.dispatch_contacts for select using (public.dispatch_can_edit_in(company)
+      or (public.dispatch_role_in(company) = 'driver' and type in ('receiving','site_manager') and site_key in
+          (select s.site_key from public.dispatch_sites s where s.company = dispatch_contacts.company and (public.dispatch_hub_in(s.company) = '' or s.hub = public.dispatch_hub_in(s.company)))));
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_contacts' and policyname = 'dct_insert') then
+    create policy dct_insert on public.dispatch_contacts for insert with check (public.dispatch_perm_in(company, 'manage_customers'));
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_contacts' and policyname = 'dct_update') then
+    create policy dct_update on public.dispatch_contacts for update using (public.dispatch_can_edit_in(company)) with check (public.dispatch_perm_in(company, 'manage_customers'));
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_contacts' and policyname = 'dct_delete') then
+    create policy dct_delete on public.dispatch_contacts for delete using (public.dispatch_perm_in(company, 'manage_customers'));
+  end if;
+  -- Activity: editors read all, a current member reads what they logged (a removed member reads nothing); any member logs (drivers' notes forced pending by the guard);
+  -- reviewing (update) needs approve_driver_notes. No delete policy: the log is kept.
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_customer_activity' and policyname = 'dca_read') then
+    create policy dca_read on public.dispatch_customer_activity for select using (public.dispatch_can_edit_in(company) or (public.dispatch_role_in(company) is not null and logged_by = (select auth.uid())));
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_customer_activity' and policyname = 'dca_insert') then
+    create policy dca_insert on public.dispatch_customer_activity for insert with check (public.dispatch_role_in(company) is not null);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_customer_activity' and policyname = 'dca_update') then
+    create policy dca_update on public.dispatch_customer_activity for update using (public.dispatch_perm_in(company, 'approve_driver_notes')) with check (public.dispatch_perm_in(company, 'approve_driver_notes'));
+  end if;
+  -- dispatch_log: coordinators (any editor) read the change rows that make up a customer's History; grant, invite, permission and
+  -- import rows stay admin-only (dl_admin_read, from 001/002).
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_log' and policyname = 'dl_editor_read') then
+    create policy dl_editor_read on public.dispatch_log for select using (public.dispatch_can_edit_in(company) and table_name is not null and what = 'change');
+  end if;
+end $$;
+-- dispatch_log inserts from the client: a member writes only plain rows as themselves (the import's 'import' row, Setup's
+-- 'segtable' row). Change, permission and super-admin rows come only from the security-definer trigger and RPCs above, which
+-- RLS does not apply to, so no one can forge an audit row. dl_insert exists since 001, so it is altered in place (re-runnable).
+alter policy dl_insert on public.dispatch_log with check (company in (select public.dispatch_companies()) and who = (select auth.uid()) and table_name is null and changes is null);
+-- the id is a bigserial: without usage on its sequence no client insert reached the policy at all (/api/import's 'import' row failed)
+grant usage on sequence public.dispatch_log_id_seq to authenticated;
 -- dispatch_members: unchanged (dm_read only). is_super_admin and permissions change only through the two RPCs above.
 
 -- ---------- seed ----------

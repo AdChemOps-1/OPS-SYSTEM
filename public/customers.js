@@ -405,7 +405,8 @@ async function todayExtras(keys){
   if(!same&&state.tab==="today"){ todayHold=true; try{ renderToday(); } finally{ todayHold=false; } }
 }
 function noteStatusChip(n){ var s=n.status||"pending"; return '<span class="chip '+(s==="approved"?"k-D":s==="rejected"?"st stop":"warn")+'">'+esc(s)+"</span>"; }
-// orderId (Today's stop): adds the Photo of license / document button (documents.js) next to Add note
+// orderId (Today's stop): adds the Photo of license / document button (documents.js) next to Add note, for drivers only (the
+// capture is a driver's write; the office files documents on the customer page)
 function siteNotesHtml(site,hub,orderId){
   if(!site) return "";
   var X=state.todayX.company===state.company?state.todayX:emptyTodayX(), k=site.siteKey;
@@ -419,7 +420,7 @@ function siteNotesHtml(site,hub,orderId){
     ' <a href="'+esc(telHref(c.phone))+'">'+esc(c.phone)+"</a></div>"; }).join("");
   var mine=X.mine[k]||[];
   if(mine.length) h+='<div class="sn-mine">'+mine.map(function(n){ return '<div class="sn-line">'+esc(n.summary)+" "+noteStatusChip(n)+(n.status==="rejected"&&n.rejection_reason?' <span class="hint">'+esc(n.rejection_reason)+"</span>":"")+"</div>"; }).join("")+"</div>";
-  h+=site.customerId?'<div class="sn-act"><button class="btn sm" data-note="'+esc(k)+'">Add note</button>'+(orderId?captureButtonHtml(orderId):"")+'<span class="hint">The office checks it before it goes on the site.</span></div>':"";
+  h+=site.customerId?'<div class="sn-act"><button class="btn sm" data-note="'+esc(k)+'">Add note</button>'+(orderId&&state.role==="driver"?captureButtonHtml(orderId):"")+'<span class="hint">The office checks it before it goes on the site.</span></div>':"";
   return h?'<div class="site-notes">'+h+"</div>":"";
 }
 async function addDriverNote(siteKey){

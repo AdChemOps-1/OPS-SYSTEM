@@ -180,6 +180,8 @@ const flat = s => s.replace(/\s+/g, ' ').trim();
     {id:'ct-bill',company:'adchem',customer_id:'c-t7',site_key:'Type 7 — Primary',type:'billing',first_name:'Pat',last_name:'Lee',phone:'(510) 555-0999',email:'ap@type7.example',active:true});
   T.dispatch_site_hub_notes.push({company:'adchem',site_key:'Type 7 — Primary',hub:'EB',scale_on_route:true,route_notes:'Scale on 580 — take the 24 bypass'},
     {company:'adchem',site_key:'Type 7 — Primary',hub:'LA',scale_on_route:false,route_notes:'LA only route note'});
+  // the capture button is a driver's: an admin's Today stop has Add note but no Photo of license / document
+  assert.deepEqual(await page.evaluate(()=>{ const h=siteNotesHtml({siteKey:'Type 7 — Primary',customerId:'c-t7'},'EB','o1'); return [state.role,/data-note=/.test(h),/data-capture=/.test(h)]; }), ['admin',true,false]);
   // mobile driver view
   const m=await newPage(b,base,{viewport:{width:390,height:844},members:[{user_id:'u1',company:'adchem',role:'driver',hub:'EB',active:true}]});
   await m.goto(base+'/'); await m.waitForTimeout(400); await m.fill('#lEmail','driver-eb@adchem.pro'); await m.fill('#lPass','correct-horse'); await m.click('#btnLogin'); await m.waitForTimeout(1000);

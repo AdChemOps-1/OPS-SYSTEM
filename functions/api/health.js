@@ -19,6 +19,12 @@ export async function onRequestGet({ request, env }) {
       const j = (Array.isArray(rows) ? rows : []).find(x => x && x.active);
       out.checks.expiryCron = j ? "ok — " + (j.schedule === "0 14 * * *" ? "daily 06:00 Pacific" : j.schedule) : "not scheduled";
     } catch (e) { out.checks.expiryCron = "not scheduled"; }
+    // when the expiry email last went out for this company: its newest expiry_email log row (admins read the log). A run with
+    // nothing due sends nothing and logs nothing. Informational, so it sits outside checks and never turns the banner amber.
+    try {
+      const rows = await db.get("dispatch_log?select=at&company=eq." + encodeURIComponent(company) + "&what=eq.expiry_email&order=at.desc&limit=1");
+      out.lastExpiryEmail = (Array.isArray(rows) && rows[0] && rows[0].at) || null;
+    } catch (e) { out.lastExpiryEmail = null; }
     if (!env.GOOGLE_SA_JSON) return json(out);
     try { await googleToken(env); out.checks.token = "ok"; } catch (e) { out.checks.token = e.message; return json(out); }
     const sheetId = ctx.settings.sheetId || (company === "adchem" ? env.AR_SHEET_ID : "");

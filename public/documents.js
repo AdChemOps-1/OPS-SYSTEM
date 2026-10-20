@@ -38,9 +38,11 @@ const DDB={
   async forSubject(type,id){ var rows=await DDB.list({subject_type:type,subject_id:String(id)}); state.docs[type+":"+id]=rows; return rows; },
   async get(id){ return sbErr(await supa.from("dispatch_documents").select("*").eq("company",state.company).eq("id",id).maybeSingle()); },
   // d with _new (or no id) is inserted under a client-made id; otherwise only the given fields are updated. Returns the id.
+  // The subject is set on insert only: an update that names subject_id fires the subject guard, which refuses a person who has
+  // since left the company, so their documents could not be edited.
   async save(d){
     var row=Object.assign({},d,{company:state.company,updated_by:state.session.user.id,updated_at:new Date().toISOString()});
-    if(d.id&&!d._new){ delete row.id; delete row._new; delete row.created_by; delete row.created_at;
+    if(d.id&&!d._new){ delete row.id; delete row._new; delete row.created_by; delete row.created_at; delete row.subject_type; delete row.subject_id;
       sbErr(await supa.from("dispatch_documents").update(row).eq("company",state.company).eq("id",d.id)); return d.id; }
     row.id=d.id||newUuid(); delete row._new; sbErr(await supa.from("dispatch_documents").insert(row)); return row.id;
   },
@@ -266,7 +268,7 @@ function drawReview(){
   sec.hidden=!rows.length; $("dhReviewCount").textContent=String(rows.length);
   host.innerHTML=rows.map(function(d){ var ex=d.extra||{};
     return '<details class="rv-item" data-review="'+esc(d.id)+'"><summary><b>'+esc(docSubjectName(d))+'</b> <span class="chip warn">pending review</span> <span>'+esc(docLabel(d))+"</span>"+
-      '<span class="hint">'+esc(["taken "+fmtWhen(d.created_at),"by "+whoName(d.created_by)].concat(ex.order_id?["order "+ex.order_id]:[]).join(" · "))+"</span></summary>"+
+      '<span class="hint">'+esc(["taken "+fmtWhen(d.captured_at||d.created_at),"by "+whoName(d.captured_by||d.created_by)].concat(ex.order_id?["order "+ex.order_id]:[]).join(" · "))+"</span></summary>"+
       '<div class="rv-body"></div></details>'; }).join("");
 }
 function rvField(id,label,val,type,ph){
@@ -342,11 +344,14 @@ async function renderPersonDocs(uid){
 
 /* ---------- Today: a driver photographs a customer's license or other document at the stop ----------
    The photo goes to dispatch-docs <company>/capture/<order_id>/<document_id>.jpg first, then the row is inserted as a pending
-   customer capture (the database forces review_status, captured_by and captured_at). Upload first, so a failed upload leaves no
-   row; a retry after a failed insert reuses the uploaded file. The driver can't read the row back, so this phone remembers the
-   captures it sent (state.capturedDocs, per order, this session) to show them on the stop. */
+   customer capture (the database forces review_status and captured_by, and keeps the phone's captured_at). Upload first, so a
+   failed upload leaves no row; a retry after a failed insert reuses the uploaded file. With no signal, or no answer, the capture
+   is kept on this phone (app.js's IndexedDB, store "c") and sent by Send waiting photos on Today with its original time. A
+   retry is safe: the object path and the row id are fixed, so an object already there or a row already there counts as sent.
+   The driver can't read the row back, so this phone remembers the captures it sent (state.capturedDocs, per order, this session)
+   to show them on the stop. */
 state.capturedDocs={};
-var cap={order:null,site:null,blob:null,url:"",docId:null,uploaded:null,sending:false};
+var cap={order:null,site:null,blob:null,url:"",docId:null,at:null,uploaded:null,sending:false};
 function captureButtonHtml(orderId){
   var n=(state.capturedDocs[orderId]||[]).length;
   return '<button class="btn sm" type="button" data-capture="'+esc(orderId)+'">Photo of license / document</button>'+
@@ -354,7 +359,7 @@ function captureButtonHtml(orderId){
 }
 function capSay(kind,html){ var el=$("capStatus"); if(!html){ el.innerHTML=""; el.className=""; return; }
   el.className="banner "+kind; el.style.margin="10px 0 0"; el.innerHTML="<div>"+html+"</div>"; }
-function capReset(){ if(cap.url) URL.revokeObjectURL(cap.url); cap.url=""; cap.blob=null; cap.docId=null; cap.uploaded=null;
+function capReset(){ if(cap.url) URL.revokeObjectURL(cap.url); cap.url=""; cap.blob=null; cap.docId=null; cap.at=null; cap.uploaded=null;
   $("capPreview").hidden=true; $("capPreview").removeAttribute("src"); $("capFile").value="";
   $("capTakeTxt").textContent="📷 Take the photo / Tomar la foto"; $("capSend").disabled=true; $("capSend").textContent="Send for review / Enviar"; }
 function openCapture(o,site){
@@ -377,35 +382,80 @@ async function onCapFile(ev){
   var b=await shrinkPhoto(f);
   if(b.type!=="image/jpeg"){ capSay("warn","That photo can't be sent. Take it again with the camera. / <i>Tome la foto otra vez con la cámara.</i>"); return; }
   if(b.size>DOC_MAX){ capSay("warn","The photo is over 10 MB. Take it again. / <i>La foto es muy grande.</i>"); return; }
-  capReset(); cap.blob=b; cap.url=URL.createObjectURL(b); cap.docId=newUuid();   // a new photo is a new document
+  capReset(); cap.blob=b; cap.url=URL.createObjectURL(b); cap.docId=newUuid(); cap.at=new Date().toISOString();   // a new photo is a new document
   $("capPreview").src=cap.url; $("capPreview").hidden=false; $("capTakeTxt").textContent="Retake / Otra foto"; $("capSend").disabled=false;
   capSay("info","Check the photo: the whole document, readable, no glare. If not, take another. / <i>Revise que se lea todo el documento.</i>");
 }
+// one capture, as sent and as kept in the queue
+function capItem(){
+  var o=cap.order, site=cap.site;
+  return {id:cap.docId,company:state.company,orderId:o.id,customerId:String(site.customerId),siteKey:site.siteKey,
+    label:(o.bolNo?"BOL "+o.bolNo:o.id)+" · "+o.customer,blob:cap.blob,captured_at:cap.at||new Date().toISOString()};
+}
+function capPath(x){ return safeSeg(x.company)+"/capture/"+safeSeg(x.orderId)+"/"+x.id+".jpg"; }
+// an Error carrying .net when the request never got an answer (no signal, dropped connection)
+function capError(e){ var m=String((e&&(e.message||e.error))||e||"Something went wrong."), err=new Error(m);
+  err.net=navigator.onLine===false||/failed to fetch|networkerror|load failed|network request failed/i.test(m); return err; }
+// the photo to its fixed path; an object already there is this capture's own, uploaded before an answer was lost
+async function capUpload(x){
+  var up; try{ up=await supa.storage.from("dispatch-docs").upload(capPath(x),x.blob,{contentType:"image/jpeg",upsert:false}); }catch(e){ throw capError(e); }
+  if(!up.error) return;
+  var code=String(up.error.statusCode||up.error.status||"");
+  if(code==="409"||/already exists|duplicate/i.test(String(up.error.message||up.error.error||""))) return;
+  throw capError(up.error);
+}
+// the row under the id the phone made; a row already there (a retry after a lost answer) is left as it is and counts as sent.
+// A plain insert, read as sent on the primary key's unique violation (23505): an upsert with ignore-duplicates (ON CONFLICT DO
+// NOTHING) is refused for a driver, because ON CONFLICT also checks the new row against the read policy and captures are write-only.
+async function capInsert(x){
+  var r; try{ r=await supa.from("dispatch_documents").insert({id:x.id,company:x.company,subject_type:"customer",subject_id:x.customerId,doc_type:"other",title:"Driver capture",
+      file_path:capPath(x),file_name:x.id+".jpg",file_type:"image/jpeg",file_size:x.blob.size,review_status:"pending_review",captured_order_id:x.orderId,captured_at:x.captured_at,
+      extra:{order_id:x.orderId,site_key:x.siteKey}}); }
+  catch(e){ throw capError(e); }
+  if(r.error&&!(r.error.code==="23505"&&/dispatch_documents_pkey/.test(String(r.error.message||"")))) throw capError(r.error);
+}
+function capSent(x){ if(x.company===state.company){ var l=(state.capturedDocs[x.orderId]=state.capturedDocs[x.orderId]||[]); if(l.indexOf(x.id)<0) l.push(x.id); } }
+// keep it on this phone for Send waiting photos; the sheet is then free for another photo
+async function capQueue(x,why){
+  var saved=await capQueuePut({id:x.id,company:x.company,orderId:x.orderId,customerId:x.customerId,siteKey:x.siteKey,label:x.label,blob:x.blob,captured_at:x.captured_at,at:Date.now(),why:why});
+  updatePodQueueNote();
+  if(saved){ if(cap.url) URL.revokeObjectURL(cap.url); cap.url=""; cap.blob=null; cap.docId=null; cap.at=null; cap.uploaded=null;
+    $("capSend").disabled=true; $("capSend").textContent="Send for review / Enviar"; $("capTakeTxt").textContent="📷 Another photo / Otra foto"; }
+  capSay("warn","<b>Not sent yet</b> — "+(why==="offline"?"no signal.":"no answer from the server, so it may or may not have gone.")+
+    (saved?" The photo is kept on this phone; press <b>Send waiting photos</b> on the Today list when you have signal.":" Keep this open and press <b>Try again</b> when you have signal.")+
+    " / <i>No se envió todavía."+(saved?" La foto queda guardada en el teléfono.":" Intente de nuevo.")+"</i>"+(saved?' <button class="lnk" id="capDone" type="button">Done</button>':""));
+  var dn=$("capDone"); if(dn) dn.onclick=closeCapture;
+}
 async function capSend(){
-  var o=cap.order, site=cap.site; if(!o||!site||!cap.blob||cap.sending) return;
-  if(navigator.onLine===false){ capSay("warn","<b>No signal.</b> Nothing was sent. Keep this open and press <b>Try again</b> when you have signal. / <i>Sin señal. Intente de nuevo.</i>");
-    $("capSend").textContent="Try again / Reintentar"; return; }
-  var co=state.company, id=cap.docId, path=safeSeg(co)+"/capture/"+safeSeg(o.id)+"/"+id+".jpg";
+  if(!cap.order||!cap.site||!cap.blob||cap.sending) return;
+  var x=capItem();
+  if(navigator.onLine===false){ await capQueue(x,"offline"); return; }
   cap.sending=true; $("capSend").disabled=true; $("capSend").textContent="Sending… / Enviando…"; capSay("info","Sending… / <i>Enviando…</i>");
   try{
-    if(cap.uploaded!==path){
-      var up=await supa.storage.from("dispatch-docs").upload(path,cap.blob,{contentType:"image/jpeg",upsert:false});
-      if(up.error) throw new Error(up.error.message||String(up.error));
-      cap.uploaded=path;
-    }
-    sbErr(await supa.from("dispatch_documents").insert({id:id,company:co,subject_type:"customer",subject_id:String(site.customerId),doc_type:"other",title:"Driver capture",
-      file_path:path,file_name:id+".jpg",file_type:"image/jpeg",file_size:cap.blob.size,review_status:"pending_review",captured_order_id:o.id,
-      extra:{order_id:o.id,site_key:site.siteKey}}));
+    if(cap.uploaded!==x.id){ await capUpload(x); cap.uploaded=x.id; }
+    await capInsert(x);
   }catch(err){
     cap.sending=false; $("capSend").disabled=false; $("capSend").textContent="Try again / Reintentar";
-    capSay("bad","<b>Not sent.</b> "+esc(err.message||String(err))+" Press <b>Try again</b>. / <i>No se envió. Intente de nuevo.</i>"); return;
+    if(err.net){ await capQueue(x,"network"); return; }
+    capSay("bad","<b>Not sent.</b> "+esc(err.message)+" Press <b>Try again</b>. / <i>No se envió. Intente de nuevo.</i>"); return;
   }
-  cap.sending=false;
-  if(co===state.company) (state.capturedDocs[o.id]=state.capturedDocs[o.id]||[]).push(id);
-  if(cap.url) URL.revokeObjectURL(cap.url); cap.url=""; cap.blob=null; cap.docId=null; cap.uploaded=null;
+  cap.sending=false; capSent(x);
+  if(cap.url) URL.revokeObjectURL(cap.url); cap.url=""; cap.blob=null; cap.docId=null; cap.at=null; cap.uploaded=null;
   $("capSend").disabled=true; $("capSend").textContent="Send for review / Enviar"; $("capTakeTxt").textContent="📷 Another photo / Otra foto";
   capSay("good","<b>Sent for review / Enviado para revisión.</b> The office reads it and files it on the customer. "+'<button class="lnk" id="capDone" type="button">Done</button>');
   var dn=$("capDone"); if(dn) dn.onclick=closeCapture;
+}
+// Send waiting photos (Today): every kept capture, oldest first, with its original captured_at; stops at the first failure
+async function capFlush(){
+  var q=(await capQueueAll()).sort(function(a,b){ return (a.at||0)-(b.at||0); }), sent=0;
+  for(var i=0;i<q.length;i++){
+    var x=q[i];
+    try{ await capUpload(x); await capInsert(x); }
+    catch(err){ banner("bad","A document photo wasn't sent",'<div>'+esc((err.net?"Still no signal or no answer. ":"")+err.message)+" It stays on this phone; press Send waiting photos again later.</div>"); break; }
+    await capQueueRemove(x.id); capSent(x); sent++;
+  }
+  await updatePodQueueNote();
+  if(sent&&state.tab==="today") renderToday();
 }
 
 /* ---------- My documents: a driver's own CDL, medical card and other person documents (read-only) ---------- */

@@ -95,12 +95,20 @@ begin
   select count(*) into n from public.dispatch_documents where id = cdl;  if n <> 1 then raise exception 'driver cannot read own CDL'; end if;
   select count(*) into n from public.dispatch_documents where subject_type = 'customer';  if n <> 0 then raise exception 'driver sees % customer documents', n; end if;
   select count(*) into n from public.dispatch_customer_status;  if n <> 0 then raise exception 'driver sees % customer status rows', n; end if;
-  insert into public.dispatch_documents (id, company, subject_type, subject_id, doc_type, title, file_path, review_status, captured_order_id, captured_by)
-    values (cap, 'adchem', 'customer', cust::text, 'other', 'Driver capture', 'adchem/capture/EB-261020-01/x.jpg', 'pending_review', 'EB-261020-01', sa);
+  -- the phone's capture time is kept (a capture queued offline); captured_by and created_by are forced to the driver
+  insert into public.dispatch_documents (id, company, subject_type, subject_id, doc_type, title, file_path, review_status, captured_order_id, captured_by, created_by, captured_at)
+    values (cap, 'adchem', 'customer', cust::text, 'other', 'Driver capture', 'adchem/capture/EB-261020-01/x.jpg', 'pending_review', 'EB-261020-01', sa, sa, now() - interval '2 hours');
+  -- a retry after a lost response is the primary key's unique violation, which the app reads as sent (ON CONFLICT DO NOTHING
+  -- is refused for a driver: it checks the new row against the read policy, and captures are write-only)
+  ok := false;
+  begin insert into public.dispatch_documents (id, company, subject_type, subject_id, doc_type, title, file_path, review_status)
+    values (cap, 'adchem', 'customer', cust::text, 'other', 'Driver capture', 'adchem/capture/EB-261020-01/x.jpg', 'pending_review');
+  exception when unique_violation then ok := sqlerrm like '%dispatch_documents_pkey%'; end;
+  if not ok then raise exception 'a duplicate capture retry was not the primary key violation'; end if;
   select count(*) into n from public.dispatch_documents where id = cap;  if n <> 0 then raise exception 'driver reads back own capture'; end if;
-  insert into public.dispatch_documents (id, company, subject_type, subject_id, doc_type, file_path, review_status)
-    values (cap2, 'adchem', 'customer', cust::text, 'other', 'adchem/capture/EB-261020-01/x2.jpg', 'pending_review'),
-           (cap3, 'adchem', 'customer', cust::text, 'other', 'adchem/capture/EB-261020-01/x3.jpg', 'pending_review');
+  insert into public.dispatch_documents (id, company, subject_type, subject_id, doc_type, file_path, review_status, captured_at)
+    values (cap2, 'adchem', 'customer', cust::text, 'other', 'adchem/capture/EB-261020-01/x2.jpg', 'pending_review', now() + interval '1 day'),
+           (cap3, 'adchem', 'customer', cust::text, 'other', 'adchem/capture/EB-261020-01/x3.jpg', 'pending_review', now() - interval '90 days');
   ok := false;
   begin insert into public.dispatch_documents (company, subject_type, subject_id, doc_type, file_path, review_status)
     values ('adchem', 'customer', cust::text, 'cannabis_license', 'adchem/capture/EB-261020-01/l.jpg', 'live');
@@ -130,8 +138,23 @@ begin
   select count(*) into n from storage.objects where bucket_id = 'dispatch-docs';  if n <> 0 then raise exception 'driver reads % document files', n; end if;
   reset role;
   select * into d from public.dispatch_documents where id = cap;
-  if d.review_status <> 'pending_review' or d.captured_by is distinct from dr or d.captured_at is null then
-    raise exception 'capture stored as % by % at %', d.review_status, d.captured_by, d.captured_at; end if;
+  if d.review_status <> 'pending_review' or d.captured_by is distinct from dr or d.created_by is distinct from dr or d.captured_at is distinct from now() - interval '2 hours' then
+    raise exception 'capture stored as % by % / % at %', d.review_status, d.captured_by, d.created_by, d.captured_at; end if;
+  if (select count(*) from public.dispatch_documents where id in (cap2, cap3) and captured_at = now()) <> 2 then
+    raise exception 'a future or 90-day-old capture time was kept'; end if;
+
+  -- ---- a removed member no longer reads their own person documents or files ----
+  insert into storage.objects (bucket_id, name, owner_id) values ('dispatch-docs', 'adchem/document/person/' || dr || '/' || cdl || '/cdl.jpg', sa::text);
+  perform set_config('request.jwt.claims', json_build_object('sub', dr, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  select count(*) into n from storage.objects where bucket_id = 'dispatch-docs';  if n <> 1 then raise exception 'active driver reads % own files (want 1)', n; end if;
+  reset role;
+  update public.dispatch_members set active = false where user_id = dr and company = 'adchem';
+  set local role authenticated;
+  select (select count(*) from public.dispatch_documents where subject_id = dr::text) + (select count(*) from storage.objects where bucket_id = 'dispatch-docs') into n;
+  if n <> 0 then raise exception 'inactive member reads % own documents/files', n; end if;
+  reset role;
+  update public.dispatch_members set active = true where user_id = dr and company = 'adchem';
 
   -- ---- a member of north cannot file a document against an adchem customer (subject guard) ----
   perform set_config('request.jwt.claims', json_build_object('sub', nm, 'role', 'authenticated')::text, true);

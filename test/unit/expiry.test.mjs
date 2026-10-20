@@ -73,7 +73,7 @@ const ok = (data) => new Response(JSON.stringify(data), { status: 200, headers: 
 const decode = raw => Buffer.from(raw.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
 const eqParam = (u, k) => { const m = u.match(new RegExp('[?&]' + k + '=eq\\.([^&]+)')); return m ? decodeURIComponent(m[1]) : null; };
 
-async function run({ headers = {}, body = { send: true }, member = {}, env: envExtra = {}, serviceNames = false } = {}) {
+async function run({ headers = {}, body = { send: true }, member = {}, env: envExtra = {}, serviceNames = false, waitUntil = false } = {}) {
   const env = { SUPABASE_URL: 'http://sb', SUPABASE_ANON_KEY: 'anon', SUPABASE_SERVICE_ROLE_KEY: 'svc-key', EXPIRY_SECRET: 's3cret-long-random', APP_URL: 'https://ops.adchem.pro', GOOGLE_SA_JSON: await serviceAccount(), ...envExtra };
   const calls = [], real = globalThis.fetch;
   const companies = [...COMPANIES, { id: 'west', name: 'West Co', short_name: 'West', data: {} }];
@@ -98,9 +98,12 @@ async function run({ headers = {}, body = { send: true }, member = {}, env: envE
   };
   try {
     const req = new Request('http://x/api/expiry', { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
-    const res = await onRequestPost({ request: req, env });
+    const pending = [];
+    const res = await onRequestPost(waitUntil ? { request: req, env, waitUntil: p => { pending.push(p); } } : { request: req, env });
+    const answeredBefore = calls.filter(c => c.url.includes('gmail.googleapis.com')).length;
+    await Promise.all(pending);
     const gmail = calls.filter(c => c.url.includes('gmail.googleapis.com')).map(c => decode(c.body.raw));
-    return { res, j: await res.json(), calls, gmail, sbCalls: calls.filter(c => c.url.startsWith('http://sb/')) };
+    return { res, j: await res.json(), calls, gmail, pending: pending.length, answeredBefore, sbCalls: calls.filter(c => c.url.startsWith('http://sb/')) };
   } finally { globalThis.fetch = real; }
 }
 
@@ -113,11 +116,10 @@ test('cron: a wrong, empty or unconfigured secret is 403 and reads nothing', asy
   }
 });
 
-test('cron: the right secret mails every company with recipients, as the service role, one Gmail send', async () => {
-  const { res, j, gmail, sbCalls, calls } = await run({ headers: { 'x-expiry-secret': 's3cret-long-random' }, serviceNames: true });
-  assert.equal(res.status, 200);
-  assert.deepEqual(j, { ok: true, sent: [{ company: 'adchem', to: ['ops@adchem.pro', 'billing@adchem.pro'], count: 4 }],
-    skipped: [{ company: 'north', reason: 'no_recipients' }, { company: 'west', reason: 'nothing_due' }] });
+test('cron: the right secret answers 202 at once, then mails every company with recipients under waitUntil, as the service role', async () => {
+  const { res, j, gmail, sbCalls, calls, pending, answeredBefore } = await run({ headers: { 'x-expiry-secret': 's3cret-long-random' }, serviceNames: true, waitUntil: true });
+  assert.equal(res.status, 202); assert.deepEqual(j, { ok: true, accepted: true });
+  assert.equal(pending, 1, 'the work is handed to waitUntil'); assert.equal(answeredBefore, 0, 'answered before any mail went out');
   assert.equal(gmail.length, 1, 'Gmail called once');
   const m = gmail[0];
   assert.match(m, /^From: orders@adchem\.pro\r\n/); assert.match(m, /\r\nTo: ops@adchem\.pro, billing@adchem\.pro\r\n/);
@@ -168,7 +170,7 @@ test('Send now: a coordinator or a plain admin is 403; nothing read or sent', as
 
 // ---------- health: the documents bucket and the expiry job ----------
 import { onRequestGet as health } from '../../functions/api/health.js';
-async function runHealth({ bucket, cron }) {
+async function runHealth({ bucket, cron, log = ok([]) }) {
   const calls = [], real = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
     const u = String(url); calls.push({ url: u, method: init.method || 'GET', headers: init.headers || {} });
@@ -179,6 +181,7 @@ async function runHealth({ bucket, cron }) {
     if (u.includes('/rest/v1/companies')) return ok([{ id: 'adchem', name: 'AdChem, LLC', short_name: 'AdChem', data: {} }]);
     if (u.endsWith('/rest/v1/rpc/dispatch_docs_bucket_ok')) return bucket;
     if (u.endsWith('/rest/v1/rpc/dispatch_cron_status')) return cron;
+    if (u.includes('/rest/v1/dispatch_log')) return log;
     return new Response('nope', { status: 404 });
   };
   try {
@@ -192,10 +195,18 @@ test('health: docsBucket and expiryCron', async () => {
   const b = a.calls.find(c => c.url.endsWith('/rest/v1/rpc/dispatch_docs_bucket_ok'));
   assert.equal(b.method, 'POST'); assert.deepEqual([b.headers.apikey, b.headers.authorization], ['anon', 'Bearer tok'], 'as the caller');
   assert.ok(!a.calls.some(c => c.url.includes('/storage/v1/')), 'no storage API read');
+  assert.equal(a.j.lastExpiryEmail, null, 'no expiry_email row: never');
+  const l = a.calls.find(c => c.url.includes('/rest/v1/dispatch_log'));
+  assert.equal(l.url, 'http://sb/rest/v1/dispatch_log?select=at&company=eq.adchem&what=eq.expiry_email&order=at.desc&limit=1');
+  assert.deepEqual([l.headers.apikey, l.headers.authorization], ['anon', 'Bearer tok'], 'the log is read as the caller');
+  const last = await runHealth({ bucket: ok('ok'), cron: ok([]), log: ok([{ at: '2026-10-20T14:00:03+00:00' }]) });
+  assert.equal(last.j.lastExpiryEmail, '2026-10-20T14:00:03+00:00'); assert.ok(!('lastExpiryEmail' in last.j.checks), 'informational, not a check');
   const z = await runHealth({ bucket: ok('Bucket not found'), cron: ok([]) });
   assert.equal(z.j.checks.docsBucket, 'Bucket not found'); assert.equal(z.j.checks.expiryCron, 'not scheduled');
   const e = await runHealth({ bucket: new Response('{"message":"not allowed"}', { status: 400 }), cron: new Response('{"message":"not allowed"}', { status: 400 }) });
-  assert.match(e.j.checks.docsBucket, /not allowed/, 'an RPC error gives its message'); assert.equal(e.j.checks.expiryCron, 'not scheduled', 'an RPC error reads not scheduled');
+  assert.match(e.j.checks.docsBucket, /not allowed/, 'an RPC error gives its message');
+  const le = await runHealth({ bucket: ok('ok'), cron: ok([]), log: new Response('{"message":"x"}', { status: 400 }) });
+  assert.equal(le.j.lastExpiryEmail, null, 'a failed log read reads never'); assert.equal(e.j.checks.expiryCron, 'not scheduled', 'an RPC error reads not scheduled');
   const off = await runHealth({ bucket: ok('bucket is public'), cron: ok([{ jobname: 'dispatch-expiry-email', schedule: '0 14 * * *', active: false }]) });
   assert.equal(off.j.checks.docsBucket, 'bucket is public'); assert.equal(off.j.checks.expiryCron, 'not scheduled', 'an inactive job is not scheduled');
   const other = await runHealth({ bucket: ok('ok'), cron: ok([{ jobname: 'dispatch-expiry-email', schedule: '30 13 * * *', active: true }]) });

@@ -984,7 +984,7 @@ function renderToday(){
               '<div class="qr-code">'+codeChip(o)+'<div class="qr-codetext">'+esc(k?CODES[k].text:"No code")+"</div>"+(due?'<div class="qr-amt mono">'+money(due)+"</div>":"")+"</div></div>"+
             (moneyLine?'<div class="qr-band'+(k==="COD"?" collect":" dep")+'"><span>'+moneyLine+'</span><span class="mono">'+money(due)+"</span></div>":"")+
             (fl.length?'<div class="qr-flags">'+fl.map(function(f){return '<span class="chip '+(f.k==="stop"?"k-H":"warn")+'" title="'+esc(f.s)+'">'+esc(f.t)+"</span>";}).join(" ")+"</div>":"")+
-            siteNotesHtml(site,hc,o.id)+
+            siteNotesHtml(site,hc,state.role==="driver"?o.id:null)+
             '<div class="qr-actions"><button class="btn sm" data-bol2="'+esc(o.id)+'">BOL</button>'+podButton(o)+
               '<button class="btn sm ghost" data-more="'+esc(o.id)+'">Details / Detalles</button></div>'+
             '<div class="qr-more" id="more-'+esc(o.id)+'" hidden>'+
@@ -1741,8 +1741,8 @@ function podIdb(){
   if(podDb) return Promise.resolve(podDb);
   return new Promise(function(resolve){
     try{
-      var r=indexedDB.open("adchem-pod",2);
-      r.onupgradeneeded=function(){ var db=r.result; if(!db.objectStoreNames.contains("q")) db.createObjectStore("q",{keyPath:"orderId"}); if(!db.objectStoreNames.contains("d")) db.createObjectStore("d",{keyPath:"id"}); };
+      var r=indexedDB.open("adchem-pod",3);   // q: BOL photos, d: deposit slips, c: document captures (documents.js)
+      r.onupgradeneeded=function(){ var db=r.result; if(!db.objectStoreNames.contains("q")) db.createObjectStore("q",{keyPath:"orderId"}); if(!db.objectStoreNames.contains("d")) db.createObjectStore("d",{keyPath:"id"}); if(!db.objectStoreNames.contains("c")) db.createObjectStore("c",{keyPath:"id"}); };
       r.onsuccess=function(){ podDb=r.result; resolve(podDb); };
       r.onerror=function(){ resolve(null); };
     }catch(e){ resolve(null); }
@@ -1767,13 +1767,13 @@ function podQueueRemove(id){
 }
 async function updatePodQueueNote(){
   var host=$("podQueueNote"); if(!host) return;
-  var q=await podQueueAll(), dq=await depQueueAll(), n=q.length+dq.length;
+  var q=await podQueueAll(), dq=await depQueueAll(), cq=await capQueueAll(), n=q.length+dq.length+cq.length;
   if(!n){ host.innerHTML=""; host.hidden=true; return; }
   host.hidden=false;
   host.innerHTML='<div class="banner warn" style="margin:0 0 12px"><div><b>'+n+' photo'+(n===1?"":"s")+' waiting to send</b>'+
-    q.map(function(x){return esc((x.order.bolNo?"BOL "+x.order.bolNo:x.order.id)+" · "+x.order.customer);}).concat(dq.map(function(x){return "Deposit slip"+(x.d&&x.d.amount?" · "+money(x.d.amount):"")+" · "+new Date(x.at).toLocaleDateString();})).join("<br>")+
+    q.map(function(x){return esc((x.order.bolNo?"BOL "+x.order.bolNo:x.order.id)+" · "+x.order.customer);}).concat(dq.map(function(x){return "Deposit slip"+(x.d&&x.d.amount?" · "+money(x.d.amount):"")+" · "+new Date(x.at).toLocaleDateString();})).concat(cq.map(function(x){return "Document photo · "+esc(x.label||x.orderId);})).join("<br>")+
     '<div style="margin-top:6px"><button class="btn sm primary" id="podFlush">Send waiting photos</button></div></div></div>';
-  $("podFlush").onclick=async function(){ await podFlush(); await depFlush(); };
+  $("podFlush").onclick=async function(){ await podFlush(); await depFlush(); if(typeof capFlush==="function") await capFlush(); };
 }
 async function podFlush(){
   var q=await podQueueAll();
@@ -1879,6 +1879,25 @@ function depQueueAll(){
 function depQueueRemove(id){
   if(!id) return;
   podIdb().then(function(db){ if(!db||!db.objectStoreNames.contains("d")) return; try{ db.transaction("d","readwrite").objectStore("d").delete(id); }catch(e){} });
+}
+// document captures from a stop (documents.js capSend / capQueue / capFlush), keyed by the document id the phone made
+function capQueueAll(){
+  return podIdb().then(function(db){
+    if(!db||!db.objectStoreNames.contains("c")) return [];
+    return new Promise(function(res){ try{ var t=db.transaction("c","readonly"), rq=t.objectStore("c").getAll(); rq.onsuccess=function(){res(rq.result||[]);}; rq.onerror=function(){res([]);}; }catch(e){res([]);} });
+  });
+}
+function capQueuePut(x){
+  return podIdb().then(function(db){
+    if(!db||!db.objectStoreNames.contains("c")) return false;
+    return new Promise(function(res){ try{ var t=db.transaction("c","readwrite"); t.objectStore("c").put(x); t.oncomplete=function(){res(true);}; t.onerror=function(){res(false);}; t.onabort=function(){res(false);}; }catch(e){res(false);} });
+  });
+}
+function capQueueRemove(id){
+  return podIdb().then(function(db){
+    if(!db||!db.objectStoreNames.contains("c")) return;
+    return new Promise(function(res){ try{ var t=db.transaction("c","readwrite"); t.objectStore("c").delete(id); t.oncomplete=res; t.onerror=res; t.onabort=res; }catch(e){res();} });
+  });
 }
 async function depFlush(){
   var q=await depQueueAll();
@@ -2256,7 +2275,7 @@ async function renderHealth(){
     if(!h.googleConfigured){ host.innerHTML='<div class="banner warn" style="margin:0"><div><b>Google isn\'t set up on the server yet</b><div>Add the service account (GOOGLE_SA_JSON) and the Workspace user it acts as (GOOGLE_IMPERSONATE) in Cloudflare Pages → Settings → Variables and Secrets, then redeploy. See the README.</div></div></div>'; return; }
     var c=h.checks||{}, ok=function(v){return typeof v==="string"&&(v==="ok"||v.indexOf("ok ")===0||v.indexOf("ok —")===0);};
     host.innerHTML='<div class="banner '+(Object.values(c).every(ok)?"good":"warn")+'" style="margin:0"><div><b>Acting as '+esc(h.impersonate||"(no user set)")+' · mail goes out as '+esc(h.mailFrom)+' · BOLs to '+esc(h.ordersTo)+' · deposit slips to '+esc(h.accountingTo)+'</b>'+
-      '<div>Token: '+esc(c.token||"—")+'<br>AR Command Center: '+esc(c.sheet||"—")+'<br>Calendars: '+esc(c.calendar||"—")+'<br>Drive: '+esc(c.drive||"—")+'<br>Gmail: '+esc(c.gmail||"—")+'<br>Orders Out: '+esc(c.ordersOut||"—")+'<br>Customers Out: '+esc(c.customersOut||"—")+'<br>Import sheet: '+esc(c.importSheet||"—")+'<br>Documents bucket: '+esc(c.docsBucket||"—")+'<br>Expiry email: '+esc(c.expiryCron||"—")+'</div></div></div>';
+      '<div>Token: '+esc(c.token||"—")+'<br>AR Command Center: '+esc(c.sheet||"—")+'<br>Calendars: '+esc(c.calendar||"—")+'<br>Drive: '+esc(c.drive||"—")+'<br>Gmail: '+esc(c.gmail||"—")+'<br>Orders Out: '+esc(c.ordersOut||"—")+'<br>Customers Out: '+esc(c.customersOut||"—")+'<br>Import sheet: '+esc(c.importSheet||"—")+'<br>Documents bucket: '+esc(c.docsBucket||"—")+'<br>Expiry email: '+esc(c.expiryCron||"—")+'<br>Last expiry email: '+esc(h.lastExpiryEmail?fmtWhen(h.lastExpiryEmail):"never")+'</div></div></div>';
   }catch(e){ host.innerHTML='<div class="banner bad" style="margin:0"><div><b>Server check failed</b><div>'+esc(e.message)+'</div></div></div>'; }
 }
 function wireAuth(){

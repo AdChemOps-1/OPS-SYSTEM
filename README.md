@@ -46,9 +46,9 @@ Licenses, certificates, agreements and the like are records in `dispatch_documen
 
 Who sees what: **View documents** reads the records and files, **Manage documents** changes them (super admins hold both). A coordinator without View documents sees the license and PSA **chips only** — the derived status, never the numbers, dates or files. A driver sees only **their own** documents, read-only, on **My documents**; they cannot read customer or company documents.
 
-**Photo of license / document** on Today lets a driver photograph a customer's paper at a stop. It is write-only for them: the capture waits in the review queue as *pending review* and shows nowhere else until someone with Manage documents types in its details and approves it (or rejects it with a reason). Approving a renewal **supersedes** the old license: a live document of the same type and number for that customer is marked rejected and the new one points back to it.
+**Photo of license / document** on Today lets a driver photograph a customer's paper at a stop. It is write-only for them: the capture waits in the review queue as *pending review* and shows nowhere else until someone with Manage documents types in its details and approves it (or rejects it with a reason). With no signal the photo is kept on the phone, like a BOL photo, and **Send waiting photos** on Today sends it later with the time it was taken; the review queue shows who took it and when. Approving a renewal **supersedes** the old license: a live document of the same type and number for that customer is marked rejected and the new one points back to it.
 
-**Customers Out** now carries each customer's License Status, License #, License Expires, Entity Status, PSA Status and PSA Effective; a customer with no document reads *missing*.
+**Customers Out** now carries each customer's License Status, License #, License Expires, Entity Status, PSA Status and PSA Effective; with no document, License Status and PSA Status read *missing* and License #, License Expires, Entity Status and PSA Effective are blank.
 
 **Warnings** are off by default. A super admin switches them per type (cannabis license, PSA, entity status) on **Setup → Warnings**, with a note shown alongside, and sets the expiring window (`warnDays`, default 30). A type that is on shows under the customer on New order and is stamped on the order; it never blocks the order. Everything on that card is written only through `dispatch_set_warnings`. The daily expiry email (below) goes only to the addresses listed there.
 
@@ -62,7 +62,7 @@ Every morning at 06:00 Pacific (07:00 during daylight time; `0 14 * * *` UTC) a 
 select dispatch_schedule_expiry('<app url>/api/expiry', '<EXPIRY_SECRET>');
 ```
 
-**Setup → Warnings → Send expiry email now** sends the same email for the current company straight away. **Setup → Google connection** shows *Expiry email: ok — daily 06:00 Pacific* once the job is scheduled. Each email sent is logged (`expiry_email`).
+**Setup → Warnings → Send expiry email now** sends the same email for the current company straight away. **Setup → Google connection** shows *Expiry email: ok — daily 06:00 Pacific* once the job is scheduled. Each email sent is logged (`expiry_email`), and *Last expiry email* on the same card shows the newest one for the company (a morning with nothing due sends and logs nothing). The job's call is answered at once (`202`) and the emails go out in the background, so a slow Gmail never times the job out.
 
 ## Deploy (first time)
 
@@ -78,14 +78,14 @@ Create a repository under the **AdChemOps-1** account (e.g. `Ops`) and upload th
 ### 3. Supabase — one setting
 Supabase dashboard → project **adchem-hours** → **Authentication → URL Configuration → Redirect URLs**: add the app's address (the `pages.dev` URL and, later, the custom domain). The Site URL can stay as AdChem Time's.
 
-The database objects through `004` are already created (`supabase/migrations/` is the record). **`005_customers.sql` and `006_documents.sql` are to be applied, each followed by a re-run of the security advisor** (record the result at the foot of the file; `006` creates the private `dispatch-docs` bucket and turns on `pg_cron` and `pg_net`). The existing admin account already holds admin for AdChem.
+The database objects through `005` are already created (`supabase/migrations/` is the record; `005_customers.sql` was applied as version `20261020170155`). **Only `006_documents.sql` is to be applied, followed by a re-run of the security advisor** (record the result at the foot of the file; `006` creates the private `dispatch-docs` bucket and turns on `pg_cron` and `pg_net`). The existing admin account already holds admin for AdChem.
 
 ### 4. Google setup (Workspace admin, about 25 minutes)
 See **`GOOGLE-SETUP.md`**. It starts with the dedicated user `ops-system@adchem.pro`.
 
 ### 5. First run
 1. Open the app, sign in with your existing AdChem account.
-2. **Setup → Google connection → Check again** — all ten lines should read *ok* (token, AR Command Center, calendars, Drive, Gmail, Orders Out, Customers Out, Import sheet, Documents bucket, Expiry email; Orders Out, Customers Out and Import sheet read *no … set* until step 4 is done, calendars until step 5, Expiry email *not scheduled* until step 9); the Gmail line should say it can send as orders@adchem.pro. (The calendars line reads *no delivery calendar set* until step 5.)
+2. **Setup → Google connection → Check again** — the first ten lines should read *ok* (token, AR Command Center, calendars, Drive, Gmail, Orders Out, Customers Out, Import sheet, Documents bucket, Expiry email; Orders Out, Customers Out and Import sheet read *no … set* until step 4 is done, calendars until step 5, Expiry email *not scheduled* until step 9) and the eleventh, *Last expiry email*, gives the time of the last one sent for the company, or *never*; the Gmail line should say it can send as orders@adchem.pro. (The calendars line reads *no delivery calendar set* until step 5.)
 3. **Setup → Customer feed → Refresh the feed now** — reads FEED_ORDERS.
 4. **Setup → Orders Out** — paste the *AdChem Dispatch Orders Out* sheet link, **Save**, then **Rebuild Orders Out**. On the AR Command Center, click **Allow access** on Orders In A8 once.
    - **Setup → Customers Out** — paste the *Customers Out* sheet link, **Save**, then **Rebuild Customers Out**.
@@ -122,7 +122,7 @@ public/            the app (index.html, app.js, customers.js, documents.js, impo
 functions/api/     feed.js · calendar.js · drive.js · pod.js · deposit.js · orderlog.js · customers-out.js · import.js · docs.js · expiry.js · health.js
 functions/_lib/    google.js (service-account token) · auth.js (who is calling, in which company) · orderlog.js (the Orders Out writer) · customersout.js (the Customers Out writer) · expiry.js (what is due, and the email body) · mail.js (the Gmail sender) · importsheet.js (the spreadsheet reader) · calendars.js (which calendar a hub's events go on)
 api/               [route].js — adapter so the same server code could run on Vercel; not used by Cloudflare
-supabase/          001_dispatch.sql … 004_hub_time_and_products.sql as applied; 005_customers.sql and 006_documents.sql to be applied (safe to run twice); tests/005_policies.sql, tests/006_policies.sql (run inside begin … rollback)
+supabase/          001_dispatch.sql … 005_customers.sql as applied; 006_documents.sql to be applied (safe to run twice); tests/005_policies.sql, tests/006_policies.sql (run inside begin … rollback)
 test/              ui.test.cjs · customers.test.cjs · documents.test.cjs (headless UI suites) · _fake.cjs (the fake Supabase and /api routes they share) · unit/ (auth, customersout, importsheet, docs.test.mjs, expiry.test.mjs) · fixtures/ · run.cjs (runs everything)
 GOOGLE-SETUP.md    the Workspace / Google Cloud steps
 ```

@@ -1,7 +1,8 @@
 // Headless UI test for documents (public/documents.js): the customer page's Documents tab (add a license with a photo, a PSA,
 // a paper-only record, open a file through a signed URL), the license/PSA chips and completeness in the customer header,
 // the Documents hub (filters, pending count, company documents), the view/manage permissions, phone width, the capture review
-// queue (approve superseding a live license, reject with a reason, a capture already handled) and People documents.
+// queue (approve superseding a live license, reject with a reason, a capture already handled), People documents, and a driver's
+// capture with no signal (kept on the phone, sent later with its time) and its retry after a lost answer.
 // Uses the shared fake (test/_fake.cjs).
 const assert = require('assert/strict');
 const { chromium } = require('playwright');
@@ -38,6 +39,7 @@ const CID = '11111111-1111-4111-8111-111111111111';
   const page = await newPage(b, base); pages.push(page);
   await page.addInitScript(() => { window.__opened = []; window.open = (u) => { window.__opened.push(u); return null; }; });
   const docPosts = []; page.on('request', r => { if (r.url().endsWith('/api/docs') && r.method() === 'POST') docPosts.push(JSON.parse(r.postData() || '{}')); });
+  const docPatches = []; page.on('request', r => { if (/\/rest\/v1\/dispatch_documents\?/.test(r.url()) && r.method() === 'PATCH') docPatches.push(JSON.parse(r.postData() || '{}')); });
   await signIn(page, base);
   assert.equal(await page.$eval('#tab-documents',e=>e.hidden), false, 'documents tab visible to a super admin');
   // the customer page: chips before any document, then the Documents tab
@@ -143,6 +145,9 @@ const CID = '11111111-1111-4111-8111-111111111111';
   await page.fill('#df_status','Valid'); await page.click('#dfSave'); await page.waitForTimeout(800);
   assert.equal(T.dispatch_documents.length, 3, 'edit updates, not inserts'); assert.equal(rs.status, 'Valid');
   assert.ok(T.dispatch_log.some(l=>l.table_name==='dispatch_documents'&&l.row_id===rs.id&&l.changes.status&&l.changes.status.to==='Valid'), 'edit audited');
+  // the subject is never sent on an update (it would fire the subject guard, which refuses a person who has left the company)
+  assert.ok(docPatches.length > 0, 'the edit was a PATCH');
+  assert.ok(docPatches.every(b=>!('subject_type' in b) && !('subject_id' in b)), 'no subject in an update');
 
   // ---------- the Documents hub ----------
   await page.click('#tab-documents'); await page.waitForTimeout(500);
@@ -340,12 +345,13 @@ const CID = '11111111-1111-4111-8111-111111111111';
   T.dispatch_users.push({user_id:'u2',email:'casey@adchem.pro',name:'Casey',active:true});
   T.dispatch_documents.push({id:'33333333-3333-4333-8333-333333333333',company:'adchem',subject_type:'person',subject_id:'u2',doc_type:'medical_card',title:'',number:'MC-1',status:'',issued:null,expires:plusDays(today,300),checked_on:null,checked_by:null,
     source:'',notes:'',extra:{},review_status:'live',file_path:null,file_name:null,file_type:null,file_size:null,supersedes_id:null,created_by:'u1',created_at:new Date().toISOString(),updated_by:'u1',updated_at:new Date().toISOString()});
-  capture(CAP4, 'EB-261020-04');
+  Object.assign(capture(CAP4, 'EB-261020-04'), {captured_by:'u2'});   // created_by stays u1: the review names the driver who took it
   const m2 = await newPage(b, base, {viewport:{width:390,height:844},members:[{user_id:'u1',company:'adchem',role:'admin',hub:'',active:true,is_super_admin:true,permissions:{}},
     {user_id:'u2',company:'adchem',role:'driver',hub:'EB',active:true,is_super_admin:false,permissions:{}}]}); pages.push(m2);
   await signIn(m2, base); await m2.click('#tab-documents'); await m2.waitForTimeout(700);
   assert.match(flat(await m2.textContent('#dhList')), /Casey.*Medical card.*MC-1/, 'person names loaded for the hub');
   assert.deepEqual(await reviewIds(m2), [CAP4]);
+  assert.match(flat(await m2.textContent(`#dhReview [data-review="${CAP4}"] summary`)), /by Casey/, 'the review queue names captured_by');
   await m2.click(`#dhReview [data-review="${CAP4}"] summary`); await m2.waitForTimeout(500);
   assert.equal(await m2.$eval('#rv_type',e=>!!e.offsetParent), true);
   assert.equal(await m2.evaluate(()=>document.documentElement.scrollWidth), 390, 'no horizontal overflow with a capture expanded');
@@ -355,7 +361,54 @@ const CID = '11111111-1111-4111-8111-111111111111';
   assert.equal(await m2.evaluate(()=>document.documentElement.scrollWidth), 390, 'no horizontal overflow on People with a person document form open');
   await m2.click('#dfCancel');
 
-  // the upload failure's 400, the failed sign's 404 and the handled capture's 409 are the only console errors
+  // ---------- a driver's capture: no signal keeps it on the phone; Send waiting photos sends it with its original time ----------
+  const dm = await newPage(b, base, {viewport:{width:390,height:844},members:[{user_id:'u1',company:'adchem',role:'driver',hub:'LA',active:true,is_super_admin:false,permissions:{}}]}); pages.push(dm);
+  await signIn(dm, base);
+  assert.equal(await dm.evaluate(()=>state.role), 'driver');
+  const ORD = 'LA-261020-09';
+  const openCap = () => dm.evaluate(([o,c])=>openCapture({id:o,customer:'Costa Cannabis',siteLabel:'Primary'},{customerId:c,siteKey:'ADC-0001 — Primary'}), [ORD, CID]);
+  const queued = () => dm.evaluate(()=>capQueueAll().then(q=>q.map(x=>[x.id,x.captured_at,x.orderId])));
+  await openCap(); await dm.setInputFiles('#capFile', {name:'lic.jpg', mimeType:'image/jpeg', buffer:JPEG}); await dm.waitForTimeout(500);
+  const [id1, at1] = await dm.evaluate(()=>[cap.docId, cap.at]);
+  assert.match(id1, /^[0-9a-f-]{36}$/); assert.ok(at1);
+  await dm.context().setOffline(true);
+  await dm.click('#capSend'); await dm.waitForTimeout(500);
+  assert.match(flat(await dm.textContent('#capStatus')), /^Not sent yet — no signal\. The photo is kept on this phone; press Send waiting photos on the Today list when you have signal\./);
+  assert.ok(!T.dispatch_documents.some(d=>d.id===id1), 'nothing reached the server');
+  assert.deepEqual(await queued(), [[id1, at1, ORD]], 'kept on the phone with its capture time');
+  assert.equal(await dm.$eval('#capSend',e=>e.disabled), true, 'the sheet is free for another photo');
+  await dm.click('#capDone'); await dm.waitForTimeout(300);
+  assert.match(flat(await dm.textContent('#podQueueNote')), /1 photo waiting to send.*Document photo · LA-261020-09 · Costa Cannabis/);
+  await dm.waitForTimeout(1100);   // so the send is later than the capture
+  await dm.context().setOffline(false);
+  await dm.click('#podFlush'); await dm.waitForTimeout(1000);
+  const sent1 = T.dispatch_documents.filter(d=>d.id===id1);
+  assert.equal(sent1.length, 1, 'sent once');
+  assert.deepEqual([sent1[0].captured_at, sent1[0].review_status, sent1[0].captured_by, sent1[0].captured_order_id, sent1[0].file_path],
+    [at1, 'pending_review', 'u1', ORD, 'adchem/capture/'+ORD+'/'+id1+'.jpg'], 'sent with its original captured_at');
+  assert.ok((T.__objects||[]).includes(sent1[0].file_path), 'the photo uploaded');
+  assert.deepEqual(await queued(), [], 'the queue is empty'); assert.equal(await dm.$eval('#podQueueNote',e=>e.hidden), true);
+  // a lost answer: the row reaches the server but the phone hears nothing, so it is kept; the retry finds the object and the row
+  // already there (a duplicate object and a duplicate primary key) and counts it as sent — still one row
+  await openCap(); await dm.setInputFiles('#capFile', {name:'lic2.jpg', mimeType:'image/jpeg', buffer:JPEG}); await dm.waitForTimeout(500);
+  const id2 = await dm.evaluate(()=>cap.docId);
+  await dm.route('**/rest/v1/dispatch_documents*', async r => { if (r.request().method() === 'POST') { await r.fetch(); return r.abort(); } return r.continue(); });
+  await dm.click('#capSend'); await dm.waitForTimeout(800);
+  assert.match(flat(await dm.textContent('#capStatus')), /^Not sent yet — no answer from the server, so it may or may not have gone\. The photo is kept on this phone/);
+  assert.equal(T.dispatch_documents.filter(d=>d.id===id2).length, 1, 'the row did arrive');
+  assert.deepEqual((await queued()).map(x=>x[0]), [id2]);
+  await dm.unroute('**/rest/v1/dispatch_documents*');
+  const ups = () => fake.calls.filter(c=>c[0]==='upload'&&c[1]==='adchem/capture/'+ORD+'/'+id2+'.jpg').length;
+  assert.equal(ups(), 1);
+  await dm.click('#capDone'); await dm.waitForTimeout(200);
+  await dm.click('#podFlush'); await dm.waitForTimeout(1000);
+  assert.equal(ups(), 2, 'the retry uploaded again and met the existing object');
+  assert.equal(T.dispatch_documents.filter(d=>d.id===id2).length, 1, 'still one row: the duplicate primary key counted as sent');
+  assert.deepEqual(await queued(), [], 'nothing left waiting');
+  assert.equal(await dm.$$eval('#banners .banner.bad',e=>e.length), 0, 'no failure banner');
+  assert.match(await dm.evaluate(o=>JSON.stringify(state.capturedDocs[o]), ORD), new RegExp(id1+'.*'+id2), 'the stop knows both were sent');
+
+  // the upload failure's 400 (and the duplicate object's), the failed sign's 404 and the handled capture's 409 are the only console errors
   assert.deepEqual(pages.flatMap(p=>p.errs).filter(e=>!/status of (400|404|409)/.test(e)), [], 'unexpected page errors');
   assert.equal(page.errs.filter(e=>/status of 409/.test(e)).length, 1, 'the 409 case ran');
   } finally { await b.close(); await fake.stop(); }

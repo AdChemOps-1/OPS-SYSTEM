@@ -97,13 +97,16 @@ begin
   return new;
 end $fn$;
 -- A driver's insert is a capture from a stop: a customer document, under the company's capture/ folder, sent for review, as themselves.
+-- captured_at is the phone's time of the photo (a capture queued offline is sent later with it), kept when it is within the last
+-- 30 days and never later than now; otherwise now.
 create or replace function public.dispatch_documents_capture_guard() returns trigger language plpgsql security definer set search_path = public as $fn$
 begin
   if public.dispatch_role_in(new.company) = 'driver' then
     if new.review_status is distinct from 'pending_review' then raise exception 'a driver capture must be sent for review'; end if;
     if new.subject_type <> 'customer' then raise exception 'a driver capture must be for a customer'; end if;
     if new.file_path is null or new.file_path not like new.company || '/capture/%' then raise exception 'a driver capture must be filed under capture/'; end if;
-    new.review_status := 'pending_review'; new.captured_by := auth.uid(); new.captured_at := now();
+    new.review_status := 'pending_review'; new.captured_by := auth.uid(); new.created_by := auth.uid();
+    new.captured_at := case when new.captured_at >= now() - interval '30 days' then least(new.captured_at, now()) else now() end;
     new.checked_on := null; new.checked_by := null; new.supersedes_id := null;
   end if;
   return new;
@@ -239,7 +242,8 @@ end $fn$;
 -- The job is global (one per database), so no member may schedule it: only the database owner (SQL editor / MCP) or the service role.
 -- Execute is not granted to authenticated or anon. Inside a security definer function current_user is always the owner, so the check
 -- reads the caller's role from the `role` setting ('none' for a plain owner session, 'service_role' through the API).
--- Re-running replaces the job and the secret. 14:00 UTC = 06:00 PST / 07:00 PDT.
+-- Re-running replaces the job and the secret. 14:00 UTC = 06:00 PST / 07:00 PDT. pg_net's default timeout is 5 s; /api/expiry answers
+-- 202 at once and sends in the background, and the 30 s timeout covers a slow cold start.
 create or replace function public.dispatch_schedule_expiry(p_url text, p_secret text) returns bigint language plpgsql security definer set search_path = public as $fn$
 declare sid uuid; j bigint;
 begin
@@ -251,7 +255,7 @@ begin
   if sid is null then perform vault.create_secret(p_secret, 'dispatch_expiry_secret');
   else perform vault.update_secret(sid, p_secret); end if;
   for j in select jobid from cron.job where jobname = 'dispatch-expiry-email' loop perform cron.unschedule(j); end loop;
-  select cron.schedule('dispatch-expiry-email', '0 14 * * *', format($c$select net.http_post(url := %L, headers := jsonb_build_object('content-type','application/json','x-expiry-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'dispatch_expiry_secret')), body := '{"send":true}'::jsonb)$c$, p_url)) into j;
+  select cron.schedule('dispatch-expiry-email', '0 14 * * *', format($c$select net.http_post(url := %L, headers := jsonb_build_object('content-type','application/json','x-expiry-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'dispatch_expiry_secret')), body := '{"send":true}'::jsonb, timeout_milliseconds := 30000)$c$, p_url)) into j;
   return j;
 end $fn$;
 -- Health (admins): the expiry job as pg_cron has it; no rows when it is not scheduled (or pg_cron is absent).
@@ -295,10 +299,11 @@ revoke execute on function public.dispatch_doc_subject_ok(text,text,text), publi
 alter table public.dispatch_documents enable row level security;
 revoke all on public.dispatch_documents from anon;
 do $$ begin
-  -- Read: view_documents, or your own live person documents (a driver's CDL and medical card). A driver's captures are write-only.
+  -- Read: view_documents, or your own live person documents (a driver's CDL and medical card) while you are an active member of
+  -- the document's company. A driver's captures are write-only.
   if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_documents' and policyname = 'ddoc_read') then
     create policy ddoc_read on public.dispatch_documents for select using (public.dispatch_perm_in(company, 'view_documents')
-      or (subject_type = 'person' and subject_id = (select auth.uid())::text and review_status = 'live'));
+      or (subject_type = 'person' and subject_id = (select auth.uid())::text and review_status = 'live' and public.dispatch_role_in(company) is not null));
   end if;
   -- Insert: manage_documents, or a driver (dispatch_documents_capture_guard narrows that to a pending customer capture).
   if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_documents' and policyname = 'ddoc_insert') then
@@ -314,7 +319,8 @@ do $$ begin
   -- No update policy: a file is never overwritten in place.
   if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'dispatch docs read') then
     create policy "dispatch docs read" on storage.objects for select using (bucket_id = 'dispatch-docs' and (public.dispatch_perm_in((storage.foldername(name))[1], 'view_documents')
-      or ((storage.foldername(name))[2] = 'document' and (storage.foldername(name))[3] = 'person' and (storage.foldername(name))[4] = (select auth.uid())::text)));
+      or ((storage.foldername(name))[2] = 'document' and (storage.foldername(name))[3] = 'person' and (storage.foldername(name))[4] = (select auth.uid())::text
+          and public.dispatch_role_in((storage.foldername(name))[1]) is not null)));
   end if;
   if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'dispatch docs write') then
     create policy "dispatch docs write" on storage.objects for insert with check (bucket_id = 'dispatch-docs' and (

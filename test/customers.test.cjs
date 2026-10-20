@@ -197,7 +197,7 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   await page.click('#tab-setup'); await page.waitForTimeout(400);
   assert.match(flat(await page.textContent('#customersOutState')), /Customers Out is set/);
   assert.match(flat(await page.textContent('#healthState')), /Customers Out: ok.*Import sheet: ok/, 'the health card lists both Customers Out and the import sheet');
-  assert.match(flat(await page.textContent('#healthState')), /Documents bucket: ok.*Expiry email: ok/, 'the health card lists the documents bucket and the expiry email job');
+  assert.match(flat(await page.textContent('#healthState')), /Documents bucket: ok.*Expiry email: ok.*Last expiry email: never/, 'the health card lists the documents bucket, the expiry email job and its last run');
   assert.equal(await page.inputValue('#sCustomersOut'), '1COUTseedAAAAAAAAAAAAAA');
   await page.fill('#sCustomersOut','https://docs.google.com/spreadsheets/d/1CustomersOutSheetIdXYZ_abc/edit#gid=0');
   await page.click('#btnSaveCustomersOut'); await page.waitForTimeout(600);

@@ -49,7 +49,15 @@ export async function requireUser(request, env, roles, company, perm) {
 // A Supabase client for the server, acting as the caller (RLS applies).
 export const PAGE = 1000;
 export function sb(env, token) {
-  const base = env.SUPABASE_URL, anon = env.SUPABASE_ANON_KEY;
+  return client(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, token);
+}
+// The same client acting as the service role: RLS does NOT apply. Only the expiry email's cron path (secret header checked) uses it.
+export function sbService(env) {
+  const key = env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!env.SUPABASE_URL || !key) throw fail("Server is not configured (SUPABASE_SERVICE_ROLE_KEY).", 500, "config");
+  return client(env.SUPABASE_URL, key, key);
+}
+function client(base, anon, token) {
   const h = { apikey: anon, authorization: "Bearer " + token, "content-type": "application/json" };
   return {
     async get(path) { const r = await fetch(base + "/rest/v1/" + path, { headers: h }); if (!r.ok) throw new Error(await r.text()); return r.json(); },
@@ -110,8 +118,12 @@ export async function companyContext(db, env, company) {
     settings, co,
     ordersTo: d.ordersTo || env.ORDERS_TO || "orders@adchem.pro",
     accountingTo: d.accountingTo || env.ACCOUNTING_TO || "accounting@adchem.pro",
-    mailFrom: d.mailFrom || env.GMAIL_FROM || env.GOOGLE_IMPERSONATE || env.ORDERS_TO || "orders@adchem.pro",
+    mailFrom: mailFromOf(d, env),
   };
+}
+// The address a company's mail goes out as: its own (companies.data.mailFrom), else the server variables.
+export function mailFromOf(d, env) {
+  return (d && d.mailFrom) || env.GMAIL_FROM || env.GOOGLE_IMPERSONATE || env.ORDERS_TO || "orders@adchem.pro";
 }
 
 export async function handle(fn) {

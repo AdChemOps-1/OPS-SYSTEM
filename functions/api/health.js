@@ -11,6 +11,18 @@ export async function onRequestGet({ request, env }) {
     const db = sb(env, token);
     const ctx = await companyContext(db, env, company);
     const out = { company, supabase: true, googleConfigured: !!env.GOOGLE_SA_JSON, impersonate: env.GOOGLE_IMPERSONATE || "", mailFrom: ctx.mailFrom, ordersTo: ctx.ordersTo, accountingTo: ctx.accountingTo, checks: {} };
+    // the private documents bucket, as the caller
+    try {
+      const r = await fetch(env.SUPABASE_URL + "/storage/v1/bucket/dispatch-docs", { headers: { apikey: env.SUPABASE_ANON_KEY, authorization: "Bearer " + token } });
+      const b = await r.json().catch(() => null);
+      out.checks.docsBucket = r.status === 200 && b && b.id === "dispatch-docs" ? "ok" : ((b && (b.message || b.error)) || "unexpected reply (HTTP " + r.status + ")");
+    } catch (e) { out.checks.docsBucket = e.message; }
+    // the daily expiry email job (dispatch_cron_status refuses non-admins; this route is admin-only)
+    try {
+      const rows = await db.rpc("dispatch_cron_status");
+      const j = (Array.isArray(rows) ? rows : []).find(x => x && x.active);
+      out.checks.expiryCron = j ? "ok — " + j.schedule : "not scheduled";
+    } catch (e) { out.checks.expiryCron = "not scheduled"; }
     if (!env.GOOGLE_SA_JSON) return json(out);
     try { await googleToken(env); out.checks.token = "ok"; } catch (e) { out.checks.token = e.message; return json(out); }
     const sheetId = ctx.settings.sheetId || (company === "adchem" ? env.AR_SHEET_ID : "");

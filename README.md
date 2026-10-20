@@ -36,6 +36,16 @@ Two Setup cards connect it to the spreadsheets:
 - **Customers Out** — the company's *Customers Out* sheet. Each customer's rows are rewritten whenever the customer, a site or a contact is saved (`/api/customers-out`); a row for a site the customer no longer has is blanked, not deleted, so two saves at once never shift each other's rows. **Rebuild Customers Out** rewrites the whole tab and removes the blank rows. A failed write shows a banner; the change is still saved.
 - **Import** — reads the existing spreadsheet's *Customer Directory*, *Customers* and *Delivery Notes* tabs (`/api/import`, needs Run imports). It shows a review of what would be created, changed or skipped; nothing is written until you commit. Run it **before creating customers in the app**: a sheet row whose Customer ID already belongs to a customer added in the app under another name and legal name is shown as a problem and not imported. Re-running it keeps anything changed in the app since the last import (including the importer's own edits) and only fills blanks. The *Customers* tab's contact is imported as type *other*. Feed sites that match no customer are listed in the review and left unlinked; linking them comes in a later stage. Licensing & Entity and Account Terms are left for a later stage.
 
+## Expiry email
+
+Every morning at 06:00 Pacific (07:00 during daylight time; `0 14 * * *` UTC) a `pg_cron` job in Supabase calls `/api/expiry`, which emails each company's expiring and expired documents — customers, the company itself and people, inside the company's warning window — from the company's sending address to the addresses on **Setup → Warnings** (super admins). A company with no recipients, or nothing due, gets no email; the addresses listed are the only ones it goes to. The job authenticates with `EXPIRY_SECRET` and reads every company with `SUPABASE_SERVICE_ROLE_KEY` (both in `GOOGLE-SETUP.md` section E). Schedule it once after deploying, from the Supabase SQL editor (re-running replaces the job and the secret):
+
+```sql
+select dispatch_schedule_expiry('<app url>/api/expiry', '<EXPIRY_SECRET>');
+```
+
+**Setup → Warnings → Send expiry email now** sends the same email for the current company straight away. **Setup → Google connection** shows *Expiry email: ok — 0 14 * * \** once the job is scheduled. Each email sent is logged (`expiry_email`).
+
 ## Deploy (first time)
 
 ### 1. Put the code on GitHub
@@ -44,7 +54,7 @@ Create a repository under the **AdChemOps-1** account (e.g. `Ops`) and upload th
 ### 2. Cloudflare Pages
 1. Cloudflare dashboard → **Workers & Pages → Create → Pages → Connect to Git** → pick the repo.
 2. Build settings: Framework **None** · Build command *(blank)* · Build output directory **`public`**. Functions in `functions/` are picked up automatically.
-3. **Settings → Variables and Secrets** — the seven in `GOOGLE-SETUP.md` section E (`GOOGLE_SA_JSON` as a Secret). The Google ones can wait until section E is reached; the three Supabase/orders ones are needed for sign-in.
+3. **Settings → Variables and Secrets** — the ones in `GOOGLE-SETUP.md` section E (`GOOGLE_SA_JSON` as a Secret). The Google ones can wait until section E is reached; the three Supabase/orders ones are needed for sign-in.
 4. Deploy. The site gets a `*.pages.dev` address; add a custom domain later under **Custom domains**.
 
 ### 3. Supabase — one setting
@@ -57,7 +67,7 @@ See **`GOOGLE-SETUP.md`**. It starts with the dedicated user `ops-system@adchem.
 
 ### 5. First run
 1. Open the app, sign in with your existing AdChem account.
-2. **Setup → Google connection → Check again** — all eight lines should read *ok* (token, AR Command Center, calendars, Drive, Gmail, Orders Out, Customers Out, Import sheet; the last three read *no … set* until step 4 is done, calendars until step 5); the Gmail line should say it can send as orders@adchem.pro. (The calendars line reads *no delivery calendar set* until step 5.)
+2. **Setup → Google connection → Check again** — all ten lines should read *ok* (token, AR Command Center, calendars, Drive, Gmail, Orders Out, Customers Out, Import sheet, Documents bucket, Expiry email; Orders Out, Customers Out and Import sheet read *no … set* until step 4 is done, calendars until step 5, Expiry email *not scheduled* until step 9); the Gmail line should say it can send as orders@adchem.pro. (The calendars line reads *no delivery calendar set* until step 5.)
 3. **Setup → Customer feed → Refresh the feed now** — reads FEED_ORDERS.
 4. **Setup → Orders Out** — paste the *AdChem Dispatch Orders Out* sheet link, **Save**, then **Rebuild Orders Out**. On the AR Command Center, click **Allow access** on Orders In A8 once.
    - **Setup → Customers Out** — paste the *Customers Out* sheet link, **Save**, then **Rebuild Customers Out**.
@@ -66,6 +76,7 @@ See **`GOOGLE-SETUP.md`**. It starts with the dedicated user `ops-system@adchem.
 6. **Setup → Drive folder** — paste the shared BOL folder link, **Save**, **Send a test file**.
 7. **Setup → BOL numbering** — on the day SmartBOL stops, enter its last number plus one.
 8. **People** — set the super admins, grant each person's permissions, and add each driver individually (one account per person, with their hub).
+9. **Expiry email** — on **Setup → Warnings** enter the recipients and **Save warnings**, then schedule the daily job (see *Expiry email* above) and press **Send expiry email now** once to check.
 
 ## Hubs
 
@@ -76,7 +87,7 @@ Each hub on **Setup → Hubs** has its shipper address, emergency number, **loca
 ```
 phone / laptop ──(sign-in, orders, BOLs)──► Supabase (dispatch_* tables, dispatch-pods photos)
        │
-       └──(/api/feed, /api/calendar, /api/drive, /api/pod, /api/deposit, /api/orderlog, /api/health)──► Cloudflare Function ──► Google
+       └──(/api/feed, /api/calendar, /api/drive, /api/pod, /api/deposit, /api/orderlog, /api/expiry, /api/health)──► Cloudflare Function ──► Google
                                                                                        (service account acting as ops-system@, sending as orders@)
 ```
 

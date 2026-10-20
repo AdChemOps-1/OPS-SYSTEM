@@ -504,9 +504,22 @@ async function saveWarnings(){
     " · expiring window "+days+" days · "+to.length+" expiry email recipient"+(to.length===1?"":"s")+".</div>",{autoclose:8000,key:"warnings"});
 }
 
+// Send expiry email now: the same email the daily job sends, for this company only (super admin; the server checks)
+async function sendExpiryNow(){
+  var btn=$("btnSendExpiry"); btn.disabled=true;
+  var r;
+  try{ r=await API.post("/api/expiry",{send:true}); }
+  catch(e){ btn.disabled=false; banner("bad","Expiry email not sent","<div>"+esc(e.message)+"</div>",{key:"expiry"}); return; }
+  btn.disabled=false;
+  var s=(r&&r.sent||[])[0], k=(r&&r.skipped||[])[0];
+  if(s) banner("good","Expiry email sent","<div>"+s.count+" document"+(s.count===1?"":"s")+" to <b>"+esc(s.to.join(", "))+"</b>.</div>",{autoclose:9000,key:"expiry"});
+  else banner("warn","Expiry email not sent","<div>"+(k&&k.reason==="no_recipients"?"No expiry email recipients are saved above.":"Nothing is expiring or expired right now.")+"</div>",{autoclose:9000,key:"expiry"});
+}
+
 function wireDocuments(){
   $("tab-documents").onclick=function(){ setTab("documents"); };
   $("btnSaveWarnings").onclick=saveWarnings;
+  $("btnSendExpiry").onclick=sendExpiryNow;
   $("capFile").onchange=onCapFile; $("capSend").onclick=capSend; $("capClose").onclick=closeCapture;
   $("capSheet").addEventListener("keydown",function(e){ if(e.key==="Escape") closeCapture(); });
   $("myDocsList").onclick=function(ev){ var o=ev.target.closest("[data-open]"); if(o) openDocFile(o.getAttribute("data-open"),o,true); };

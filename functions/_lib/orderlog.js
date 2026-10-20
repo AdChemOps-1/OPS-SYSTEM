@@ -5,7 +5,7 @@ import { gfetch } from "./google.js";
 export const TAB = "Dispatch Orders Out";
 export const HEADER = ["Order #","Customer","Promised Date","Delivery Status","Delivered Date","Payment Collected","Invoice #","BOL #","Exception / Issue","Driver Note - from the field","Updated Contact / Phone","Reported"];
 
-function sheetIdFrom(raw) {
+export function sheetIdFrom(raw) {
   const s = String(raw || "").trim(); if (!s) return "";
   const m = s.match(/\/d\/([A-Za-z0-9_-]+)/); if (m) return m[1];
   return /^[A-Za-z0-9_-]{20,}$/.test(s) ? s : "";
@@ -14,7 +14,7 @@ function dayIn(iso, tz) {
   if (!iso) return "";
   try { return new Date(iso).toLocaleDateString("en-US", { timeZone: tz || "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }); } catch (e) { return String(iso).slice(0, 10); }
 }
-function stampIn(d, tz) {
+export function stampIn(d, tz) {
   try { return d.toLocaleString("en-US", { timeZone: tz || "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }); } catch (e) { return d.toISOString(); }
 }
 

@@ -303,6 +303,21 @@
     </div>
 
     <div class="card pad sec">
+      <h2 class="sec-h">Customers Out — the customer directory for the AR Command Center</h2>
+      <div id="customersOutState"></div>
+      <div class="grid two" style="margin-top:11px">
+        <label class="f spanall">Customers Out sheet — link or ID
+          <input id="sCustomersOut" class="mono" placeholder="The company's Customers Out sheet">
+          <span class="hint">The app writes the <i>Customers Out</i> tab: one row per customer with its primary site, plus one per additional site (33 columns, keyed on Customer ID and delivery street), every time a customer, site or contact is saved. The AR Command Center, FEED_ORDERS and the Order Log read it by IMPORTRANGE. It never carries balances, terms, prices, notes or files. Keep it in the same Drive folder as Orders Out, add a tab named <i>Customers Out</i>, and share the sheet with the Google user the server acts as, as an editor.</span>
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px">
+        <button class="btn primary" id="btnSaveCustomersOut">Save</button>
+        <button class="btn" id="btnRebuildCustomersOut">Rebuild Customers Out from the database</button>
+      </div>
+    </div>
+
+    <div class="card pad sec">
       <h2 class="sec-h">BOL numbering</h2>
       <div id="bolNumState"></div>
       <div class="grid two" style="margin-top:11px">

@@ -1026,7 +1026,8 @@ function updateCounts(){
    Setup
    ============================================================ */
 function renderOrdersOutState(){ var el=$("ordersOutState"); if(!el) return; $("sOrdersOut").value=state.settings.ordersOutSheetId||""; el.innerHTML=state.settings.ordersOutSheetId?'<div class="banner good" style="margin:0"><div><b>Orders Out is set.</b><div>Every scheduled, numbered and delivered order is written to it as it changes; Rebuild rewrites the whole sheet from the database.</div></div></div>':'<div class="banner warn" style="margin:0"><div><b>No Orders Out sheet yet.</b><div>Paste the link to the company\'s <i>Dispatch Orders Out</i> sheet. Until then nothing is reported back to the AR Command Center.</div></div></div>'; }
-function renderSetup(){renderShareState();renderFeedState();renderOrdersOutState();renderBolNumState();renderCalState();renderDriveState();renderHubEditor();renderSegTable();renderHealth();}
+function renderCustomersOutState(){ var el=$("customersOutState"); if(!el) return; $("sCustomersOut").value=state.settings.customersOutSheetId||""; el.innerHTML=state.settings.customersOutSheetId?'<div class="banner good" style="margin:0"><div><b>Customers Out is set.</b><div>Each customer\'s rows are rewritten whenever the customer, a site or a contact is saved; Rebuild rewrites the whole tab from the database.</div></div></div>':'<div class="banner warn" style="margin:0"><div><b>No Customers Out sheet yet.</b><div>Paste the link to the company\'s <i>Customers Out</i> sheet. Until then the AR Command Center keeps reading its own directory.</div></div></div>'; }
+function renderSetup(){renderShareState();renderFeedState();renderOrdersOutState();renderCustomersOutState();renderBolNumState();renderCalState();renderDriveState();renderHubEditor();renderSegTable();renderHealth();}
 function renderBolNumState(){
   var n=Number(state.settings.nextBol)||0, used=maxBolUsed();
   $("sNextBol").value=n||"";
@@ -1523,6 +1524,18 @@ function wire(){
     try{ var r=await API.post("/api/orderlog",{rebuild:true}); banner("good","Orders Out rebuilt","<div>"+r.rebuilt+" orders written.</div>",{autoclose:8000}); }
     catch(e){ banner("bad","Orders Out not rebuilt","<div>"+esc(e.message)+"</div>"); }
     $("btnRebuildOrdersOut").disabled=false;
+  };
+  $("btnSaveCustomersOut").onclick=function(){
+    var raw=$("sCustomersOut").value.trim();
+    if(raw && !sheetIdFrom(raw)){ banner("bad","That doesn't look like a spreadsheet link","<div>Paste the full link to the Customers Out sheet, or just its ID.</div>"); return; }
+    state.settings.customersOutSheetId=sheetIdFrom(raw); saveSettings().then(function(){ banner("good","Customers Out sheet saved","",{autoclose:4000}); renderCustomersOutState(); });
+  };
+  $("btnRebuildCustomersOut").onclick=async function(){
+    if(!confirm("Rewrite every row of the Customers Out tab from this company's customers, sites and contacts?")) return;
+    $("btnRebuildCustomersOut").disabled=true;
+    try{ var r=await API.post("/api/customers-out",{rebuild:true}); banner("good","Customers Out rebuilt","<div>"+r.rebuilt+" rows written.</div>",{autoclose:8000}); }
+    catch(e){ banner("bad","Customers Out not rebuilt","<div>"+esc(e.message)+"</div>"); }
+    $("btnRebuildCustomersOut").disabled=false;
   };
   $("btnSaveBol").onclick=function(){
     var n=parseInt($("sNextBol").value,10);
@@ -2165,7 +2178,7 @@ function applyAccess(){
   chip.className="chip st"+(state.isOwner?" done":"");
   $("whoami").textContent=state.me?(state.me.name||state.me.email):"";
   var ro=!state.canEdit;
-  ["btnSubmit","btnSaveHubs","btnAddHub","btnConfirmCal","btnSaveDrive","btnTestDrive","btnSaveSheet","btnRefreshFeed","btnSaveBol","btnSaveOrdersOut","btnRebuildOrdersOut"].forEach(function(k){ var el=$(k); if(el) el.disabled=ro; });
+  ["btnSubmit","btnSaveHubs","btnAddHub","btnConfirmCal","btnSaveDrive","btnTestDrive","btnSaveSheet","btnRefreshFeed","btnSaveBol","btnSaveOrdersOut","btnRebuildOrdersOut","btnSaveCustomersOut","btnRebuildCustomersOut"].forEach(function(k){ var el=$(k); if(el) el.disabled=ro; });
   document.body.classList.toggle("role-driver",state.role==="driver");
   $("tab-users").hidden=!state.isOwner;
   $("healthCard").hidden=!state.isOwner;
@@ -2214,7 +2227,7 @@ async function renderHealth(){
     if(!h.googleConfigured){ host.innerHTML='<div class="banner warn" style="margin:0"><div><b>Google isn\'t set up on the server yet</b><div>Add the service account (GOOGLE_SA_JSON) and the Workspace user it acts as (GOOGLE_IMPERSONATE) in Cloudflare Pages → Settings → Variables and Secrets, then redeploy. See the README.</div></div></div>'; return; }
     var c=h.checks||{}, ok=function(v){return typeof v==="string"&&(v==="ok"||v.indexOf("ok ")===0||v.indexOf("ok —")===0);};
     host.innerHTML='<div class="banner '+(Object.values(c).every(ok)?"good":"warn")+'" style="margin:0"><div><b>Acting as '+esc(h.impersonate||"(no user set)")+' · mail goes out as '+esc(h.mailFrom)+' · BOLs to '+esc(h.ordersTo)+' · deposit slips to '+esc(h.accountingTo)+'</b>'+
-      '<div>Token: '+esc(c.token||"—")+'<br>AR Command Center: '+esc(c.sheet||"—")+'<br>Calendars: '+esc(c.calendar||"—")+'<br>Drive: '+esc(c.drive||"—")+'<br>Gmail: '+esc(c.gmail||"—")+'<br>Orders Out: '+esc(c.ordersOut||"—")+'</div></div></div>';
+      '<div>Token: '+esc(c.token||"—")+'<br>AR Command Center: '+esc(c.sheet||"—")+'<br>Calendars: '+esc(c.calendar||"—")+'<br>Drive: '+esc(c.drive||"—")+'<br>Gmail: '+esc(c.gmail||"—")+'<br>Orders Out: '+esc(c.ordersOut||"—")+'<br>Customers Out: '+esc(c.customersOut||"—")+'</div></div></div>';
   }catch(e){ host.innerHTML='<div class="banner bad" style="margin:0"><div><b>Server check failed</b><div>'+esc(e.message)+'</div></div></div>'; }
 }
 function wireAuth(){

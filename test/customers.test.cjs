@@ -15,6 +15,8 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
 (async()=>{
   const fake = makeFake(); const T = fake.T; const base = await fake.start();
   T.dispatch_members[0].is_super_admin = true;   // the seeded AdChem admin is the super admin (migration 005 seed)
+  T.dispatch_company_settings[0].data.customersOutSheetId = '1COUTseedAAAAAAAAAAAAAA';   // saves report to Customers Out only when a sheet is set
+  const coCalls = () => fake.calls.filter(x=>x[0]==='customers-out');
   const b = await chromium.launch(); const pages = [];
   try {
   const page = await newPage(b, base); pages.push(page);
@@ -37,6 +39,7 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.equal(T.dispatch_customers.length, 1);
   const c = T.dispatch_customers[0];
   assert.equal(c.customer_id, 'ADC-0001');
+  assert.deepEqual(coCalls(), [['customers-out',{customerIds:[c.id]}]], 'a customer save rewrites its Customers Out rows');
   assert.deepEqual({company:c.company,name:c.name,legal_name:c.legal_name,account_status:c.account_status,primary_hub:c.primary_hub,billing:[c.billing_street,c.billing_city,c.billing_state,c.billing_zip],updated_by:c.updated_by,parent:c.parent_customer_id,verified:c.last_verified},
     {company:'adchem',name:'Type 7 Manufacturing',legal_name:'Type 7 Manufacturing, Inc.',account_status:'active',primary_hub:'EB',billing:['100 Main St','Oakland','CA','94601'],updated_by:'u1',parent:null,verified:null});
   assert.match(flat(await page.textContent('#custComplete')), /^\d+ of 15$/);
@@ -88,8 +91,10 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   await page.fill('#siteNew [data-k=gate_code]','4321'); await page.fill('#siteNew [data-k=receiving_hours]','7–11am');
   await page.selectOption('#siteNew [data-hubnote=EB] [data-n=scale_on_route]','yes');
   await page.fill('#siteNew [data-hubnote=EB] [data-n=route_notes]','Scale on 580');
+  const coBeforeSite = coCalls().length;
   await page.click('#siteNew [data-save-site]'); await page.waitForTimeout(800);
   assert.equal(T.dispatch_sites.length, 1, 'one site row');
+  assert.deepEqual(coCalls().slice(coBeforeSite), [['customers-out',{customerIds:[c.id]}]], 'a site save rewrites the customer\'s Customers Out rows');
   const s = T.dispatch_sites[0];
   assert.deepEqual({company:s.company,site_key:s.site_key,customer_id:s.customer_id,customer:s.customer,addr:s.addr,city:s.city,hub:s.hub,code_raw:s.code_raw,code:s.code,gate_code:s.gate_code,receiving_hours:s.receiving_hours,site_label:s.site_label,updated_by:s.updated_by,last_verified:s.last_verified},
     {company:'adchem',site_key:'ADC-0001 — Primary',customer_id:c.id,customer:'Type 7 Manufacturing',addr:'100 Main St',city:'Oakland',hub:'EB',code_raw:'',code:null,gate_code:'4321',receiving_hours:'7–11am',site_label:'Primary',updated_by:'u1',last_verified:null});
@@ -133,6 +138,7 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   await page.selectOption('#cf_type','billing'); await page.fill('#cf_first','Pat'); await page.fill('#cf_email','ap@type7.example'); await page.check('#cf_cc'); await page.fill('#cf_notes','Statements monthly');
   await page.click('#cfSave'); await page.waitForTimeout(700);
   assert.equal(T.dispatch_contacts.length, 2);
+  assert.ok(coCalls().slice(-2).every(x=>JSON.stringify(x)===JSON.stringify(['customers-out',{customerIds:[c.id]}])), 'each contact save rewrites the customer\'s rows');
   const sam = T.dispatch_contacts.find(x=>x.first_name==='Sam'), pat = T.dispatch_contacts.find(x=>x.first_name==='Pat');
   assert.deepEqual({company:sam.company,customer_id:sam.customer_id,type:sam.type,last:sam.last_name,phone:sam.phone,method:sam.preferred_method,site:sam.site_key,active:sam.active,cc:sam.cc_on_statements},
     {company:'adchem',customer_id:c.id,type:'receiving',last:'Ortiz',phone:'(510) 555-0101',method:'phone',site:'ADC-0001 — Primary',active:true,cc:false});
@@ -185,6 +191,32 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.match(hist, /active: true → false/, 'contact change in history');
   assert.match(hist, /status: pending → rejected/, 'activity review in history');
   assert.ok(await page.$$eval('#histList .hist-line',e=>e.every(x=>/ · /.test(x.textContent))), 'when · who · change lines');
+  // ---------- Setup: Customers Out card — save the link, rebuild; a failed write warns but never blocks the save ----------
+  await page.click('#tab-setup'); await page.waitForTimeout(400);
+  assert.match(flat(await page.textContent('#customersOutState')), /Customers Out is set/);
+  assert.equal(await page.inputValue('#sCustomersOut'), '1COUTseedAAAAAAAAAAAAAA');
+  await page.fill('#sCustomersOut','https://docs.google.com/spreadsheets/d/1CustomersOutSheetIdXYZ_abc/edit#gid=0');
+  await page.click('#btnSaveCustomersOut'); await page.waitForTimeout(600);
+  assert.equal(T.dispatch_company_settings[0].data.customersOutSheetId, '1CustomersOutSheetIdXYZ_abc', 'the ID, not the link, is saved');
+  assert.equal(T.dispatch_company_settings[0].data.ordersOutSheetId, '1OUT', 'Orders Out untouched');
+  page.once('dialog', dlg=>dlg.accept());
+  await page.click('#btnRebuildCustomersOut'); await page.waitForTimeout(600);
+  assert.deepEqual(coCalls().slice(-1), [['customers-out',{rebuild:true}]]);
+  assert.match(flat(await page.textContent('body')), /Customers Out rebuilt.*1 rows written/);
+  // a sheet failure on save: banner, data still saved
+  await page.route('**/api/customers-out', r=>r.fulfill({status:502,contentType:'application/json',body:JSON.stringify({error:{code:'google',message:'Customers Out: The caller does not have permission'}})}));
+  await page.click('#tab-customers'); await page.waitForTimeout(300);
+  assert.equal(await page.$eval('#custPage',e=>e.hidden), false, 'customer still open'); await page.click('#ctab-profile'); await page.waitForTimeout(200);
+  await page.fill('#cAka','T7'); await page.click('#btnSaveCustomer'); await page.waitForTimeout(800);
+  assert.equal(T.dispatch_customers[0].also_known_as, 'T7', 'the save went through');
+  assert.match(flat(await page.textContent('body')), /Customers Out not updated.*does not have permission.*The change is saved/);
+  await page.unroute('**/api/customers-out');
+  // no sheet set: saves do not call the writer at all
+  T.dispatch_company_settings[0].data.customersOutSheetId = '';
+  await page.evaluate(()=>{ state.settings.customersOutSheetId=''; });
+  const nNo = coCalls().length; await page.fill('#cAka','T-7'); await page.click('#btnSaveCustomer'); await page.waitForTimeout(700);
+  assert.equal(coCalls().length, nNo, 'no Customers Out call without a sheet');
+  await page.click('#btnCloseCustomer'); await page.waitForTimeout(200);
   // ---------- People: per-member permissions and super admin, written through the RPCs ----------
   T.dispatch_users.push({user_id:'u2',email:'casey@adchem.pro',name:'Casey',active:true});
   T.dispatch_members.push({user_id:'u2',company:'adchem',role:'coordinator',hub:'',active:true,is_super_admin:false,permissions:{}});
@@ -253,6 +285,8 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.equal(await m.evaluate(()=>document.documentElement.scrollWidth), 390, 'no horizontal overflow with the contact form open');
   await m.click('#ctab-profile'); await m.waitForTimeout(100); assert.equal(await m.$eval('#cpane-profile',e=>e.hidden), false);
   assert.equal(await m.evaluate(()=>document.documentElement.scrollWidth), 390, 'no horizontal overflow after switching tabs');
-  assert.deepEqual(pages.flatMap(p=>p.errs), [], 'unexpected page errors');
+  // no page errors except the deliberate Customers Out 502
+  assert.deepEqual(pages.flatMap(p=>p.errs).filter(e=>!/status of 502/.test(e)), [], 'unexpected page errors');
+  assert.equal(page.errs.filter(e=>/status of 502/.test(e)).length, 1, 'the Customers Out failure case ran');
   } finally { await b.close(); await fake.stop(); }
 })().then(()=>{ console.log('customers.test.cjs: ok'); }, e=>{ console.error(e); process.exit(1); });

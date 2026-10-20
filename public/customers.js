@@ -138,6 +138,12 @@ function closeCustomer(){
   $("custPage").hidden=true; $("custToolbar").hidden=false; $("custList").closest(".card").hidden=false;
   if(state.tab==="customers") drawCustomers();
 }
+// Customers Out (spec §9): rewrite this customer's rows after any customer/site/contact save. Best effort — a failure shows a
+// banner and never blocks or undoes the save; Rebuild on Setup is the backstop.
+function afterCustomerSave(id){
+  if(!id||!state.canEdit||!state.settings||!state.settings.customersOutSheetId) return Promise.resolve();
+  return API.post("/api/customers-out",{customerIds:[id]}).catch(function(e){ banner("warn","Customers Out not updated","<div>"+esc(e.message)+" The change is saved; press <b>Rebuild Customers Out</b> on Setup when the sheet is reachable.</div>",{autoclose:12000,key:"co"}); });
+}
 function readCustomerForm(){
   var c={}; CUST_FIELDS.forEach(function(f){ var v=$(f[0]).value; v=typeof v==="string"?v.trim():v; c[f[1]]=(CUST_NULLABLE[f[1]]&&!v)?null:v; });
   c.billing_state=(c.billing_state||"").toUpperCase(); return c;
@@ -154,7 +160,7 @@ async function saveCustomer(){
     if(!saved) throw new Error("The customer was saved but could not be read back.");
     var i=state.customers.findIndex(function(x){return x.id===saved.id;}); if(i>=0) state.customers[i]=saved; else state.customers.push(saved);
     state.customers.sort(function(a,b){return String(a.name).localeCompare(String(b.name));});
-    state.customer=Object.assign({},saved);
+    state.customer=Object.assign({},saved); afterCustomerSave(saved.id);
     await renderCustomers(); custHeader();
     banner("good","Saved "+esc(saved.customer_id),"<div><b>"+esc(saved.name)+"</b>"+(dup?" — note: "+esc(dup.customer_id)+" has the same name.":"")+"</div>",{autoclose:5000});
   }catch(e){ banner("bad","Customer not saved","<div>"+esc(e.message)+"</div>"); }
@@ -254,7 +260,7 @@ async function saveSiteForm(form,btn){
     for(var i=0;i<v.notes.length;i++){ var n=v.notes[i], o=old.find(function(x){return x.hub===n.hub;});
       var changed=o?(o.scale_on_route!==n.scale_on_route||(o.route_notes||"")!==n.route_notes):(n.scale_on_route!==null||!!n.route_notes);
       if(changed) await CDB.saveHubNote(Object.assign({site_key:key},n)); }
-    state.openSite=key; if(isNew) closeNewSite();
+    state.openSite=key; if(isNew) closeNewSite(); afterCustomerSave(c.id);
     banner("good","Site saved","<div>"+esc(key)+"</div>",{autoclose:4000});
     await renderSites(); await refreshComplete();
   }catch(e){ banner("bad","Site not saved","<div>"+esc(e.message)+"</div>"); btn.disabled=false; btn.textContent="Save site"; }
@@ -300,7 +306,7 @@ async function saveContactForm(){
   if(!row.first_name&&!row.last_name&&!row.phone&&!row.email){ banner("warn","Add a name, phone or email","<div>A contact needs at least one way to identify or reach them.</div>",{autoclose:6000}); $("cf_first").focus(); return; }
   if(state.cfEdit) row.id=state.cfEdit; else row.active=true;
   var btn=$("cfSave"); btn.disabled=true;
-  try{ await CDB.saveContact(row); $("contactForm").hidden=true; state.cfEdit=null;
+  try{ await CDB.saveContact(row); $("contactForm").hidden=true; state.cfEdit=null; afterCustomerSave(row.customer_id);
     banner("good","Contact saved","<div>"+esc(contactName(row))+"</div>",{autoclose:4000});
     await renderContacts(); await refreshComplete(); }
   catch(e){ banner("bad","Contact not saved","<div>"+esc(e.message)+"</div>"); }
@@ -308,7 +314,7 @@ async function saveContactForm(){
 }
 async function toggleContact(id){
   if(!canManageCustomers()) return; var x=state.custContacts.find(function(c){return c.id===id;}); if(!x) return;
-  try{ await CDB.saveContact({id:id,active:x.active===false}); await renderContacts(); await refreshComplete(); }
+  try{ await CDB.saveContact({id:id,active:x.active===false}); afterCustomerSave(x.customer_id); await renderContacts(); await refreshComplete(); }
   catch(e){ banner("bad","Contact not changed","<div>"+esc(e.message)+"</div>"); }
 }
 

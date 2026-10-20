@@ -107,6 +107,18 @@ const flat = s => s.replace(/\s+/g, ' ').trim();
   await newOrder('Ops Only Plastics',{cat:'Gases',prod:'Butane',cont:'120lb Cylinder',qty:2});
   const oOps=T.dispatch_orders.slice(ordersBefore)[1];
   assert.ok(oOps, 'Ops-only order saved'); assert.equal(oOps.data.customerNo,'ADC-0009'); assert.equal(oOps.data.customerId,u9); assert.equal(oOps.data.effCode,'CHECK');
+  // (a) a typed customer with no site at all resolves by exact name; (b) two same-name customers with no linked site stay unlinked
+  T.dispatch_customers.push({id:'00000000-0000-4000-8000-000000000010',customer_id:'ADC-0010',company:'adchem',name:'Typed Only Co'},{id:'00000000-0000-4000-8000-000000000011',customer_id:'ADC-0011',company:'adchem',name:'Twin Co'},{id:'00000000-0000-4000-8000-000000000012',customer_id:'ADC-0012',company:'adchem',name:'Twin Co'});
+  await page.evaluate(async()=>{ state.customers=await CDB.customers(); fillAccounts(); });
+  const link=async n=>{ await page.fill('#fCustomer',n); await page.dispatchEvent('#fCustomer','input'); await page.waitForTimeout(200); return page.evaluate(()=>{var d=draftOrderFromForm();return [d.customerNo,d.customerId];}); };
+  assert.deepEqual(await link('Typed Only Co'), ['ADC-0010','00000000-0000-4000-8000-000000000010']);
+  assert.deepEqual(await link('Twin Co'), ['',null]);
+  await page.fill('#fCustomer',''); await page.dispatchEvent('#fCustomer','input');
+  // (c) an edit-save round trip keeps the link, even when the stored site no longer resolves
+  const rt=await page.evaluate(async id=>{ var o=state.orders.find(x=>x.id===id); startEdit(o); await saveEdit(); var n=state.orders.find(x=>x.id===id); return [n.customerNo,n.customerId,n.rev]; }, oLA.id);
+  assert.deepEqual(rt.slice(0,2), ['ADC-0008',u8]); assert.equal(rt[2], 2, 'edit saved');
+  const rt2=await page.evaluate(async id=>{ var o=state.orders.find(x=>x.id===id); o.siteKey='gone'; startEdit(o); await saveEdit(); var n=state.orders.find(x=>x.id===id); return [n.customerNo,n.customerId,n.rev]; }, oLA.id);
+  assert.deepEqual(rt2.slice(0,2), ['ADC-0008',u8]); assert.equal(rt2[2], 3, 'edit saved');
   assert.equal(await page.$eval('#coPick',e=>e.hidden), false, 'company picker shown');
   assert.deepEqual(await page.$$eval('#coPick option',o=>o.map(x=>x.textContent)), ['AdChem','Northstar']);
   assert.deepEqual(calls.filter(c=>c[0]==='calendar').map(c=>c[1].cal), ['calEB','calEB','calLA@group.calendar.google.com','calCO']);

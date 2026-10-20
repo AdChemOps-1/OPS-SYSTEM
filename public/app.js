@@ -524,7 +524,10 @@ function hubAllows(code,cat,product){ var h=hubBy(code); return !(h&&Array.isArr
 function hubLabel(code){ var h=hubBy(code); return h?(h.name||code)+" ("+code+")":code||"this hub"; }
 function draftOrderFromForm(){
   var c=currentCode(), r=currentSiteRow(), a=addrStatus();
-  var cu=customerForSite(r||{customer:$("fCustomer").value});
+  var cur=state.editing?state.orders.find(function(o){return o.id===state.editing;}):null;
+  /* an edit keeps the stored link when no site is chosen and the name is unchanged */
+  var keepLink=!r && cur && cur.customerId && String(cur.customer||"").trim().toLowerCase()===$("fCustomer").value.trim().toLowerCase();
+  var cu=keepLink?null:customerForSite(r||{customer:$("fCustomer").value});
   var clear=($("fClearBy").value&&$("fClearCode").value)?{by:$("fClearBy").value,code:$("fClearCode").value,note:$("fClearNote").value.trim()}:null;
   var eff=effectiveCode(c.code,clear);
   var dep=$("fDep").checked?{item:$("fDepItem").value,amount:Number($("fDepAmt").value||0)}:null;
@@ -533,7 +536,7 @@ function draftOrderFromForm(){
     id:effectiveId(), bolNo:ed?ed.bolNo||null:null,
     customer:$("fCustomer").value.trim(),
     siteKey:r?r.siteKey:"", siteLabel:r?r.siteLabel:"",
-    customerId:cu?cu.id:null, customerNo:cu?(cu.customer_id||""):"",
+    customerId:cu?cu.id:(keepLink?cur.customerId:null), customerNo:cu?(cu.customer_id||""):(keepLink?cur.customerNo||"":""),
     shipTo:$("fShipTo").value.trim(), feedAddr:state.form.feedAddr,
     addrState:a.k, addrChanged:(a.k==="edited"||a.k==="typed"||a.k==="confirmedNow"),
     contact:$("fContact").value.trim(), contactPhone:$("fContactPhone").value.trim(), copyTo:$("fCopyTo").value.trim(),

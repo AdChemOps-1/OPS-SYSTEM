@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0d6b60">
+<title>AdChem Ops</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/styles.css">
+<style id="bolcss"></style>
+</head>
+<body>
+
+<div id="login" hidden>
+  <div class="card pad">
+    <h1>AdChem <span style="color:var(--accent)">Ops</span></h1>
+    <p class="lead">Orders, bills of lading, routes, proof of delivery and deposits. Invite-only.</p>
+    <div id="loginMsg"></div>
+    <form id="loginForm" autocomplete="on">
+      <label class="f">Email<input id="lEmail" type="email" autocomplete="username" autocapitalize="off" required></label>
+      <label class="f" style="margin-top:10px">Password<input id="lPass" type="password" autocomplete="current-password" required minlength="8"></label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+        <button type="submit" class="btn primary" id="btnLogin" style="flex:1">Sign in</button>
+        <button type="button" class="btn" id="btnSignUp">Create account</button>
+      </div>
+      <div style="margin-top:10px"><button type="button" class="lnk btn" id="btnForgot" style="border:0;background:none;padding:0;font-size:12.5px;color:var(--ink-3);text-decoration:underline">Forgot password</button></div>
+    </form>
+    <p class="hint" style="margin-top:14px">Create account works only for an email an admin has added. Drivers: use your hub's driver account.</p>
+  </div>
+</div>
+
+<div id="app" hidden>
+<div class="topbar">
+  <div class="topbar-in">
+    <div class="brandrow">
+      <div class="brand">AdChem <span>Ops</span></div>
+      <div class="brandmeta">Operations · v1.1</div>
+      <div class="conn"><select id="coPick" class="copick" hidden aria-label="Company"></select><span class="chip st" id="roleChip">…</span><span class="dot" id="connDot"></span><span id="connTxt">Starting…</span><span class="userbar"><span id="whoami"></span><button class="btn" id="btnSignOut" type="button">Sign out</button></span></div>
+    </div>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" id="tab-new" aria-selected="true">New order</button>
+      <button class="tab" role="tab" id="tab-bol">BOL preview</button>
+      <button class="tab" role="tab" id="tab-open">Orders <span class="cnt" id="cntOpen">0</span></button>
+      <button class="tab" role="tab" id="tab-today">Today <span class="cnt" id="cntToday">0</span></button>
+      <button class="tab" role="tab" id="tab-setup">Setup <span class="cnt warn" id="cntSetup">0</span></button>
+      <button class="tab" role="tab" id="tab-users" hidden>People</button>
+    </div>
+  </div>
+</div>
+
+<main>
+  <div id="banners"></div>
+
+  <!-- ================= NEW ORDER ================= -->
+  <section id="panel-new">
+    <div class="sec">
+      <div class="idplate">
+        <div>
+          <div class="lbl">Order ID</div>
+          <div class="val mono" id="oidPreview">EB-261008-01</div>
+        </div>
+        <div>
+          <div class="lbl">BOL no.</div>
+          <div class="val mono" id="bolPreview">—</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+          <label class="f" style="font-size:11px">Order ID override
+            <input id="fIdOverride" class="mono" placeholder="auto" style="width:150px;font-size:13px;min-height:34px;padding:5px 8px">
+          </label>
+          <button type="button" class="btn sm" id="btnIdAuto">Use auto</button>
+        </div>
+      </div>
+      <p class="hint" style="margin:6px 2px 0" id="idExplain"></p>
+    </div>
+
+    <div class="banner info" id="editBanner" hidden>
+      <div><b>Editing <span class="mono" id="editId"></span></b>
+        <div>The Order ID and BOL number are locked. Saving updates the order and its calendar event, and writes a new BOL revision to Drive.</div>
+        <button class="lnk" id="btnCancelEdit">Cancel — go back to a new order</button></div>
+    </div>
+
+    <form id="orderForm" autocomplete="off">
+      <div class="card pad sec">
+        <h2 class="sec-h">Customer &amp; delivery site</h2>
+        <div class="grid two">
+          <label class="f spanall">Customer
+            <input id="fCustomer" list="customerList" placeholder="Start typing — the list comes from the AR Command Center" required>
+            <datalist id="customerList"></datalist>
+          </label>
+          <label class="f spanall" id="siteWrap" hidden>Delivery site
+            <select id="fSite"></select>
+            <span class="hint">This customer has more than one delivery site. Choose the one this order goes to.</span>
+          </label>
+          <label class="f spanall">Delivery address
+            <input id="fShipTo" placeholder="From the customer's delivery site on the sheet">
+            <div class="addrstat" id="addrStat"></div>
+          </label>
+          <label class="check spanall" id="addrConfirmWrap" hidden><input type="checkbox" id="fAddrConfirm"><span>I confirmed with the customer that this is where the delivery goes</span></label>
+          <label class="f">Site contact
+            <input id="fContact" placeholder="Who the driver asks for at the dock">
+          </label>
+          <label class="f">Site phone
+            <input id="fContactPhone" type="tel" placeholder="(510) 555-0100">
+          </label>
+          <label class="f spanall">Receiver's copy goes to
+            <input id="fCopyTo" placeholder="Receiver's email or mobile — the driver sends the BOL photo here">
+            <span class="hint">The customer's copy is the photograph of the signed BOL. Without a mobile or email here, the customer gets no copy.</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="card pad sec">
+        <h2 class="sec-h">Products</h2>
+        <div id="lineEditor"></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+          <button type="button" class="btn sm" id="btnAddLine">Add a line</button>
+          <span class="hint" id="lineTotals"></span>
+        </div>
+      </div>
+
+      <div class="card pad sec">
+        <h2 class="sec-h">Delivery</h2>
+        <div class="grid four">
+          <label class="f">Hub<select id="fHub"></select></label>
+          <label class="f">Date<input id="fDate" type="date" required></label>
+          <label class="f">Time window<select id="fWindow"></select></label>
+          <label class="f">Truck / driver<input id="fTruck" placeholder="optional — for the placard check"></label>
+        </div>
+        <div class="grid two" style="margin-top:11px">
+          <label class="f">Customer P.O. no.<input id="fPo" placeholder="optional"></label>
+          <span></span>
+          <label class="f spanall">Special instructions
+            <textarea id="fNotes" placeholder="Gate code, receiving hours, forklift on site, call ahead…"></textarea>
+            <span class="hint">Gate code, receiving hours and site instructions fill in from the sheet. Edit freely for this order.</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="card pad sec">
+        <h2 class="sec-h">Payment</h2>
+        <div class="codecard" id="codeCard"><div class="codetext" id="codeText">—</div><div class="why" id="codeWhy"></div></div>
+        <div id="manualCodeWrap" class="subcard amber" hidden>
+          <b style="font-size:13px">The AR Command Center couldn't be read</b>
+          <div class="hint" style="margin:3px 0 8px;color:inherit">Open the sheet, find this customer on FEED_ORDERS, and pick the code it shows. The order records that the code was entered by hand.</div>
+          <div class="grid two">
+            <label class="f">Code on the sheet<select id="fManualCode"></select></label>
+          </div>
+        </div>
+        <div id="checkWrap" class="subcard amber" hidden>
+          <b style="font-size:13px">CHECK — clear it with accounting@adchem.pro before this order goes out</b>
+          <div class="hint" style="margin:3px 0 8px;color:inherit">Lisa or Jessica (Bill if neither can be reached). The order saves either way, but it is not scheduled, gets no BOL number and never reaches a driver until the clearance is recorded.</div>
+          <div class="grid three">
+            <label class="f">Cleared by<select id="fClearBy"><option value="">— not yet —</option><option>Lisa</option><option>Jessica</option><option>Bill</option></select></label>
+            <label class="f">Code they gave<select id="fClearCode"><option value="">—</option><option value="D">D</option><option value="COD">COD</option><option value="R">R</option><option value="H">H</option></select></label>
+            <label class="f">Note<input id="fClearNote" placeholder="optional"></label>
+          </div>
+        </div>
+        <div class="grid two" style="margin-top:11px">
+          <label class="f" id="codWrap" hidden>COD amount due
+            <input id="fCod" type="number" min="0" step="0.01" class="mono" placeholder="0.00">
+            <span class="hint">Pre-printed on the BOL. The driver collects it before unloading.</span>
+          </label>
+          <div>
+            <label class="check"><input type="checkbox" id="fDep"><span>Deposit also due at delivery (+DEP)</span></label>
+            <div class="grid two" id="depWrap" hidden style="margin-top:8px">
+              <label class="f">Item<select id="fDepItem"></select></label>
+              <label class="f">Amount<input id="fDepAmt" type="number" min="0" step="0.01" class="mono"></label>
+            </div>
+          </div>
+        </div>
+        <p class="hint" style="margin-top:10px">The code comes from the AR Command Center and is never typed here. To change a customer's code, set credit status or the Dispatch Code override on the sheet, then refresh the feed on Setup.</p>
+      </div>
+
+      <div style="display:flex;gap:9px;flex-wrap:wrap">
+        <button type="submit" class="btn primary" id="btnSubmit">Create order</button>
+        <button type="button" class="btn" id="btnPreview">Open the full BOL</button>
+        <button type="button" class="btn" id="btnReset">Clear</button>
+      </div>
+      <p class="hint" style="margin-top:9px">The order saves whether or not the calendar event succeeds. A failed event can be retried from the Orders tab.</p>
+    </form>
+
+    <div class="sec" style="margin-top:18px">
+      <div class="livehead">
+        <h2 class="sec-h" style="flex:1">The BOL as it stands</h2>
+        <button type="button" class="btn sm" id="btnLiveCopy">Copy details</button>
+        <button type="button" class="btn sm" id="btnLiveToggle">Hide</button>
+      </div>
+      <div id="liveWrap">
+        <div class="card pad sec"><ul class="chk" id="liveChecklist"></ul></div>
+        <div class="bolwrap"><div class="bol" id="liveBody"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= BOL PREVIEW ================= -->
+  <section id="panel-bol" hidden>
+    <div class="banner info" id="bolCtx" style="display:none"></div>
+    <div class="grid bolgrid" style="align-items:start">
+      <div class="bolside">
+        <div class="card pad sec">
+          <h2 class="sec-h">Ready to issue?</h2>
+          <ul class="chk" id="bolChecklist"></ul>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn" id="bolPrint">Print</button>
+          <button class="btn" id="bolDownload">Download</button>
+          <button class="btn" id="bolCopy">Copy details</button>
+          <button class="btn" id="bolDrive">Save to Drive</button>
+          <button class="btn primary" id="bolPod" hidden>Photo &amp; send signed BOL</button>
+          <button class="btn" id="bolBack">Back to order</button>
+        </div>
+        <p class="hint" style="margin-top:8px"><b>At the stop:</b> receiver signs the POD block. If money is handed over, count it in front of the customer, fill in the payment block and both initial it. Photograph the whole page in one shot and send it to <b>orders@adchem.pro</b> and to the receiver.</p>
+      </div>
+      <div class="bolwrap"><div class="bol" id="bolBody"></div></div>
+    </div>
+  </section>
+
+  <!-- ================= ORDERS ================= -->
+  <section id="panel-open" hidden>
+    <div class="toolbar">
+      <input id="qSearch" placeholder="Search customer, Order ID, BOL no., product…">
+      <select id="qStatus"><option value="">All statuses</option></select>
+      <select id="qHub"><option value="">All hubs</option></select>
+      <button class="btn sm" id="btnRefreshOrders">Refresh</button>
+    </div>
+    <p class="hint" id="refreshNote" style="margin:-4px 0 9px"></p>
+    <div class="card" id="orderList"></div>
+  </section>
+
+  <!-- ================= TODAY ================= -->
+  <section id="panel-today" hidden>
+    <div class="toolbar">
+      <label class="f" style="flex:0 0 auto">Date<input id="tDate" type="date"></label>
+      <button class="btn sm" id="btnRefreshToday" style="align-self:flex-end;margin-bottom:1px">Refresh</button>
+      <button class="btn sm" id="btnDriverSheet" style="align-self:flex-end;margin-bottom:1px">Print driver sheet</button>
+      <span class="hint" style="align-self:flex-end;padding-bottom:10px">The day and the next, by hub and truck, in window order — what the Morning Driver Sheet prints from.</span>
+    </div>
+    <div class="card pad" style="margin-bottom:12px">
+      <div class="sec-h" style="margin-bottom:8px">This phone</div>
+      <div class="hubpick" id="hubPick"></div>
+      <div class="grid two">
+        <label class="f">Driver's name / Nombre del chofer<input id="tDriver" placeholder="Goes on the email with the BOL photo"></label>
+        <span class="hint" id="todayHint" style="align-self:end;padding-bottom:6px">Each hub signs in with its own driver account. Pick the hub this phone is at; the list shows that hub's stops. Remembered on this phone.</span>
+      </div>
+    </div>
+    <div id="podQueueNote" hidden></div>
+    <details class="banner info" style="margin-bottom:12px;display:block"><summary style="cursor:pointer;font-weight:700">Money at a stop that is not coded COD / Dinero en una parada que no es COD</summary><div style="margin-top:6px">You never ask. If the customer offers payment anyway, take it: count it in front of them, tick <b>Payment on Account</b>, write the amount, both initial, photograph as usual. The money goes against their account; what they owe is settled by the invoice, not by the BOL.</div></details>
+    <div id="todayList"></div>
+    <div class="card pad" style="margin-top:12px" id="depositCard">
+      <div class="sec-h" style="margin-bottom:4px">Bank deposit / Depósito bancario</div>
+      <p class="hint" style="margin:0 0 9px">After a bank run, photograph the deposit slip here. It goes straight to <b>accounting@adchem.pro</b> with the hub, the date and your name. / <i>Después de ir al banco, tome una foto del comprobante de depósito aquí. Se envía a contabilidad.</i></p>
+      <button class="btn primary" id="btnDeposit" type="button">📷 Photo &amp; send deposit slip / Foto del depósito</button>
+    </div>
+  </section>
+
+  <!-- ================= SETUP ================= -->
+  <section id="panel-setup" hidden>
+    <div class="card pad sec">
+      <h2 class="sec-h">Access</h2>
+      <div id="shareState"></div>
+      <p class="hint" style="margin-top:10px">Accounts are invite-only and managed on the <b>People</b> tab by an admin: add someone by email with a role (admin, coordinator, driver) and a hub, and remove them the same way. Removing someone takes effect on their next page load.</p>
+    </div>
+
+    <div class="card pad sec" id="healthCard" hidden>
+      <h2 class="sec-h">Google connection (server)</h2>
+      <div id="healthState"><span class="hint">Checking…</span></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px"><button class="btn" id="btnHealth">Check again</button></div>
+    </div>
+    <div class="card pad sec">
+      <h2 class="sec-h">Customer feed — AR Command Center</h2>
+      <div id="feedState"></div>
+      <div class="grid two" style="margin-top:11px">
+        <label class="f spanall">Spreadsheet ID or link
+          <input id="sSheet" class="mono" placeholder="The AR Command Center's link or ID">
+          <span class="hint">The server reads only the FEED_ORDERS tab — customer, payment code, delivery site, site contact, gate, receiving hours and instructions — using AdChem's Google service account. No balances, terms, pricing or billing contacts come across. When the workbook is copied into the shared drive it gets a new ID: paste the new one here and share the sheet with the service account's user.</span>
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px">
+        <button class="btn primary" id="btnSaveSheet">Save</button>
+        <button class="btn" id="btnRefreshFeed">Refresh the feed now</button>
+      </div>
+    </div>
+
+    <div class="card pad sec">
+      <h2 class="sec-h">Orders Out — the return flow to the AR Command Center</h2>
+      <div id="ordersOutState"></div>
+      <div class="grid two" style="margin-top:11px">
+        <label class="f spanall">Dispatch Orders Out sheet — link or ID
+          <input id="sOrdersOut" class="mono" placeholder="The company's Dispatch Orders Out sheet">
+          <span class="hint">The app writes one row per order (twelve columns, keyed on Order ID) as orders are scheduled, numbered and delivered; the master's Orders In tab reads this sheet. The app never writes to the AR Command Center itself. Share this sheet with the Google user the server acts as, as an editor.</span>
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px">
+        <button class="btn primary" id="btnSaveOrdersOut">Save</button>
+        <button class="btn" id="btnRebuildOrdersOut">Rebuild Orders Out from the database</button>
+      </div>
+    </div>
+
+    <div class="card pad sec">
+      <h2 class="sec-h">BOL numbering</h2>
+      <div id="bolNumState"></div>
+      <div class="grid two" style="margin-top:11px">
+        <label class="f">Next BOL number
+          <input id="sNextBol" type="number" min="1" step="1" class="mono" placeholder="Set at cutover">
+          <span class="hint">On the day SmartBOL stops, enter one above SmartBOL's last issued number. SmartBOL issues nothing after that day, so the two never overlap. Each scheduled order takes the next number.</span>
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px">
+        <button class="btn primary" id="btnSaveBol">Save</button>
+      </div>
+    </div>
+
+    <div class="card pad sec">
+      <h2 class="sec-h">Delivery calendars</h2>
+      <div id="calState"></div>
+      <p class="hint" style="margin:10px 0 0">Each hub's deliveries can go on a calendar of its own — at AdChem, <i>Deliveries — East Bay</i> and <i>Deliveries — SoCal</i>. A hub left on <b>Same as default</b> uses the default calendar. Moving an order to another hub moves its event too.</p>
+      <div class="grid two" style="margin-top:11px">
+        <label class="f">Default calendar
+          <select id="sCalendar"><option value="">Loading…</option></select>
+          <input id="sCalendarId" class="mono" placeholder="or paste a calendar ID" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="f">Time zone
+          <select id="sTz">
+            <option value="America/Los_Angeles">Pacific — America/Los_Angeles</option>
+            <option value="America/Denver">Mountain — America/Denver</option>
+            <option value="America/Chicago">Central — America/Chicago</option>
+            <option value="America/New_York">Eastern — America/New_York</option>
+          </select>
+        </label>
+      </div>
+      <div id="hubCalRows" class="grid two" style="margin-top:11px"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px">
+        <button class="btn primary" id="btnConfirmCal">Check and confirm</button>
+        <button class="btn" id="btnReloadCal">Reload the list</button>
+      </div>
+      <p class="hint" style="margin-top:10px" id="calScopeNote">The lists show calendars already on the server's Google user's calendar list. A calendar shared to orders@ may not appear there — paste its ID instead (Google Calendar → the calendar's Settings and sharing → Integrate calendar → Calendar ID). <b>Check and confirm</b> tests that the server can write to every calendar named here before anything is written.</p>
+    </div>
+
+    <div class="card pad sec">
+      <h2 class="sec-h">Shared Google Drive folder for BOLs</h2>
+      <div id="driveState"></div>
+      <div class="grid two" style="margin-top:11px">
+        <label class="f spanall">Folder link or ID
+          <input id="sDriveFolder" placeholder="Paste the shared folder's URL, or its ID">
+          <span class="hint">The folder must be shared with the Google user the server acts as (Setup → Google connection). This app doesn't change Drive sharing.</span>
+        </label>
+        <label class="f">File format
+          <select id="sDriveFormat">
+            <option value="html">HTML file — prints exactly as designed</option>
+            <option value="doc">Google Doc — previews in Drive, layout may shift</option>
+          </select>
+        </label>
+        <label class="f">Save automatically
+          <select id="sDriveAuto">
+            <option value="on">Yes — when an order is scheduled</option>
+            <option value="off">No — only when I press Save to Drive</option>
+          </select>
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px">
+        <button class="btn primary" id="btnSaveDrive">Save folder setting</button>
+        <button class="btn" id="btnTestDrive">Send a test file</button>
+      </div>
+    </div>
+
+    <div class="card pad sec">
+      <h2 class="sec-h">Hubs &amp; shipper addresses</h2>
+      <p class="hint" style="margin:0 0 11px">The shipper address and the emergency response number print on every BOL. Richmond is confirmed; the SoCal and Colorado street addresses are not yet.</p>
+      <div id="hubEditor"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px">
+        <button class="btn primary" id="btnSaveHubs">Save hubs</button>
+        <button class="btn" id="btnAddHub">Add a hub</button>
+      </div>
+    </div>
+  
+    <div class="card pad sec">
+      <h2 class="sec-h">Load compatibility — what may ride together</h2>
+      <p class="hint" style="margin:0 0 9px">The segregation table from <b>49 CFR 177.848(d)</b> (read from the eCFR on 10/9/26), which California applies to highway carriers through 13 CCR and the Vehicle Code. <b>X</b> = must not be loaded or stored together on the same vehicle. <b>O</b> = may share a vehicle only if separated so that leakage cannot mix. Blank = no restriction. The app checks every truck's load against this table on the Today list. Admins can correct a cell here; the change is logged. Explosives among themselves and the ammonium nitrate exception are not encoded — AdChem ships neither.</p>
+      <div style="overflow-x:auto" id="segWrap"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px"><button class="btn primary" id="btnSaveSeg" hidden>Save table</button><button class="btn" id="btnResetSeg" hidden>Reset to the regulation</button></div>
+    </div>
+</section>
+
+  <!-- ================= PEOPLE ================= -->
+  <section id="panel-users" hidden>
+    <div class="card pad sec">
+      <h2 class="sec-h" id="peopleHead">People</h2>
+      <p class="hint" style="margin:0">Access is per company. Someone who works for more than one company is added under each one, and picks the company at the top of the page.</p>
+    </div>
+    <div class="card pad sec">
+      <h2 class="sec-h">Add someone</h2>
+      <div class="grid four">
+        <label class="f">Email<input id="uEmail" type="email" autocapitalize="off" placeholder="name@adchem.pro"></label>
+        <label class="f">Name<input id="uName" placeholder="optional"></label>
+        <label class="f">Role<select id="uRole"><option value="driver">Driver</option><option value="coordinator">Coordinator</option><option value="admin">Admin</option></select></label>
+        <label class="f">Hub (drivers)<select id="uHub"><option value="">All hubs</option></select></label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px;align-items:center">
+        <button class="btn primary" id="btnGrant">Add / update</button>
+        <span class="hint">An address that already has an AdChem account (AdChem Time) gets access at once. A new address is invited: they open this app, choose <b>Create account</b> with that email, and set a password. Drivers: one account per hub — e.g. driver-eb@adchem.pro — signed in on that hub's phones.</span>
+      </div>
+    </div>
+    <div class="card sec" id="userList"></div>
+    <div class="card pad sec"><h2 class="sec-h">Recent access changes</h2><div id="userLog" class="hint"></div></div>
+    <div class="card pad sec">
+      <h2 class="sec-h">Companies</h2>
+      <p class="hint" style="margin:0 0 9px">Each company has its own customers, orders, BOL numbering, hubs, calendar and sending addresses. Its people see only its rows. Add a company here, switch to it at the top of the page, then set it up on Setup and add its people.</p>
+      <div class="card" id="companyList" style="margin-bottom:11px"></div>
+      <div class="grid three">
+        <label class="f">Short ID<input id="cId" placeholder="e.g. northstar" autocapitalize="off"></label>
+        <label class="f">Company name<input id="cName" placeholder="Legal name on the BOL"></label>
+        <label class="f">Short name<input id="cShort" placeholder="Shown in the app"></label>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:11px"><button class="btn primary" id="btnAddCompany">Add company</button></div>
+    </div>
+  </section>
+
+  <div class="foot" id="foot"></div>
+</main>
+
+<div id="depSheet" hidden role="dialog" aria-modal="true" aria-labelledby="depTitle">
+  <div class="sheet">
+    <div style="display:flex;align-items:flex-start;gap:8px">
+      <div style="flex:1"><h2 id="depTitle">Bank deposit slip</h2><div class="sub">Goes to <b>accounting@adchem.pro</b>. / <i>Comprobante de depósito → contabilidad.</i></div></div>
+      <button class="btn sm" id="depClose" aria-label="Close">✕</button>
+    </div>
+    <div id="depTakeRow">
+      <label class="bigbtn primary" id="depTakeLbl" tabindex="0">📷 Take the photo / Tomar la foto<input type="file" id="depFile" accept="image/*" capture="environment"></label>
+      <p class="hint" style="margin:8px 0 0">The whole slip, flat, readable — the bank's stamp or receipt number included. / <i>Todo el comprobante, legible.</i></p>
+    </div>
+    <img id="depPreview" alt="Photo of the deposit slip" hidden>
+    <div id="depRetakeRow" hidden style="margin-top:8px">
+      <label class="bigbtn" tabindex="0" style="min-height:44px;font-size:14px">Retake / Otra foto<input type="file" id="depFile2" accept="image/*" capture="environment"></label>
+    </div>
+    <div class="grid two" style="margin-top:12px">
+      <label class="f">Amount deposited / Monto<input id="depAmount" type="number" min="0" step="0.01" inputmode="decimal" class="mono" placeholder="optional"></label>
+      <label class="f">Bank / note<input id="depNote" placeholder="optional — e.g. Chase, Richmond"></label>
+    </div>
+    <div style="display:grid;gap:8px;grid-template-columns:1fr;margin-top:12px">
+      <button class="bigbtn primary" id="depSend" disabled>Send to accounting / Enviar</button>
+    </div>
+    <div id="depStatus"></div>
+  </div>
+</div>
+
+<div id="podSheet" hidden role="dialog" aria-modal="true" aria-labelledby="podTitle">
+  <div class="sheet">
+    <div style="display:flex;align-items:flex-start;gap:8px">
+      <div style="flex:1"><h2 id="podTitle">BOL</h2><div class="sub">Signed BOL → <b>orders@adchem.pro</b> + the receiver's copy. / <i>Foto del BOL firmado.</i></div></div>
+      <button class="btn sm" id="podClose" aria-label="Close">✕</button>
+    </div>
+    <div id="podTakeRow">
+      <label class="bigbtn primary" id="podTakeLbl" tabindex="0">📷 Take the photo / Tomar la foto<input type="file" id="podFile" accept="image/*" capture="environment"></label>
+      <p class="hint" style="margin:8px 0 0">The phone will ask to use the camera the first time. Lay the signed page flat, fill the frame, hold still. / <i>El teléfono pedirá permiso para usar la cámara.</i></p>
+    </div>
+    <img id="podPreview" alt="Photo of the signed BOL" hidden>
+    <div id="podRetakeRow" hidden style="margin-top:8px">
+      <label class="bigbtn" tabindex="0" style="min-height:44px;font-size:14px">Retake / Otra foto<input type="file" id="podFile2" accept="image/*" capture="environment"></label>
+    </div>
+    <label class="f" style="margin-top:12px">Total received / Total recibido
+      <input id="podCollected" type="number" min="0" step="0.01" inputmode="decimal" class="mono">
+      <span class="hint" id="podDueNote"></span>
+    </label>
+    <div class="grid two" style="margin-top:8px">
+      <label class="f">Issue at this stop / Problema<input id="podIssue" placeholder="optional — short, part-delivered, refused…"></label>
+      <label class="f">Note for the office / Nota<input id="podNote" placeholder="optional"></label>
+    </div>
+    <label class="f" style="margin-top:12px">Customer's copy to (email) / Copia al cliente
+      <input id="podCc" type="email" inputmode="email" autocapitalize="off" placeholder="receiver@customer.com">
+      <span class="hint" id="podCcNote"></span>
+    </label>
+    <div style="display:grid;gap:8px;grid-template-columns:1fr 1fr;margin-top:12px">
+      <button class="bigbtn primary" id="podSend" disabled>Send / Enviar</button>
+      <button class="bigbtn" id="podShare" disabled>Share another way</button>
+    </div>
+    <div id="podStatus"></div>
+  </div>
+</div>
+
+</div>
+
+<script src="/vendor/supabase.js"></script>
+<script src="/config.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

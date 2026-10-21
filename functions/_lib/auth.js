@@ -14,7 +14,7 @@ export function companyFrom(request, body) {
   return String((body && body.company) || q || "").toLowerCase().replace(/[^a-z0-9-]/g, "");
 }
 
-const PERM_LABELS = { manage_customers: "manage customers", run_imports: "run imports", approve_driver_notes: "approve driver notes", manage_people: "manage people" };
+const PERM_LABELS = { manage_customers: "manage customers", run_imports: "run imports", approve_driver_notes: "approve driver notes", manage_people: "manage people", view_documents: "view documents", manage_documents: "manage documents" };
 
 export function hasPerm(me, perm) {
   return !!(me && (me.isSuper || (me.perms && me.perms[perm] === true)));
@@ -49,7 +49,15 @@ export async function requireUser(request, env, roles, company, perm) {
 // A Supabase client for the server, acting as the caller (RLS applies).
 export const PAGE = 1000;
 export function sb(env, token) {
-  const base = env.SUPABASE_URL, anon = env.SUPABASE_ANON_KEY;
+  return client(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, token);
+}
+// The same client acting as the service role: RLS does NOT apply. Only the expiry email's cron path (secret header checked) uses it.
+export function sbService(env) {
+  const key = env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!env.SUPABASE_URL || !key) throw fail("Server is not configured (SUPABASE_SERVICE_ROLE_KEY).", 500, "config");
+  return client(env.SUPABASE_URL, key, key);
+}
+function client(base, anon, token) {
   const h = { apikey: anon, authorization: "Bearer " + token, "content-type": "application/json" };
   return {
     async get(path) { const r = await fetch(base + "/rest/v1/" + path, { headers: h }); if (!r.ok) throw new Error(await r.text()); return r.json(); },
@@ -86,6 +94,14 @@ export function sb(env, token) {
       const r = await fetch(base + "/storage/v1/object/" + bucket + "/" + path, { headers: { apikey: anon, authorization: "Bearer " + token } });
       if (!r.ok) throw new Error("photo not found: " + r.status); return r;
     },
+    // A short-lived URL for one private object, signed as the caller (storage RLS applies).
+    async storageSign(bucket, path, expiresIn) {
+      const r = await fetch(base + "/storage/v1/object/sign/" + bucket + "/" + path.split("/").map(encodeURIComponent).join("/"), { method: "POST", headers: h, body: JSON.stringify({ expiresIn }) });
+      if (!r.ok) throw new Error("sign failed: " + r.status);
+      const j = await r.json();
+      if (!j || !j.signedURL) throw new Error("sign failed: no url");
+      return base + "/storage/v1" + j.signedURL;
+    },
   };
 }
 
@@ -102,8 +118,12 @@ export async function companyContext(db, env, company) {
     settings, co,
     ordersTo: d.ordersTo || env.ORDERS_TO || "orders@adchem.pro",
     accountingTo: d.accountingTo || env.ACCOUNTING_TO || "accounting@adchem.pro",
-    mailFrom: d.mailFrom || env.GMAIL_FROM || env.GOOGLE_IMPERSONATE || env.ORDERS_TO || "orders@adchem.pro",
+    mailFrom: mailFromOf(d, env),
   };
+}
+// The address a company's mail goes out as: its own (companies.data.mailFrom), else the server variables.
+export function mailFromOf(d, env) {
+  return (d && d.mailFrom) || env.GMAIL_FROM || env.GOOGLE_IMPERSONATE || env.ORDERS_TO || "orders@adchem.pro";
 }
 
 export async function handle(fn) {

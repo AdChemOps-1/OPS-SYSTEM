@@ -197,6 +197,7 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   await page.click('#tab-setup'); await page.waitForTimeout(400);
   assert.match(flat(await page.textContent('#customersOutState')), /Customers Out is set/);
   assert.match(flat(await page.textContent('#healthState')), /Customers Out: ok.*Import sheet: ok/, 'the health card lists both Customers Out and the import sheet');
+  assert.match(flat(await page.textContent('#healthState')), /Documents bucket: ok.*Expiry email: ok.*Last expiry email: never/, 'the health card lists the documents bucket, the expiry email job and its last run');
   assert.equal(await page.inputValue('#sCustomersOut'), '1COUTseedAAAAAAAAAAAAAA');
   await page.fill('#sCustomersOut','https://docs.google.com/spreadsheets/d/1CustomersOutSheetIdXYZ_abc/edit#gid=0');
   await page.click('#btnSaveCustomersOut'); await page.waitForTimeout(600);
@@ -226,13 +227,22 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   await page.click('#tab-users'); await page.waitForTimeout(500);
   assert.match(flat(await page.textContent('#panel-users')), /Drivers: one account per person, with their hub\./);
   assert.doesNotMatch(flat(await page.textContent('#panel-users')), /one account per hub/);
-  assert.deepEqual(await page.$$eval('[data-perm^="u2:"]',e=>e.map(x=>x.getAttribute('data-perm'))), ['u2:manage_customers','u2:approve_driver_notes','u2:run_imports'], 'no Manage people switch (it grants nothing yet)');
+  assert.deepEqual(await page.$$eval('[data-perm^="u2:"]',e=>e.map(x=>x.getAttribute('data-perm'))), ['u2:manage_customers','u2:approve_driver_notes','u2:run_imports','u2:view_documents','u2:manage_documents'], 'no Manage people switch (it grants nothing yet)');
   assert.doesNotMatch(flat(await page.textContent('#userList')), /Manage people/);
   assert.equal(await page.$eval('[data-perm="u2:manage_customers"]',e=>e.checked), false);
   await page.check('[data-perm="u2:manage_customers"]'); await page.waitForTimeout(600);
   const u2 = () => T.dispatch_members.find(x=>x.user_id==='u2'&&x.company==='adchem');
-  assert.deepEqual(u2().permissions, {manage_customers:true,approve_driver_notes:false,run_imports:false}, 'permissions written through dispatch_set_permissions');
+  assert.deepEqual(u2().permissions, {manage_customers:true,approve_driver_notes:false,run_imports:false,view_documents:false,manage_documents:false}, 'permissions written through dispatch_set_permissions');
   assert.equal(await page.$eval('[data-perm="u2:manage_customers"]',e=>e.checked), true, 're-rendered from the database');
+  // the two document switches, written through the same RPC
+  assert.match(flat(await page.textContent('#userList')), /View documents.*Manage documents/);
+  await page.check('[data-perm="u2:view_documents"]'); await page.waitForTimeout(600);
+  assert.deepEqual(u2().permissions, {manage_customers:true,approve_driver_notes:false,run_imports:false,view_documents:true,manage_documents:false}, 'view_documents written');
+  await page.check('[data-perm="u2:manage_documents"]'); await page.waitForTimeout(600);
+  assert.deepEqual(u2().permissions, {manage_customers:true,approve_driver_notes:false,run_imports:false,view_documents:true,manage_documents:true}, 'manage_documents written');
+  assert.equal(await page.$eval('[data-perm="u2:manage_documents"]',e=>e.checked), true, 're-rendered from the database');
+  await page.uncheck('[data-perm="u2:manage_documents"]'); await page.waitForTimeout(600);
+  assert.equal(u2().permissions.manage_documents, false, 'and cleared again'); assert.equal(u2().permissions.view_documents, true);
   assert.equal(await page.$eval('[data-super="u2"]',e=>e.checked), false);
   await page.check('[data-super="u2"]'); await page.waitForTimeout(600);
   assert.equal(u2().is_super_admin, true, 'super admin written through dispatch_set_super_admin');
@@ -393,6 +403,64 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
     assert.equal(TC.dispatch_company_settings[0].data.nextBol, 9500, 'an unrelated save keeps the server\'s nextBol');
     await pc.fill('#sNextBol','9600'); await pc.click('#btnSaveBol'); await pc.waitForTimeout(600);
     assert.equal(TC.dispatch_company_settings[0].data.nextBol, 9600, 'BOL numbering on Setup still sets it');
+  }
+  // ---------- Setup → Warnings: super admin only, written only through dispatch_set_warnings ----------
+  { const fw = makeFake(); const TW = fw.T; const baseW = await fw.start(); fakes.push(fw);
+    TW.dispatch_members[0].is_super_admin = true;
+    const pw = await newPage(b, baseW); pages.push(pw); await signIn(pw, baseW);
+    const topBanner = async p => flat(await p.$$eval('#banners .banner',e=>e[0]?e[0].innerText:''));
+    const wdata = () => TW.dispatch_company_settings[0].data;
+    await pw.click('#tab-setup'); await pw.waitForTimeout(400);
+    assert.equal(await pw.$eval('#warnCard',e=>e.hidden), false, 'warnings card shown to a super admin');
+    assert.deepEqual(await pw.$$eval('#warnCard [data-warn]',e=>e.map(x=>[x.getAttribute('data-warn'),x.checked])),
+      [['cannabis_license',false],['psa',false],['entity_status',false]], 'every warning type is off by default');
+    assert.equal(await pw.$$eval('#warnCard [data-warnnote]',e=>e.length), 3, 'a note per type');
+    assert.equal(await pw.inputValue('#sWarnDays'), '30', 'default warning window');
+    await pw.check('[data-warn="cannabis_license"]'); await pw.fill('[data-warnnote="cannabis_license"]','Call the office before loading');
+    await pw.fill('#sWarnDays','45');
+    // an invalid recipient line: banner, nothing saved
+    await pw.fill('#sExpiryTo','ops@adchem.pro\nnot-an-email');
+    const logW = TW.dispatch_log.length;
+    await pw.click('#btnSaveWarnings'); await pw.waitForTimeout(500);
+    assert.match(await topBanner(pw), /not-an-email/, 'the bad recipient line is named');
+    assert.equal(wdata().warnings, undefined, 'nothing saved with a bad recipient'); assert.equal(TW.dispatch_log.length, logW);
+    // an out-of-range window: banner, nothing saved
+    await pw.fill('#sExpiryTo','ops@adchem.pro\n\n  billing@adchem.pro  '); await pw.fill('#sWarnDays','0');
+    await pw.click('#btnSaveWarnings'); await pw.waitForTimeout(500);
+    assert.match(await topBanner(pw), /1.*365/, 'the window must be 1–365 days');
+    assert.equal(wdata().warnings, undefined, 'nothing saved with a bad window');
+    // valid: saved through the RPC, logged, and shown back
+    await pw.fill('#sWarnDays','45'); await pw.click('#btnSaveWarnings'); await pw.waitForTimeout(600);
+    assert.equal(wdata().warnDays, 45);
+    assert.deepEqual(wdata().warnings, {cannabis_license:{orderTime:true,note:'Call the office before loading'},psa:{orderTime:false,note:''},entity_status:{orderTime:false,note:''}});
+    assert.deepEqual(wdata().expiryEmailRecipients, ['ops@adchem.pro','billing@adchem.pro'], 'blank lines dropped, lines trimmed');
+    assert.ok(TW.dispatch_log.slice(logW).some(l=>l.what==='warnings'), 'a warnings log row');
+    assert.deepEqual(await pw.evaluate(()=>[state.settings.warnDays,state.settings.warnings.cannabis_license.orderTime]), [45,true], 'the page re-reads the settings');
+    // Send expiry email now: posts {send:true} for this company and says what went out
+    const doc = (id,exp)=>({id,company:'adchem',subject_type:'company',subject_id:'adchem',doc_type:'dot_registration',title:'',number:'USDOT 1',status:'',issued:null,expires:exp,review_status:'live'});
+    TW.dispatch_documents.push(doc('e1000000-0000-4000-8000-000000000001','2026-10-30'), doc('e1000000-0000-4000-8000-000000000002','2026-10-01'));
+    assert.equal(await pw.$eval('#btnSendExpiry',e=>e.hidden||e.closest('[hidden]')!==null), false, 'Send expiry email now is on the warnings card');
+    const callsX = fw.calls.length;
+    await pw.click('#btnSendExpiry'); await pw.waitForTimeout(500);
+    assert.deepEqual(fw.calls.slice(callsX).filter(c=>c[0]==='expiry'), [['expiry',{send:true}]], 'one /api/expiry call with {send:true}');
+    assert.match(await topBanner(pw), /Expiry email sent.*2 documents to ops@adchem\.pro, billing@adchem\.pro/, 'the banner gives the count and the recipients');
+    await pw.click('#tab-today'); await pw.waitForTimeout(200); await pw.click('#tab-setup'); await pw.waitForTimeout(400);
+    assert.equal(await pw.$eval('[data-warn="cannabis_license"]',e=>e.checked), true); assert.equal(await pw.inputValue('[data-warnnote="cannabis_license"]'), 'Call the office before loading');
+    assert.equal(await pw.inputValue('#sWarnDays'), '45'); assert.equal(await pw.inputValue('#sExpiryTo'), 'ops@adchem.pro\nbilling@adchem.pro');
+    // an unrelated Setup save leaves the warning keys as the server has them
+    await pw.selectOption('#sTz','America/Denver'); await pw.waitForTimeout(600);
+    assert.equal(wdata().tz, 'America/Denver'); assert.equal(wdata().warnDays, 45); assert.equal(wdata().warnings.cannabis_license.orderTime, true);
+    // a coordinator (not super): no card, and the RPC's refusal surfaces as a banner
+    const pcw = await newPage(b, baseW, {members:[{user_id:'u1',company:'adchem',role:'coordinator',hub:'',active:true,is_super_admin:false,permissions:{}}]});
+    await signIn(pcw, baseW); await pcw.click('#tab-setup'); await pcw.waitForTimeout(400);
+    assert.equal(await pcw.$eval('#warnCard',e=>e.hidden), true, 'no warnings card for a coordinator');
+    await pcw.evaluate(()=>{ document.getElementById('warnCard').hidden=false; document.getElementById('sWarnDays').value='10'; });
+    await pcw.click('#btnSaveWarnings'); await pcw.waitForTimeout(600);
+    assert.match(await topBanner(pcw), /Warnings not saved.*not allowed/, 'the refusal is shown');
+    assert.equal(wdata().warnDays, 45, 'nothing changed');
+    assert.deepEqual(pcw.errs.filter(e=>!/status of 403/.test(e)), [], 'unexpected page errors (coordinator)');
+    assert.equal(pcw.errs.filter(e=>/status of 403/.test(e)).length, 1, 'the refused RPC case ran');
+    await pcw.close();
   }
   // no page errors except the deliberate Customers Out 502
   assert.deepEqual(pages.flatMap(p=>p.errs).filter(e=>!/status of 502/.test(e)), [], 'unexpected page errors');

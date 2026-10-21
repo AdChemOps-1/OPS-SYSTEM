@@ -19,7 +19,7 @@ Every row — customers, orders, BOLs, hubs, settings, photos — belongs to a c
 | **driver** | See their hub's routes on Today, with each site's notes and receiving contact, add a note on a stop, open BOLs, photograph and send the signed BOL, photograph and send bank deposit slips. One account per person (e.g. `maria@adchem.pro`), with their hub set on People |
 | **super admin** | A switch on top of a role, set on People by another super admin (you cannot remove your own). Holds every permission below and is the only one who can change a super admin |
 
-Three permissions are switched per person on **People**: **Manage customers** (create and edit customers, sites and contacts; log activity), **Approve driver notes** (review the notes drivers add from Today) and **Run imports** (read and commit the spreadsheet import on Setup; committing also needs Manage customers). Everyone who can take orders can see Customers; without Manage customers it is read-only. Only true counts as granted: any other value in a person's permissions is no.
+Five permissions are switched per person on **People**: **Manage customers** (create and edit customers, sites and contacts; log activity), **Approve driver notes** (review the notes drivers add from Today), **Run imports** (read and commit the spreadsheet import on Setup; committing also needs Manage customers), **View documents** (read document records and open their files) and **Manage documents** (add, edit, upload, approve or reject, and delete documents). Everyone who can take orders can see Customers; without Manage customers it is read-only. Only true counts as granted: any other value in a person's permissions is no.
 
 Drivers never see billing contacts, balances, terms or prices. The server reads only the 14 FEED_ORDERS columns from the AR Command Center, and the import never reads a money column.
 
@@ -36,6 +36,34 @@ Two Setup cards connect it to the spreadsheets:
 - **Customers Out** — the company's *Customers Out* sheet. Each customer's rows are rewritten whenever the customer, a site or a contact is saved (`/api/customers-out`); a row for a site the customer no longer has is blanked, not deleted, so two saves at once never shift each other's rows. **Rebuild Customers Out** rewrites the whole tab and removes the blank rows. A failed write shows a banner; the change is still saved.
 - **Import** — reads the existing spreadsheet's *Customer Directory*, *Customers* and *Delivery Notes* tabs (`/api/import`, needs Run imports). It shows a review of what would be created, changed or skipped; nothing is written until you commit. Run it **before creating customers in the app**: a sheet row whose Customer ID already belongs to a customer added in the app under another name and legal name is shown as a problem and not imported. Re-running it keeps anything changed in the app since the last import (including the importer's own edits) and only fills blanks. The *Customers* tab's contact is imported as type *other*. Feed sites that match no customer are listed in the review and left unlinked; linking them comes in a later stage. Licensing & Entity and Account Terms are left for a later stage.
 
+## Documents
+
+Licenses, certificates, agreements and the like are records in `dispatch_documents`, each with an optional file in the private `dispatch-docs` bucket (opened through `/api/docs`, which hands out a link that works for 5 minutes). They belong to a customer, the company itself or a person, and are shown in three places:
+
+- **Customer → Documents** tab — that customer's records, add and edit, with its license and PSA chips in the header.
+- **Documents** tab (the hub) — every document in the company, filterable, plus the **review queue** of driver captures. Needs View documents.
+- **People** — a person's own documents (CDL, medical card, and so on) under their row.
+
+Who sees what: **View documents** reads the records and files, **Manage documents** changes them (super admins hold both). A coordinator without View documents sees the license and PSA **chips only** — the derived status, never the numbers, dates or files. A driver sees only **their own** documents, read-only, on **My documents**; they cannot read customer or company documents.
+
+**Photo of license / document** on Today lets a driver photograph a customer's paper at a stop. It is write-only for them: the capture waits in the review queue as *pending review* and shows nowhere else until someone with Manage documents types in its details and approves it (or rejects it with a reason). With no signal the photo is kept on the phone, like a BOL photo, and **Send waiting photos** on Today sends it later with the time it was taken; the review queue shows who took it and when. Approving a renewal **supersedes** the old license: a live document of the same type and number for that customer is marked rejected and the new one points back to it.
+
+**Customers Out** now carries each customer's License Status, License #, License Expires, Entity Status, PSA Status and PSA Effective; with no document, License Status and PSA Status read *missing* and License #, License Expires, Entity Status and PSA Effective are blank.
+
+**Warnings** are off by default. A super admin switches them per type (cannabis license, PSA, entity status) on **Setup → Warnings**, with a note shown alongside, and sets the expiring window (`warnDays`, default 30). A type that is on shows under the customer on New order and is stamped on the order; it never blocks the order. Everything on that card is written only through `dispatch_set_warnings`. The daily expiry email (below) goes only to the addresses listed there.
+
+Not here yet: reading licenses and tags from photos (Vision/OCR), assets, intake, and importing the Licensing & Entity and Account Terms tabs.
+
+## Expiry email
+
+Every morning at 06:00 Pacific (07:00 during daylight time; `0 14 * * *` UTC) a `pg_cron` job in Supabase calls `/api/expiry`, which emails each company's expiring and expired documents — customers, the company itself and people, inside the company's warning window — from the company's sending address to the addresses on **Setup → Warnings** (super admins). A company with no recipients, or nothing due, gets no email; the addresses listed are the only ones it goes to. The job authenticates with `EXPIRY_SECRET` and reads every company with `SUPABASE_SERVICE_ROLE_KEY` (both in `GOOGLE-SETUP.md` section E). Schedule it once after deploying, from the Supabase SQL editor (re-running replaces the job and the secret):
+
+```sql
+select dispatch_schedule_expiry('<app url>/api/expiry', '<EXPIRY_SECRET>');
+```
+
+**Setup → Warnings → Send expiry email now** sends the same email for the current company straight away. **Setup → Google connection** shows *Expiry email: ok — daily 06:00 Pacific* once the job is scheduled. Each email sent is logged (`expiry_email`), and *Last expiry email* on the same card shows the newest one for the company (a morning with nothing due sends and logs nothing). The job's call is answered at once (`202`) and the emails go out in the background, so a slow Gmail never times the job out.
+
 ## Deploy (first time)
 
 ### 1. Put the code on GitHub
@@ -44,20 +72,20 @@ Create a repository under the **AdChemOps-1** account (e.g. `Ops`) and upload th
 ### 2. Cloudflare Pages
 1. Cloudflare dashboard → **Workers & Pages → Create → Pages → Connect to Git** → pick the repo.
 2. Build settings: Framework **None** · Build command *(blank)* · Build output directory **`public`**. Functions in `functions/` are picked up automatically.
-3. **Settings → Variables and Secrets** — the seven in `GOOGLE-SETUP.md` section E (`GOOGLE_SA_JSON` as a Secret). The Google ones can wait until section E is reached; the three Supabase/orders ones are needed for sign-in.
+3. **Settings → Variables and Secrets** — the ones in `GOOGLE-SETUP.md` section E (`GOOGLE_SA_JSON` as a Secret). The Google ones can wait until section E is reached; the three Supabase/orders ones are needed for sign-in.
 4. Deploy. The site gets a `*.pages.dev` address; add a custom domain later under **Custom domains**.
 
 ### 3. Supabase — one setting
 Supabase dashboard → project **adchem-hours** → **Authentication → URL Configuration → Redirect URLs**: add the app's address (the `pages.dev` URL and, later, the custom domain). The Site URL can stay as AdChem Time's.
 
-The database objects through `004` are already created (`supabase/migrations/` is the record). **`005_customers.sql` is to be applied; then re-run the security advisor.** The existing admin account already holds admin for AdChem.
+The database objects through `005` are already created (`supabase/migrations/` is the record; `005_customers.sql` was applied as version `20261020170155`). **Only `006_documents.sql` is to be applied, followed by a re-run of the security advisor** (record the result at the foot of the file; `006` creates the private `dispatch-docs` bucket and turns on `pg_cron` and `pg_net`). The existing admin account already holds admin for AdChem.
 
 ### 4. Google setup (Workspace admin, about 25 minutes)
 See **`GOOGLE-SETUP.md`**. It starts with the dedicated user `ops-system@adchem.pro`.
 
 ### 5. First run
 1. Open the app, sign in with your existing AdChem account.
-2. **Setup → Google connection → Check again** — all eight lines should read *ok* (token, AR Command Center, calendars, Drive, Gmail, Orders Out, Customers Out, Import sheet; the last three read *no … set* until step 4 is done, calendars until step 5); the Gmail line should say it can send as orders@adchem.pro. (The calendars line reads *no delivery calendar set* until step 5.)
+2. **Setup → Google connection → Check again** — the first ten lines should read *ok* (token, AR Command Center, calendars, Drive, Gmail, Orders Out, Customers Out, Import sheet, Documents bucket, Expiry email; Orders Out, Customers Out and Import sheet read *no … set* until step 4 is done, calendars until step 5, Expiry email *not scheduled* until step 9) and the eleventh, *Last expiry email*, gives the time of the last one sent for the company, or *never*; the Gmail line should say it can send as orders@adchem.pro. (The calendars line reads *no delivery calendar set* until step 5.)
 3. **Setup → Customer feed → Refresh the feed now** — reads FEED_ORDERS.
 4. **Setup → Orders Out** — paste the *AdChem Dispatch Orders Out* sheet link, **Save**, then **Rebuild Orders Out**. On the AR Command Center, click **Allow access** on Orders In A8 once.
    - **Setup → Customers Out** — paste the *Customers Out* sheet link, **Save**, then **Rebuild Customers Out**.
@@ -66,6 +94,7 @@ See **`GOOGLE-SETUP.md`**. It starts with the dedicated user `ops-system@adchem.
 6. **Setup → Drive folder** — paste the shared BOL folder link, **Save**, **Send a test file**.
 7. **Setup → BOL numbering** — on the day SmartBOL stops, enter its last number plus one.
 8. **People** — set the super admins, grant each person's permissions, and add each driver individually (one account per person, with their hub).
+9. **Expiry email** — on **Setup → Warnings** enter the recipients and **Save warnings**, then schedule the daily job (see *Expiry email* above) and press **Send expiry email now** once to check.
 
 ## Hubs
 
@@ -74,9 +103,9 @@ Each hub on **Setup → Hubs** has its shipper address, emergency number, **loca
 ## How the pieces talk
 
 ```
-phone / laptop ──(sign-in, orders, BOLs)──► Supabase (dispatch_* tables, dispatch-pods photos)
+phone / laptop ──(sign-in, orders, BOLs)──► Supabase (dispatch_* tables, dispatch-pods photos, dispatch-docs files)
        │
-       └──(/api/feed, /api/calendar, /api/drive, /api/pod, /api/deposit, /api/orderlog, /api/health)──► Cloudflare Function ──► Google
+       └──(/api/feed, /api/calendar, /api/drive, /api/pod, /api/deposit, /api/orderlog, /api/docs, /api/expiry, /api/health)──► Cloudflare Function ──► Google
                                                                                        (service account acting as ops-system@, sending as orders@)
 ```
 
@@ -89,11 +118,11 @@ Every `/api` call carries the caller's sign-in token and the company it is actin
 ## Files
 
 ```
-public/            the app (index.html, app.js, customers.js, import.js, styles.css, config.js, icons, vendor/supabase.js)
-functions/api/     feed.js · calendar.js · drive.js · pod.js · deposit.js · orderlog.js · customers-out.js · import.js · health.js
-functions/_lib/    google.js (service-account token) · auth.js (who is calling, in which company) · orderlog.js (the Orders Out writer) · customersout.js (the Customers Out writer) · importsheet.js (the spreadsheet reader) · calendars.js (which calendar a hub's events go on)
+public/            the app (index.html, app.js, customers.js, documents.js, import.js, styles.css, config.js, icons, vendor/supabase.js)
+functions/api/     feed.js · calendar.js · drive.js · pod.js · deposit.js · orderlog.js · customers-out.js · import.js · docs.js · expiry.js · health.js
+functions/_lib/    google.js (service-account token) · auth.js (who is calling, in which company) · orderlog.js (the Orders Out writer) · customersout.js (the Customers Out writer) · expiry.js (what is due, and the email body) · mail.js (the Gmail sender) · importsheet.js (the spreadsheet reader) · calendars.js (which calendar a hub's events go on)
 api/               [route].js — adapter so the same server code could run on Vercel; not used by Cloudflare
-supabase/          001_dispatch.sql … 004_hub_time_and_products.sql as applied; 005_customers.sql to be applied (safe to run twice); tests/005_policies.sql (run inside begin … rollback)
-test/              ui.test.cjs · customers.test.cjs (headless UI suites) · _fake.cjs (the fake Supabase and /api routes they share) · unit/ · fixtures/ · run.cjs (runs everything)
+supabase/          001_dispatch.sql … 005_customers.sql as applied; 006_documents.sql to be applied (safe to run twice); tests/005_policies.sql, tests/006_policies.sql (run inside begin … rollback)
+test/              ui.test.cjs · customers.test.cjs · documents.test.cjs (headless UI suites) · _fake.cjs (the fake Supabase and /api routes they share) · unit/ (auth, customersout, importsheet, docs.test.mjs, expiry.test.mjs) · fixtures/ · run.cjs (runs everything)
 GOOGLE-SETUP.md    the Workspace / Google Cloud steps
 ```

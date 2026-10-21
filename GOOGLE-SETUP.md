@@ -31,7 +31,7 @@ https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/cal
 
 4. Authorize.
 
-Five scopes, and what each one is for: **spreadsheets** — read FEED_ORDERS and write *Dispatch Orders Out* (writes reach only sheets shared to it as editor; the AR Command Center is shared as viewer, so the app cannot write to it); **calendar.events** — the delivery calendars (create, update, and move an event when an order changes hub); **drive.file** — create BOL files in the folder; **gmail.send** — the BOL and deposit-slip emails; **gmail.settings.basic** — lets the health check confirm that orders@ is a verified send-as address, so a mis-sent From never goes unnoticed. It cannot read anyone's inbox or touch other users.
+The documents feature adds no Google scope. Five scopes, and what each one is for: **spreadsheets** — read FEED_ORDERS and write *Dispatch Orders Out* (writes reach only sheets shared to it as editor; the AR Command Center is shared as viewer, so the app cannot write to it); **calendar.events** — the delivery calendars (create, update, and move an event when an order changes hub); **drive.file** — create BOL files in the folder; **gmail.send** — the BOL and deposit-slip emails; **gmail.settings.basic** — lets the health check confirm that orders@ is a verified send-as address, so a mis-sent From never goes unnoticed. It cannot read anyone's inbox or touch other users.
 
 ## D. Share these with `orders@adchem.pro`
 
@@ -55,8 +55,11 @@ The dedicated user reaches them through its group membership, so share with the 
 | `ACCOUNTING_TO` | `accounting@adchem.pro` |
 | `SUPABASE_URL` | `https://ibcokjhjubltvoevpiik.supabase.co` |
 | `SUPABASE_ANON_KEY` | `sb_publishable_Km15YV0FG8eCl_bRCp2fHw_WbF1ucrF` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase → **Project Settings → API Keys** → the secret *service_role* key (on newer projects it is under the **Legacy API keys** tab) — type **Secret**. Used only by the daily expiry email (it reads every company); never sent to the browser |
+| `EXPIRY_SECRET` | any long random string (e.g. 40+ characters from a password manager) — type **Secret**. The daily job sends it; without it the job is refused |
+| `APP_URL` | optional — the app's address (e.g. `https://ops.adchem.pro`), linked at the foot of the expiry email; without it the email has no *Open AdChem Ops* link |
 
-Redeploy. Open the app as an admin → **Setup → Google connection → Check again**. Six lines — token, AR Command Center, calendars, Drive, Gmail, Orders Out — should each read *ok*. The Gmail line should say *can send as orders@adchem.pro*; the calendars line names each hub's calendar once they are set on **Setup → Delivery calendars**, and says which one the server can see but not write to. If one doesn't, the message says which share, scope or setting is missing.
+Redeploy. Open the app as an admin → **Setup → Google connection → Check again**. Eleven lines. The first ten — token, AR Command Center, calendars, Drive, Gmail, Orders Out, Customers Out, Import sheet, Documents bucket, Expiry email — should each read *ok* (the Sheets ones once their links are set on Setup). The Gmail line should say *can send as orders@adchem.pro*; the calendars line names each hub's calendar once they are set on **Setup → Delivery calendars**, and says which one the server can see but not write to. If one doesn't, the message says which share, scope or setting is missing. The last two check Supabase: *Documents bucket* (the private `dispatch-docs` bucket) and *Expiry email* (reads *ok — daily 06:00 Pacific* once the daily job is scheduled — see the README, *Expiry email*). The eleventh, *Last expiry email*, is information only: when the expiry email last went out for the company, or *never*.
 
 ## A second company
 

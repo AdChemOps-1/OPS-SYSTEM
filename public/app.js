@@ -207,7 +207,7 @@ function coMail(k,fallback){var d=(state.co&&state.co.data)||{}; return d[k]||fa
    ============================================================ */
 const state = {tab:"new",orders:[],hubs:[],settings:{},calendars:[],session:null,me:null,role:"",company:"",co:null,companies:[],memberships:[],canEdit:false,isOwner:false,busy:false,bolOrder:null,editing:null,lastLoad:null,users:[],invites:[],
   feed:{rows:[],byCust:{},loadedAt:null,error:null,loading:false},
-  form:{lines:[],feedAddr:"",feedUnconfirmed:false,suppress:false}};
+  form:{lines:[],feedAddr:"",feedUnconfirmed:false,suppress:false,warnings:[],warnFor:null}};
 const $ = function(id){return document.getElementById(id);};
 const esc = function(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});};
 function pad(n){return n<10?"0"+n:""+n;}
@@ -330,8 +330,10 @@ function onCustomerInput(keepFields){
   } else { sw.hidden=true; $("fSite").innerHTML=""; }
   if(!keepFields && !state.form.suppress) applySite();
   else { var r=currentSiteRow(); state.form.feedAddr=r?r.addr:""; state.form.feedUnconfirmed=r?r.unconfirmed:false; }
-  refreshAddr(); refreshCode();
+  refreshAddr(); refreshCode(); warnForForm();
 }
+/* the document warnings for the customer the form resolves to (documents.js) */
+function warnForForm(){ var n=$("fCustomer").value.trim(); renderWarnStrip(n?customerForSite(currentSiteRow()||{customer:n}):null); }
 function applySite(){
   var r=currentSiteRow();
   state.form.feedAddr=r?r.addr:""; state.form.feedUnconfirmed=r?r.unconfirmed:false;
@@ -532,11 +534,15 @@ function draftOrderFromForm(){
   var eff=effectiveCode(c.code,clear);
   var dep=$("fDep").checked?{item:$("fDepItem").value,amount:Number($("fDepAmt").value||0)}:null;
   var ed=state.editing?state.orders.find(function(o){return o.id===state.editing;}):null;
+  /* the warnings the strip showed for this customer; an edit whose strip hasn't drawn yet keeps the stored ones */
+  var cid=cu?cu.id:(keepLink?cur.customerId:null);
+  var warn=cid&&state.form.warnFor===cid?state.form.warnings:(cur&&cid&&cid===cur.customerId?cur.warningsShown||[]:[]);
   return {
     id:effectiveId(), bolNo:ed?ed.bolNo||null:null,
     customer:$("fCustomer").value.trim(),
     siteKey:r?r.siteKey:"", siteLabel:r?r.siteLabel:"",
-    customerId:cu?cu.id:(keepLink?cur.customerId:null), customerNo:cu?(cu.customer_id||""):(keepLink?cur.customerNo||"":""),
+    customerId:cid, customerNo:cu?(cu.customer_id||""):(keepLink?cur.customerNo||"":""),
+    warningsShown:warn.map(function(w){return Object.assign({},w);}),
     shipTo:$("fShipTo").value.trim(), feedAddr:state.form.feedAddr,
     addrState:a.k, addrChanged:(a.k==="edited"||a.k==="typed"||a.k==="confirmedNow"),
     contact:$("fContact").value.trim(), contactPhone:$("fContactPhone").value.trim(), copyTo:$("fCopyTo").value.trim(),
@@ -805,7 +811,7 @@ function fillStatic(){
 }
 function setTab(t){
   state.tab=t;
-  ["new","bol","open","today","setup","customers","users"].forEach(function(k){
+  ["new","bol","open","today","setup","customers","documents","mydocs","users"].forEach(function(k){
     $("tab-"+k).setAttribute("aria-selected",k===t?"true":"false");
     $("panel-"+k).hidden=(k!==t);
   });
@@ -816,11 +822,15 @@ function setTab(t){
   if(t==="setup") renderSetup();
   if(t==="users") renderUsers();
   if(t==="customers") renderCustomers();
+  if(t==="documents") renderDocsHub();
+  if(t==="mydocs") renderMyDocs();
 }
 function codeChip(o){
   var k=o.effCode||o.code;
   var label=!k?"—":(o.code==="CHECK"&&k!=="CHECK")?k+" (cleared)":k;
-  return '<span class="chip '+(k?CODES[k].cls:"k-none")+'" title="'+esc(k?CODES[k].text:"")+'">'+esc(label)+"</span>"+(o.deposit?' <span class="chip k-DEP">+DEP</span>':"");
+  var red=(o.warningsShown||[]).filter(function(w){return w.level==="red";});
+  return '<span class="chip '+(k?CODES[k].cls:"k-none")+'" title="'+esc(k?CODES[k].text:"")+'">'+esc(label)+"</span>"+(o.deposit?' <span class="chip k-DEP">+DEP</span>':"")+
+    (red.length?' <span class="chip st stop" title="'+esc("Shown when the order was taken: "+red.map(function(w){return w.text;}).join(" · "))+'">⚠ docs</span>':"");
 }
 
 /* ============================================================
@@ -974,7 +984,7 @@ function renderToday(){
               '<div class="qr-code">'+codeChip(o)+'<div class="qr-codetext">'+esc(k?CODES[k].text:"No code")+"</div>"+(due?'<div class="qr-amt mono">'+money(due)+"</div>":"")+"</div></div>"+
             (moneyLine?'<div class="qr-band'+(k==="COD"?" collect":" dep")+'"><span>'+moneyLine+'</span><span class="mono">'+money(due)+"</span></div>":"")+
             (fl.length?'<div class="qr-flags">'+fl.map(function(f){return '<span class="chip '+(f.k==="stop"?"k-H":"warn")+'" title="'+esc(f.s)+'">'+esc(f.t)+"</span>";}).join(" ")+"</div>":"")+
-            siteNotesHtml(site,hc)+
+            siteNotesHtml(site,hc,state.role==="driver"?o.id:null)+
             '<div class="qr-actions"><button class="btn sm" data-bol2="'+esc(o.id)+'">BOL</button>'+podButton(o)+
               '<button class="btn sm ghost" data-more="'+esc(o.id)+'">Details / Detalles</button></div>'+
             '<div class="qr-more" id="more-'+esc(o.id)+'" hidden>'+
@@ -1005,6 +1015,8 @@ function renderToday(){
     b.onclick=function(){var o=state.orders.find(function(x){return x.id===b.getAttribute("data-pod");}); if(o) openPod(o);};
   });
   host.querySelectorAll("[data-note]").forEach(function(b){ b.onclick=function(){ addDriverNote(b.getAttribute("data-note")); }; });
+  host.querySelectorAll("[data-capture]").forEach(function(b){
+    b.onclick=function(){ var o=state.orders.find(function(x){return x.id===b.getAttribute("data-capture");}); if(o) openCapture(o,siteOf(o)); }; });
   todayExtras(siteKeys);
   updatePodQueueNote();
 }
@@ -1027,7 +1039,7 @@ function updateCounts(){
    ============================================================ */
 function renderOrdersOutState(){ var el=$("ordersOutState"); if(!el) return; $("sOrdersOut").value=state.settings.ordersOutSheetId||""; el.innerHTML=state.settings.ordersOutSheetId?'<div class="banner good" style="margin:0"><div><b>Orders Out is set.</b><div>Every scheduled, numbered and delivered order is written to it as it changes; Rebuild rewrites the whole sheet from the database.</div></div></div>':'<div class="banner warn" style="margin:0"><div><b>No Orders Out sheet yet.</b><div>Paste the link to the company\'s <i>Dispatch Orders Out</i> sheet. Until then nothing is reported back to the AR Command Center.</div></div></div>'; }
 function renderCustomersOutState(){ var el=$("customersOutState"); if(!el) return; $("sCustomersOut").value=state.settings.customersOutSheetId||""; el.innerHTML=state.settings.customersOutSheetId?'<div class="banner good" style="margin:0"><div><b>Customers Out is set.</b><div>Each customer\'s rows are rewritten whenever the customer, a site or a contact is saved; Rebuild rewrites the whole tab from the database.</div></div></div>':'<div class="banner warn" style="margin:0"><div><b>No Customers Out sheet yet.</b><div>Paste the link to the company\'s <i>Customers Out</i> sheet. Until then the AR Command Center keeps reading its own directory.</div></div></div>'; }
-function renderSetup(){renderShareState();renderFeedState();renderOrdersOutState();renderCustomersOutState();renderImportCard();renderBolNumState();renderCalState();renderDriveState();renderHubEditor();renderSegTable();renderHealth();}
+function renderSetup(){renderShareState();renderFeedState();renderOrdersOutState();renderCustomersOutState();renderImportCard();renderBolNumState();renderCalState();renderDriveState();renderHubEditor();renderSegTable();renderHealth();renderWarnings();}
 function renderBolNumState(){
   var n=Number(state.settings.nextBol)||0, used=maxBolUsed();
   $("sNextBol").value=n||"";
@@ -1474,14 +1486,14 @@ async function downloadBol(){
 function clearBanner(k){var el=document.querySelector('[data-bkey="'+k+'"]'); if(el) el.remove();}
 function setConn(kind,text){$("connDot").className="dot"+(kind?" "+kind:"");$("connTxt").textContent=text;}
 function wire(){
-  ["new","bol","open","today","setup"].forEach(function(k){ $("tab-"+k).onclick=function(){ if(k==="bol") state.bolOrder=null; setTab(k); }; });
-  wireCustomers(); wireImport();
+  ["new","bol","open","today","setup","mydocs"].forEach(function(k){ $("tab-"+k).onclick=function(){ if(k==="bol") state.bolOrder=null; setTab(k); }; });
+  wireCustomers(); wireImport(); wireDocuments();
   $("fHub").onchange=function(){refreshId();renderLines();scheduleLive();};
   $("fDate").onchange=function(){refreshId();scheduleLive();};
   $("fIdOverride").oninput=function(){refreshId();scheduleLive();};
   $("btnIdAuto").onclick=function(){$("fIdOverride").value="";refreshId();scheduleLive();};
   $("fCustomer").oninput=function(){onCustomerInput(false);scheduleLive();};
-  $("fSite").onchange=function(){applySite();refreshAddr();refreshCode();scheduleLive();};
+  $("fSite").onchange=function(){applySite();refreshAddr();refreshCode();warnForForm();scheduleLive();};
   $("fShipTo").oninput=function(){refreshAddr();scheduleLive();};
   $("fAddrConfirm").onchange=function(){refreshAddr();scheduleLive();};
   ["fManualCode","fClearBy","fClearCode"].forEach(function(k){$(k).onchange=function(){refreshCode();scheduleLive();};});
@@ -1729,8 +1741,8 @@ function podIdb(){
   if(podDb) return Promise.resolve(podDb);
   return new Promise(function(resolve){
     try{
-      var r=indexedDB.open("adchem-pod",2);
-      r.onupgradeneeded=function(){ var db=r.result; if(!db.objectStoreNames.contains("q")) db.createObjectStore("q",{keyPath:"orderId"}); if(!db.objectStoreNames.contains("d")) db.createObjectStore("d",{keyPath:"id"}); };
+      var r=indexedDB.open("adchem-pod",3);   // q: BOL photos, d: deposit slips, c: document captures (documents.js)
+      r.onupgradeneeded=function(){ var db=r.result; if(!db.objectStoreNames.contains("q")) db.createObjectStore("q",{keyPath:"orderId"}); if(!db.objectStoreNames.contains("d")) db.createObjectStore("d",{keyPath:"id"}); if(!db.objectStoreNames.contains("c")) db.createObjectStore("c",{keyPath:"id"}); };
       r.onsuccess=function(){ podDb=r.result; resolve(podDb); };
       r.onerror=function(){ resolve(null); };
     }catch(e){ resolve(null); }
@@ -1755,13 +1767,13 @@ function podQueueRemove(id){
 }
 async function updatePodQueueNote(){
   var host=$("podQueueNote"); if(!host) return;
-  var q=await podQueueAll(), dq=await depQueueAll(), n=q.length+dq.length;
+  var q=await podQueueAll(), dq=await depQueueAll(), cq=await capQueueAll(), n=q.length+dq.length+cq.length;
   if(!n){ host.innerHTML=""; host.hidden=true; return; }
   host.hidden=false;
   host.innerHTML='<div class="banner warn" style="margin:0 0 12px"><div><b>'+n+' photo'+(n===1?"":"s")+' waiting to send</b>'+
-    q.map(function(x){return esc((x.order.bolNo?"BOL "+x.order.bolNo:x.order.id)+" · "+x.order.customer);}).concat(dq.map(function(x){return "Deposit slip"+(x.d&&x.d.amount?" · "+money(x.d.amount):"")+" · "+new Date(x.at).toLocaleDateString();})).join("<br>")+
+    q.map(function(x){return esc((x.order.bolNo?"BOL "+x.order.bolNo:x.order.id)+" · "+x.order.customer);}).concat(dq.map(function(x){return "Deposit slip"+(x.d&&x.d.amount?" · "+money(x.d.amount):"")+" · "+new Date(x.at).toLocaleDateString();})).concat(cq.map(function(x){return "Document photo · "+esc(x.label||x.orderId);})).join("<br>")+
     '<div style="margin-top:6px"><button class="btn sm primary" id="podFlush">Send waiting photos</button></div></div></div>';
-  $("podFlush").onclick=async function(){ await podFlush(); await depFlush(); };
+  $("podFlush").onclick=async function(){ await podFlush(); await depFlush(); if(typeof capFlush==="function") await capFlush(); };
 }
 async function podFlush(){
   var q=await podQueueAll();
@@ -1868,6 +1880,25 @@ function depQueueRemove(id){
   if(!id) return;
   podIdb().then(function(db){ if(!db||!db.objectStoreNames.contains("d")) return; try{ db.transaction("d","readwrite").objectStore("d").delete(id); }catch(e){} });
 }
+// document captures from a stop (documents.js capSend / capQueue / capFlush), keyed by the document id the phone made
+function capQueueAll(){
+  return podIdb().then(function(db){
+    if(!db||!db.objectStoreNames.contains("c")) return [];
+    return new Promise(function(res){ try{ var t=db.transaction("c","readonly"), rq=t.objectStore("c").getAll(); rq.onsuccess=function(){res(rq.result||[]);}; rq.onerror=function(){res([]);}; }catch(e){res([]);} });
+  });
+}
+function capQueuePut(x){
+  return podIdb().then(function(db){
+    if(!db||!db.objectStoreNames.contains("c")) return false;
+    return new Promise(function(res){ try{ var t=db.transaction("c","readwrite"); t.objectStore("c").put(x); t.oncomplete=function(){res(true);}; t.onerror=function(){res(false);}; t.onabort=function(){res(false);}; }catch(e){res(false);} });
+  });
+}
+function capQueueRemove(id){
+  return podIdb().then(function(db){
+    if(!db||!db.objectStoreNames.contains("c")) return;
+    return new Promise(function(res){ try{ var t=db.transaction("c","readwrite"); t.objectStore("c").delete(id); t.oncomplete=res; t.onerror=res; t.onabort=res; }catch(e){res();} });
+  });
+}
 async function depFlush(){
   var q=await depQueueAll();
   for(var i=0;i<q.length;i++){
@@ -1956,6 +1987,7 @@ const DB={
   },
   async setPermissions(userId,perms){ return sbErr(await supa.rpc("dispatch_set_permissions",{p_user:userId,p_company:state.company,p_perms:perms})); },
   async setSuperAdmin(userId,on){ return sbErr(await supa.rpc("dispatch_set_super_admin",{p_user:userId,p_company:state.company,p_on:!!on})); },
+  async setWarnings(warnDays,warnings,recipients){ return sbErr(await supa.rpc("dispatch_set_warnings",{p_company:state.company,p_warn_days:warnDays,p_warnings:warnings,p_recipients:recipients})); },
   async invites(){ return sbErr(await supa.from("dispatch_invites").select("email,name,role,hub,invited_at,accepted_at,revoked_at").eq("company",state.company).order("invited_at",{ascending:false})); },
   async grant(email,name,role,hub){ return sbErr(await supa.rpc("dispatch_grant",{p_email:email,p_name:name,p_role:role,p_hub:hub,p_company:state.company})); },
   async revoke(email){ return sbErr(await supa.rpc("dispatch_revoke",{p_email:email,p_company:state.company})); },
@@ -1977,7 +2009,8 @@ async function saveOrder(o){
   catch(e){ banner("bad","Order not saved to the shared database","<div>"+esc(e.message)+" — it is only on this screen. Check your connection and try again.</div>",{key:"save"}); throw e; }
 }
 async function saveHubs(){ try{ await DB.saveHubs(); }catch(e){ banner("bad","Hubs not saved","<div>"+esc(e.message)+"</div>"); } }
-const SERVER_COUNTERS=["nextCustomerNumber","nextBol"];
+// plus the document warning keys: written only through dispatch_set_warnings (super admin), so a save carries the database's values
+const SERVER_COUNTERS=["nextCustomerNumber","nextBol","warnDays","warnings","expiryEmailRecipients"];
 async function saveSettings(own){ try{ await DB.saveSettings(own); }catch(e){ banner("bad","Settings not saved","<div>"+esc(e.message)+"</div>"); } }
 
 const API={
@@ -2107,9 +2140,11 @@ function readSegTable(){
    ============================================================ */
 // manage_people is still accepted by dispatch_set_permissions (and kept when another switch changes) but has no switch: nothing
 // checks it yet, so offering it would grant nothing
-const MEMBER_PERMS=[["manage_customers","Manage customers"],["approve_driver_notes","Approve driver notes"],["run_imports","Run imports"]];
+const MEMBER_PERMS=[["manage_customers","Manage customers"],["approve_driver_notes","Approve driver notes"],["run_imports","Run imports"],
+  ["view_documents","View documents"],["manage_documents","Manage documents"]];
 async function renderUsers(){
   if(!state.isOwner) return;
+  parkDocForm();   // the document form may sit in a member's Documents section, which is about to be redrawn
   var ph=$("peopleHead"); if(ph) ph.textContent="People at "+coName();
   renderCompanies();
   $("uHub").innerHTML='<option value="">All hubs</option>'+state.hubs.map(function(h){return '<option value="'+esc(h.code)+'">'+esc(h.code)+" — "+esc(h.name)+"</option>";}).join("");
@@ -2129,7 +2164,9 @@ async function renderUsers(){
         '<div><span class="chip st'+(u.role==="admin"?" done":"")+'">'+esc(u.role)+'</span> '+(u.hub?'<span class="chip k-DEP">'+esc(u.hub)+'</span>':'<span class="hint">all hubs</span>')+'</div>'+
         '<div>'+(u.active?'<span class="chip k-D">active</span>':'<span class="chip warn">removed</span>')+'</div><div></div>'+
         '<div style="display:flex;gap:6px;justify-content:flex-end">'+(u.active&&u.user_id!==state.session.user.id?'<button class="btn sm danger" data-revoke="'+esc(u.email)+'">Remove</button>':'')+
-        (!u.active?'<button class="btn sm" data-regrant="'+esc(u.email)+'" data-role="'+esc(u.role)+'" data-hub="'+esc(u.hub)+'">Restore</button>':'')+'</div>'+permRow(u)+'</div>';
+        (!u.active?'<button class="btn sm" data-regrant="'+esc(u.email)+'" data-role="'+esc(u.role)+'" data-hub="'+esc(u.hub)+'">Restore</button>':'')+'</div>'+permRow(u)+
+        // each member's documents (documents.js), loaded when opened
+        (canViewDocs()?'<details class="pdocs" data-pdocs="'+esc(u.user_id)+'"><summary>Documents</summary>'+personDocsHtml(u.user_id)+'</details>':'')+'</div>';
     }).join("");
     var prow=pend.map(function(i){
       return '<div class="urow" style="background:var(--amber-soft)"><div><b>'+esc(i.name||i.email)+'</b><div class="hint">'+esc(i.email)+'</div></div>'+
@@ -2192,7 +2229,9 @@ function applyAccess(){
   $("tab-users").hidden=!state.isOwner;
   $("healthCard").hidden=!state.isOwner;
   ["tab-new","tab-bol","tab-setup","tab-customers"].forEach(function(k){ $(k).hidden=ro; });
-  if(ro){ $("btnSubmit").textContent="Drivers cannot create orders"; if(state.tab!=="today"&&state.tab!=="open") setTab("today"); }
+  $("tab-documents").hidden=!canViewDocs(); if(state.tab==="documents"&&!canViewDocs()) state.tab=ro?"today":"new";
+  var drv=state.role==="driver"; $("tab-mydocs").hidden=!drv; if(state.tab==="mydocs"&&!drv) state.tab=ro?"today":"new";   // a driver's own CDL and medical card
+  if(ro){ $("btnSubmit").textContent="Drivers cannot create orders"; if(state.tab!=="today"&&state.tab!=="open"&&state.tab!=="mydocs") setTab("today"); }
 }
 function showLogin(msg,kind){
   $("app").hidden=true; $("login").hidden=false;
@@ -2236,7 +2275,7 @@ async function renderHealth(){
     if(!h.googleConfigured){ host.innerHTML='<div class="banner warn" style="margin:0"><div><b>Google isn\'t set up on the server yet</b><div>Add the service account (GOOGLE_SA_JSON) and the Workspace user it acts as (GOOGLE_IMPERSONATE) in Cloudflare Pages → Settings → Variables and Secrets, then redeploy. See the README.</div></div></div>'; return; }
     var c=h.checks||{}, ok=function(v){return typeof v==="string"&&(v==="ok"||v.indexOf("ok ")===0||v.indexOf("ok —")===0);};
     host.innerHTML='<div class="banner '+(Object.values(c).every(ok)?"good":"warn")+'" style="margin:0"><div><b>Acting as '+esc(h.impersonate||"(no user set)")+' · mail goes out as '+esc(h.mailFrom)+' · BOLs to '+esc(h.ordersTo)+' · deposit slips to '+esc(h.accountingTo)+'</b>'+
-      '<div>Token: '+esc(c.token||"—")+'<br>AR Command Center: '+esc(c.sheet||"—")+'<br>Calendars: '+esc(c.calendar||"—")+'<br>Drive: '+esc(c.drive||"—")+'<br>Gmail: '+esc(c.gmail||"—")+'<br>Orders Out: '+esc(c.ordersOut||"—")+'<br>Customers Out: '+esc(c.customersOut||"—")+'<br>Import sheet: '+esc(c.importSheet||"—")+'</div></div></div>';
+      '<div>Token: '+esc(c.token||"—")+'<br>AR Command Center: '+esc(c.sheet||"—")+'<br>Calendars: '+esc(c.calendar||"—")+'<br>Drive: '+esc(c.drive||"—")+'<br>Gmail: '+esc(c.gmail||"—")+'<br>Orders Out: '+esc(c.ordersOut||"—")+'<br>Customers Out: '+esc(c.customersOut||"—")+'<br>Import sheet: '+esc(c.importSheet||"—")+'<br>Documents bucket: '+esc(c.docsBucket||"—")+'<br>Expiry email: '+esc(c.expiryCron||"—")+'<br>Last expiry email: '+esc(h.lastExpiryEmail?fmtWhen(h.lastExpiryEmail):"never")+'</div></div></div>';
   }catch(e){ host.innerHTML='<div class="banner bad" style="margin:0"><div><b>Server check failed</b><div>'+esc(e.message)+'</div></div></div>'; }
 }
 function wireAuth(){
@@ -2278,7 +2317,7 @@ async function loadCompanyData(){
   if(state.me.role==="driver"&&state.me.hub) lsSet("adchem_myhub",state.me.hub);
   await loadSitesFromDb();   // drivers too: the policy limits them to their hub's sites, which Today's site notes read
   if(state.canEdit) await loadCalendars();
-  closeCustomer(); state.customers=[];
+  closeCustomer(); state.customers=[]; resetDocs();
   if(state.canEdit){ try{ state.customers=await CDB.customers(); }catch(e){ banner("bad","Couldn't load customers","<div>"+esc(e.message)+"</div>"); } }
   fillAccounts();
   setConn("ok","Connected");

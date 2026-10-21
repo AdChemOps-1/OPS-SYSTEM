@@ -43,7 +43,7 @@ function deliveryOf(site) {
 }
 
 // The sheet rows for one customer (text cells as strings, the four date cells as serial numbers or ""). `c.parent_name` is the parent account's name (the writer looks it up); `status` is the
-// customer's dispatch_customer_status row (license/PSA are 'missing' until Stage 2).
+// customer's dispatch_customer_status row (license_status and psa_status are 'missing' when there is no document; license #, entity status and the two dates are blank).
 export function rowsFor(c, sites, contacts, status, tz, now) {
   const st = status || {};
   const live = (contacts || []).filter(x => x.active !== false);
@@ -67,7 +67,7 @@ export function rowsFor(c, sites, contacts, status, tz, now) {
       ...deliveryOf(site), name(recv), s(recv && recv.phone),
       name(billing), s(billing && billing.phone), s(billing && billing.email), cc,
       name(owner), s(owner && owner.phone), s(owner && owner.email),
-      s(st.license_status) || "missing", s(st.license_number), dateSerial(st.license_expires), s(st.entity_status) || "missing",
+      s(st.license_status) || "missing", s(st.license_number), dateSerial(st.license_expires), s(st.entity_status),
       s(st.psa_status) || "missing", dateSerial(st.psa_effective),
       `${Number(st.profile_complete) || 0} of ${MUST}`, dateSerial(c.last_verified), stamp,
     ];

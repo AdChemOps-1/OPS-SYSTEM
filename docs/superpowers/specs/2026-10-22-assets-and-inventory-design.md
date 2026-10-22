@@ -128,7 +128,7 @@ Two switches: *View assets*, *Manage assets*.
 
 - Vision down or not enabled: `/read` returns `{candidates:[], error}`; the sheet shows "Couldn't read it — type the serial" and still attaches the photo.
 - Duplicate serial on create: the server treats it as "known" and continues with the movement.
-- An event for an asset the driver may not touch: 403 with the serial, the whole batch rejected before any insert.
+- A malformed batch (bad id, unknown type) is refused whole, before any insert, naming the first bad event. An event the caller may not record (the guard's "not your stop", a policy refusal) comes back as `rejected` with the reason for that event only; the rest of the batch still applies, and the sheet shows which serials failed. Per-event results keep offline retries idempotent.
 - A `filled` event for a container type with no `fill_lb`: the event is written, the stock movement is skipped and the response carries a warning.
 - Offline: same contract as captures — nothing is lost, queue note on Today, retries idempotent.
 

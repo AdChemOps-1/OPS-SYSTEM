@@ -50,6 +50,7 @@
       <button class="tab" role="tab" id="tab-setup">Setup <span class="cnt warn" id="cntSetup">0</span></button>
       <button class="tab" role="tab" id="tab-customers" hidden>Customers</button>
       <button class="tab" role="tab" id="tab-documents" hidden>Documents</button>
+      <button class="tab" role="tab" id="tab-assets" hidden>Assets</button>
       <button class="tab" role="tab" id="tab-mydocs" hidden>My documents</button>
       <button class="tab" role="tab" id="tab-users" hidden>People</button>
     </div>
@@ -291,6 +292,33 @@
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px"><button class="btn primary" id="btnSaveWarnings">Save warnings</button><button class="btn" id="btnSendExpiry" type="button">Send expiry email now</button></div>
       <p class="hint" style="margin-top:8px">The expiry email also goes out by itself every morning (06:00 Pacific) to the addresses above, once it is scheduled — see the README.</p>
+    </div>
+    <div class="card pad sec" id="vendorsCard" hidden>
+      <h2 class="sec-h">Vendors</h2>
+      <p class="hint">Who fills, rents or supplies containers. Needs View assets to see, Manage assets to change.</p>
+      <div id="vendorList"></div>
+      <div id="vendorForm" class="grid two" style="margin-top:11px" hidden>
+        <label class="f">Name<input id="vf_name" autocomplete="off"></label>
+        <div class="f">Roles<div id="vf_roles" class="perm-row"><label class="perm-chk"><input type="checkbox" value="fill"> fill</label><label class="perm-chk"><input type="checkbox" value="rent"> rent</label><label class="perm-chk"><input type="checkbox" value="supply"> supply</label></div></div>
+        <label class="f">Contact<input id="vf_contact" autocomplete="off"></label>
+        <label class="f">Phone<input id="vf_phone" type="tel" autocomplete="off"></label>
+        <label class="f">Email<input id="vf_email" type="email" autocomplete="off"></label>
+        <label class="f spanall">Notes<textarea id="vf_notes" rows="2"></textarea></label>
+        <div class="spanall" style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" id="btnSaveVendor" type="button">Save vendor</button><button class="btn" id="btnCancelVendor" type="button">Cancel</button></div>
+      </div>
+      <div style="margin-top:11px"><button class="btn" id="btnAddVendor" type="button">Add vendor</button></div>
+      <details id="typesDisc" style="margin-top:14px">
+        <summary><b>Container types</b></summary>
+        <div id="typeList" style="margin-top:8px"></div>
+        <div id="typeForm" class="grid two" style="margin-top:11px" hidden>
+          <label class="f">Kind<select id="tf_kind"><option value="cylinder">cylinder</option><option value="dewar">dewar</option><option value="pig">pig</option><option value="tank">tank</option></select></label>
+          <label class="f">Product<select id="tf_product"></select></label>
+          <label class="f">Size<input id="tf_size" autocomplete="off" placeholder="50lb Cylinder"><span class="hint">Exactly as on the order form.</span></label>
+          <label class="f">Fill (lb)<input id="tf_fill" type="number" min="0" step="any" inputmode="decimal"><span class="hint">Leave empty if unknown.</span></label>
+          <div class="spanall" style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" id="btnSaveType" type="button">Save type</button><button class="btn" id="btnCancelType" type="button">Cancel</button></div>
+        </div>
+        <div style="margin-top:11px"><button class="btn" id="btnAddType" type="button">Add container type</button></div>
+      </details>
     </div>
     <div class="card pad sec">
       <h2 class="sec-h">Customer feed — AR Command Center</h2>
@@ -592,6 +620,13 @@
     </div>
   </section>
 
+  <!-- ================= ASSETS ================= -->
+  <section id="panel-assets" hidden>
+    <div id="aRegister"></div>
+    <div id="aCounts"></div>
+    <div id="aActions"></div>
+  </section>
+
   <!-- ================= DOCUMENTS ================= -->
   <section id="panel-documents" hidden>
     <div class="card pad sec">
@@ -740,5 +775,6 @@
 <script src="/customers.js"></script>
 <script src="/import.js"></script>
 <script src="/documents.js"></script>
+<script src="/assets.js"></script>
 </body>
 </html>

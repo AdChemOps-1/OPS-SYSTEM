@@ -811,7 +811,7 @@ function fillStatic(){
 }
 function setTab(t){
   state.tab=t;
-  ["new","bol","open","today","setup","customers","documents","mydocs","users"].forEach(function(k){
+  ["new","bol","open","today","setup","customers","documents","assets","mydocs","users"].forEach(function(k){
     $("tab-"+k).setAttribute("aria-selected",k===t?"true":"false");
     $("panel-"+k).hidden=(k!==t);
   });
@@ -823,6 +823,7 @@ function setTab(t){
   if(t==="users") renderUsers();
   if(t==="customers") renderCustomers();
   if(t==="documents") renderDocsHub();
+  if(t==="assets") renderAssets();
   if(t==="mydocs") renderMyDocs();
 }
 function codeChip(o){
@@ -1039,7 +1040,7 @@ function updateCounts(){
    ============================================================ */
 function renderOrdersOutState(){ var el=$("ordersOutState"); if(!el) return; $("sOrdersOut").value=state.settings.ordersOutSheetId||""; el.innerHTML=state.settings.ordersOutSheetId?'<div class="banner good" style="margin:0"><div><b>Orders Out is set.</b><div>Every scheduled, numbered and delivered order is written to it as it changes; Rebuild rewrites the whole sheet from the database.</div></div></div>':'<div class="banner warn" style="margin:0"><div><b>No Orders Out sheet yet.</b><div>Paste the link to the company\'s <i>Dispatch Orders Out</i> sheet. Until then nothing is reported back to the AR Command Center.</div></div></div>'; }
 function renderCustomersOutState(){ var el=$("customersOutState"); if(!el) return; $("sCustomersOut").value=state.settings.customersOutSheetId||""; el.innerHTML=state.settings.customersOutSheetId?'<div class="banner good" style="margin:0"><div><b>Customers Out is set.</b><div>Each customer\'s rows are rewritten whenever the customer, a site or a contact is saved; Rebuild rewrites the whole tab from the database.</div></div></div>':'<div class="banner warn" style="margin:0"><div><b>No Customers Out sheet yet.</b><div>Paste the link to the company\'s <i>Customers Out</i> sheet. Until then the AR Command Center keeps reading its own directory.</div></div></div>'; }
-function renderSetup(){renderShareState();renderFeedState();renderOrdersOutState();renderCustomersOutState();renderImportCard();renderBolNumState();renderCalState();renderDriveState();renderHubEditor();renderSegTable();renderHealth();renderWarnings();}
+function renderSetup(){renderShareState();renderFeedState();renderOrdersOutState();renderCustomersOutState();renderImportCard();renderBolNumState();renderCalState();renderDriveState();renderHubEditor();renderSegTable();renderHealth();renderWarnings();renderVendors();}
 function renderBolNumState(){
   var n=Number(state.settings.nextBol)||0, used=maxBolUsed();
   $("sNextBol").value=n||"";
@@ -1486,7 +1487,7 @@ async function downloadBol(){
 function clearBanner(k){var el=document.querySelector('[data-bkey="'+k+'"]'); if(el) el.remove();}
 function setConn(kind,text){$("connDot").className="dot"+(kind?" "+kind:"");$("connTxt").textContent=text;}
 function wire(){
-  ["new","bol","open","today","setup","mydocs"].forEach(function(k){ $("tab-"+k).onclick=function(){ if(k==="bol") state.bolOrder=null; setTab(k); }; });
+  ["new","bol","open","today","setup","assets","mydocs"].forEach(function(k){ $("tab-"+k).onclick=function(){ if(k==="bol") state.bolOrder=null; setTab(k); }; });
   wireCustomers(); wireImport(); wireDocuments();
   $("fHub").onchange=function(){refreshId();renderLines();scheduleLive();};
   $("fDate").onchange=function(){refreshId();scheduleLive();};
@@ -2141,7 +2142,8 @@ function readSegTable(){
 // manage_people is still accepted by dispatch_set_permissions (and kept when another switch changes) but has no switch: nothing
 // checks it yet, so offering it would grant nothing
 const MEMBER_PERMS=[["manage_customers","Manage customers"],["approve_driver_notes","Approve driver notes"],["run_imports","Run imports"],
-  ["view_documents","View documents"],["manage_documents","Manage documents"]];
+  ["view_documents","View documents"],["manage_documents","Manage documents"],
+  ["view_assets","View assets"],["manage_assets","Manage assets"]];
 async function renderUsers(){
   if(!state.isOwner) return;
   parkDocForm();   // the document form may sit in a member's Documents section, which is about to be redrawn
@@ -2230,6 +2232,7 @@ function applyAccess(){
   $("healthCard").hidden=!state.isOwner;
   ["tab-new","tab-bol","tab-setup","tab-customers"].forEach(function(k){ $(k).hidden=ro; });
   $("tab-documents").hidden=!canViewDocs(); if(state.tab==="documents"&&!canViewDocs()) state.tab=ro?"today":"new";
+  $("tab-assets").hidden=ro||!canViewAssets(); if(state.tab==="assets"&&$("tab-assets").hidden) state.tab=ro?"today":"new";
   var drv=state.role==="driver"; $("tab-mydocs").hidden=!drv; if(state.tab==="mydocs"&&!drv) state.tab=ro?"today":"new";   // a driver's own CDL and medical card
   if(ro){ $("btnSubmit").textContent="Drivers cannot create orders"; if(state.tab!=="today"&&state.tab!=="open"&&state.tab!=="mydocs") setTab("today"); }
 }
@@ -2318,7 +2321,7 @@ async function loadCompanyData(){
   if(state.me.role==="driver"&&state.me.hub) lsSet("adchem_myhub",state.me.hub);
   await loadSitesFromDb();   // drivers too: the policy limits them to their hub's sites, which Today's site notes read
   if(state.canEdit) await loadCalendars();
-  closeCustomer(); state.customers=[]; resetDocs();
+  closeCustomer(); state.customers=[]; resetDocs(); resetAssets();
   if(state.canEdit){ try{ state.customers=await CDB.customers(); }catch(e){ banner("bad","Couldn't load customers","<div>"+esc(e.message)+"</div>"); } }
   fillAccounts();
   setConn("ok","Connected");

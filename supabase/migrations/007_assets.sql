@@ -69,10 +69,12 @@ create table if not exists public.dispatch_asset_events (
   order_id text, bol_number int, site_key text,
   photo_path text, gps jsonb, ocr jsonb,
   note text not null default '',
+  applied boolean default true,                              -- false: recorded late (older than the asset's last sighting), so it did not move it
   created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
   created_by uuid default auth.uid(), updated_by uuid,
   constraint dispatch_asset_events_from_kind_chk check (from_kind in ('hub','site','vendor')),
   constraint dispatch_asset_events_to_kind_chk check (to_kind in ('hub','site','vendor')));
+alter table public.dispatch_asset_events add column if not exists applied boolean default true;   -- for a database that ran an earlier draft
 create index if not exists dispatch_asset_events_asset_idx on public.dispatch_asset_events (asset_id, occurred_at desc);
 create index if not exists dispatch_asset_events_recorder_idx on public.dispatch_asset_events (company, recorded_by, created_at desc);
 
@@ -193,8 +195,9 @@ begin
 end $fn$;
 -- An event belongs to an asset of its company; each movement type names where it goes; occurred_at is the phone's time when within
 -- the last 30 days and not after now, else now; recorded_by is always the caller. A driver (without manage_assets) records only the
--- five driver types, and the place an event goes to (to) is their hub or one of their stop sites. from is never checked for a
--- driver: it records where the register last had the asset (a sighted correction can carry another customer's site).
+-- five driver types, and every driver event names the place it goes to (to), their hub or one of their stop sites. from is never
+-- checked for a driver: it records where the register last had the asset (a sighted correction can carry another customer's site).
+-- applied is the trigger's to set (dispatch_asset_apply_event marks a late event false), never the caller's.
 create or replace function public.dispatch_asset_events_guard() returns trigger language plpgsql security definer set search_path = public as $fn$
 declare c text; drv boolean := coalesce(public.dispatch_role_in(new.company) = 'driver' and not public.dispatch_perm_in(new.company, 'manage_assets'), false);
 begin
@@ -208,20 +211,23 @@ begin
   if new.event_type = 'moved' and new.to_kind is null then raise exception 'moved needs a place to go to'; end if;
   if new.photo_path is not null and new.photo_path not like new.company || '/asset/%' then raise exception 'an asset photo must be filed under asset/'; end if;
   new.occurred_at := case when new.occurred_at >= now() - interval '30 days' then least(new.occurred_at, now()) else now() end;
-  new.recorded_by := auth.uid(); new.created_by := auth.uid();
+  new.recorded_by := auth.uid(); new.created_by := auth.uid(); new.applied := true;
   if drv then
     if new.event_type not in ('delivered','collected','sighted','loaded','created') then raise exception 'a driver cannot record %', new.event_type; end if;
-    if new.to_kind is not null and not public.dispatch_driver_stop_ok(new.company, new.to_kind, new.to_id) then
+    if new.to_kind is null or not public.dispatch_driver_stop_ok(new.company, new.to_kind, new.to_id) then
       raise exception 'not your stop'; end if;
   end if;
   return new;
 end $fn$;
 -- After an event: the asset's place, fill and last-seen follow it (through the apply flag); owner never changes here. A hub fill of
 -- a type with a nominal weight draws that many pounds of the product down at the hub; otherwise no stock row (the server warns).
--- An event older than the asset's last sighting (an offline queue sent late) stays as history but does not move the asset or
--- change its fill — the newer event already describes it; a corrected event always applies. A late fill still draws the bulk down.
+-- An event older than the asset's last sighting (an offline queue sent late) stays as history, marked applied = false, but does
+-- not move the asset or change its fill — the newer event already describes it; a corrected event always applies. A late fill
+-- still draws the bulk down. A created event sets the fill it names (location: its to, when given). A corrected event that names
+-- no place and no fill (dispatch_asset_correct's owner/condition correction) is not a sighting: last-seen stays, so a driver's
+-- earlier offline move that arrives after it still applies.
 create or replace function public.dispatch_asset_apply_event() returns trigger language plpgsql security definer set search_path = public as $fn$
-declare a public.dispatch_assets%rowtype; lb numeric; prod text; lk text; li text; fs text;
+declare a public.dispatch_assets%rowtype; lb numeric; prod text; lk text; li text; fs text; seen boolean := true;
 begin
   select * into a from public.dispatch_assets where id = new.asset_id for update;
   lk := a.location_kind; li := a.location_id; fs := a.fill_state;
@@ -242,13 +248,20 @@ begin
     when 'moved' then lk := new.to_kind; li := new.to_id;
     when 'sighted', 'corrected' then
       if new.to_kind is not null then lk := new.to_kind; li := new.to_id; end if;
-      if new.event_type = 'corrected' then fs := coalesce(new.fill_after, fs); end if;
-    else null;   -- loaded, created: last seen only
+      if new.event_type = 'corrected' then fs := coalesce(new.fill_after, fs); seen := new.to_kind is not null or new.fill_after is not null; end if;
+    when 'created' then
+      if new.to_kind is not null then lk := new.to_kind; li := new.to_id; end if;
+      fs := coalesce(new.fill_after, fs);
+    else null;   -- loaded: last seen only
   end case;
-  if new.event_type <> 'corrected' and new.occurred_at < a.last_seen_at then return null; end if;
+  if new.event_type <> 'corrected' and new.occurred_at < a.last_seen_at then
+    update public.dispatch_asset_events set applied = false where id = new.id;
+    return null;
+  end if;
   perform set_config('dispatch.apply_event', '1', true);
   update public.dispatch_assets set location_kind = lk, location_id = li, fill_state = fs,
-         last_seen_at = new.occurred_at, last_seen_by = new.recorded_by, updated_at = now(), updated_by = new.recorded_by
+         last_seen_at = case when seen then new.occurred_at else last_seen_at end,
+         last_seen_by = case when seen then new.recorded_by else last_seen_by end, updated_at = now(), updated_by = new.recorded_by
    where id = a.id;
   perform set_config('dispatch.apply_event', '', true);
   return null;
@@ -451,5 +464,5 @@ do $$ begin
 end $$;
 
 -- Applied: pending — verified 10/23/26 on project adchem-hours as one rolled-back batch through the Supabase MCP (begin; 007; 007;
--- supabase/tests/007_policies.sql; rollback), which ended with "VERIFY-OK 007: types=17 driver_sees=4 events=12 stock_rows=1
--- coordinator_count_rows=9" (fix round 2); nothing persisted. apply_migration only on the user's word.
+-- supabase/tests/007_policies.sql; rollback), which ended with "VERIFY-OK 007: types=17 driver_sees=4 events=16 stock_rows=1
+-- coordinator_count_rows=9" (final fix wave: applied, created fill, driver to, corrections not a sighting); nothing persisted. apply_migration only on the user's word.

@@ -42,7 +42,18 @@ const ADB={
   async events(assetId){ return sbErr(await supa.from("dispatch_asset_events").select("*").eq("company",state.company).eq("asset_id",assetId).order("occurred_at",{ascending:false}))||[]; },
   async counts(){ return await API.post("/api/assets",{action:"counts"}); },
   async correct(id,fields){ return sbErr(await supa.rpc("dispatch_asset_correct",{p_id:id,p_fields:fields})); },
-  async sendEvents(events){ return await API.post("/api/assets",{action:"events",events:events}); },
+  // in chunks of 10, in order, each awaited (a Pages Function has a cap on subrequests, and each event costs several); the results
+  // come back as one list in the events' order. A chunk's HTTP failure rejects the whole call — the caller keeps every event and
+  // sends them again with the same ids, so the chunks already in answer duplicate.
+  async sendEvents(events){
+    var out=[];
+    for(var i=0;i<events.length;i+=ADB.CHUNK){
+      var part=events.slice(i,i+ADB.CHUNK), r=await API.post("/api/assets",{action:"events",events:part}), res=(r&&r.results)||[];
+      for(var j=0;j<part.length;j++) out.push(res[j]||null);   // a short answer stays lined up (the caller reads null as no answer)
+    }
+    return {ok:true,results:out};
+  },
+  CHUNK:10,
   async read(eventId,kind,photoPath){ return await API.post("/api/assets",{action:"read",eventId:eventId,kind:kind,photoPath:photoPath}); },
   // /api/docs signs a document row's file by id and has no path form, and asset photos have no document row, so the photo
   // (<company>/asset/<event id>.jpg, readable by the company's members) is signed straight from storage for 5 minutes

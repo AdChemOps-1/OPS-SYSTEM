@@ -72,7 +72,7 @@ Two switches on **People** control it: **View assets** (read the register, a con
 
 - **Driver flow** — on Today a stop with gas on the order shows **Cylinders / Cilindros**. The sheet lists what to deliver and what is at the site to collect; the driver photographs each tag (or types the serial) and the server reads the serial from the photo (Google Cloud Vision, see GOOGLE-SETUP.md B2) for the driver to confirm. With no signal the events and photos are kept on the phone and **Send waiting photos** on Today sends them later with the times they happened; a resend of the same event is recorded once.
 - **Hub actions** (Manage assets, on the Assets tab) — **Fill**, **To vendor**, **From vendor**, **Move** and **Add assets**: type or scan the serials, then confirm; each serial is recorded on its own. Fill draws the product down by the type's fill weight.
-- **Counts** — containers by type, fill state and place, and the product on hand, so the hubs can see what is full, empty or out.
+- **Counts** — containers by type and fill state at each place (each hub, at customers, at vendors) and by condition, so the hubs can see what is full, empty or out. Product on hand (bulk pounds and supplies) is Stage 3B.
 - **Customer → Cylinders** tab — the containers at each of the customer's sites with "since" dates; the site card on the Sites tab says "N containers here since <date>". Needs View assets.
 - **Setup → Vendors** — who fills, rents or supplies containers; its **Container types** disclosure holds the sizes and products that serials are filed under.
 - **Serials** are normalised before they are stored or matched: spaces and dashes are removed and letters are upper-cased, so `ab-12 34` and `AB1234` are the same container.

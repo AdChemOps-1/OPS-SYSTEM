@@ -119,8 +119,8 @@ function fakeRpc(name,b,T){
   if(name==='dispatch_asset_correct'){ const a=(T.dispatch_assets||[]).find(x=>x.id===b.p_id); if(!a||!hasPerm(memberOf(T,a.company),'manage_assets')) return {code:403,body:{message:'not allowed'}};
     const f=b.p_fields||{}, now=vDate().toISOString(); ['owner_kind','owner_id','condition','notes'].forEach(k=>{ if(f[k]!==undefined) a[k]=f[k]; });
     a.updated_at=now; a.updated_by='u1';
-    T.dispatch_asset_events.push({id:uuid(),company:a.company,asset_id:a.id,event_type:'corrected',from_kind:null,from_id:null,to_kind:null,to_id:null,fill_after:null,occurred_at:now,recorded_by:'u1',order_id:null,bol_number:null,site_key:null,photo_path:null,gps:null,ocr:null,note:'corrected: '+Object.keys(f).join(', '),created_at:now});
-    return {code:200,body:a}; }
+    T.dispatch_asset_events.push({id:uuid(),company:a.company,asset_id:a.id,event_type:'corrected',from_kind:null,from_id:null,to_kind:null,to_id:null,fill_after:null,occurred_at:now,recorded_by:'u1',order_id:null,bol_number:null,site_key:null,photo_path:null,gps:null,ocr:null,note:'corrected: '+Object.keys(f).join(', '),applied:true,created_at:now});
+    return {code:200,body:a}; }   // as 007: a correction with no place and no fill leaves last-seen alone
   // migration 007: any member of the company, place / fill / owner / type only, the serial normalised as stored
   if(name==='dispatch_asset_by_serial'){ if(!memberOf(T,b.p_company)) return {code:400,body:{code:'P0001',message:'not allowed'}};
     const s=normSerial(b.p_serial); return {code:200,body:(T.dispatch_assets||[]).filter(a=>a.company===b.p_company&&a.serial===s)
@@ -248,18 +248,23 @@ function fakeAssets(T,b){
       if((T.dispatch_asset_events||[]).some(x=>x.id===e.id)){ const old=T.dispatch_asset_events.find(x=>x.id===e.id); res.status='duplicate'; res.assetId=old.asset_id; results.push(res); continue; }
       if(!driver&&!hasPerm(m,'manage_assets')){ reject('not allowed'); continue; }
       if(driver){ if(!DRIVER_TYPES.includes(e.type)){ reject('not allowed'); continue; }
-        if(!myStop(e.to)||!myStop(e.from)){ reject('not your stop'); continue; } }
+        if(!e.to||!e.to.kind||!myStop(e.to)||!myStop(e.from)){ reject('not your stop'); continue; } }   // 007: every driver event names its to
       const at=e.occurredAt||vDate().toISOString(); const now=vDate().toISOString();
-      const ev=(asset,type,from,to,extra)=>{ const row={id:(extra&&extra.id)||uuid(),company:co,asset_id:asset.id,event_type:type,from_kind:from?from.kind:null,from_id:from?from.id:null,to_kind:to?to.kind:null,to_id:to?to.id:null,fill_after:null,occurred_at:at,recorded_by:'u1',order_id:null,bol_number:null,site_key:null,photo_path:null,gps:null,ocr:null,note:'',created_at:now,...extra}; T.dispatch_asset_events.push(row); return row; };
+      const ev=(asset,type,from,to,extra)=>{ const row={id:(extra&&extra.id)||uuid(),company:co,asset_id:asset.id,event_type:type,from_kind:from?from.kind:null,from_id:from?from.id:null,to_kind:to?to.kind:null,to_id:to?to.id:null,fill_after:null,occurred_at:at,recorded_by:'u1',order_id:null,bol_number:null,site_key:null,photo_path:null,gps:null,ocr:null,note:'',applied:true,created_at:now,...extra}; T.dispatch_asset_events.push(row); return row; };
       let a=(T.dispatch_assets||[]).find(x=>x.company===co&&x.serial===res.serial);
+      if(a&&e.type==='created'){ reject('serial '+res.serial+' is already in the register'); continue; }   // as functions/api/assets.js
       if(!a){ if(!e.containerTypeId||!T.dispatch_container_types.some(c=>c.id===e.containerTypeId&&c.company===co)){ reject('container type required'); continue; }
         const loc=e.from||e.to||null; const ok=e.ownerKind||'adchem';
         a={id:uuid(),company:co,serial:res.serial,tag:'',container_type_id:e.containerTypeId,owner_kind:ok,owner_id:ok==='adchem'?null:(e.ownerId||null),fill_state:'unknown',condition:'good',location_kind:loc?loc.kind:null,location_id:loc?loc.id:null,last_seen_at:at,last_seen_by:'u1',hydro_due:null,acquired_on:null,notes:'',created_at:now,updated_at:now,created_by:'u1',updated_by:'u1'};
         T.dispatch_assets.push(a); if(e.type!=='created') ev(a,'created',null,loc,{}); }
       res.assetId=a.id;
-      if(e.from&&e.from.kind&&!sameLoc(a,e.from.kind,e.from.id)) ev(a,'sighted',{kind:a.location_kind,id:a.location_id},e.from,{note:'was at '+a.location_kind+' '+a.location_id});
+      // 007's apply trigger: an event older than the asset's last sighting (not a correction) stays as history, applied = false,
+      // and moves nothing (a late fill still draws the bulk down); the server reads applied back and warns
+      const late=e.type!=='corrected'&&!!a.last_seen_at&&Date.parse(at)<Date.parse(a.last_seen_at);
+      const keep=late?{kind:a.location_kind,id:a.location_id,fill:a.fill_state,seen:a.last_seen_at}:null;
+      if(e.from&&e.from.kind&&!sameLoc(a,e.from.kind,e.from.id)) ev(a,'sighted',{kind:a.location_kind,id:a.location_id},e.from,{note:'was at '+a.location_kind+' '+a.location_id,applied:!late});
       if(e.from&&e.from.kind){ a.location_kind=e.from.kind; a.location_id=e.from.id; }
-      const row=ev(a,e.type,e.from,e.to,{id:e.id,fill_after:e.fillAfter||null,order_id:e.orderId||null,bol_number:e.bolNumber||null,site_key:e.siteKey||null,photo_path:e.photoPath||null,gps:e.gps||null,ocr:e.ocr||null,note:e.note||''});
+      const row=ev(a,e.type,e.from,e.to,{applied:!late,id:e.id,fill_after:e.fillAfter||null,order_id:e.orderId||null,bol_number:e.bolNumber||null,site_key:e.siteKey||null,photo_path:e.photoPath||null,gps:e.gps||null,ocr:e.ocr||null,note:e.note||''});
       const to=e.to&&e.to.kind?e.to:null; const mv=()=>{ if(to){ a.location_kind=to.kind; a.location_id=to.id; } };
       if(e.type==='delivered'){ mv(); a.fill_state=e.fillAfter||'full'; }
       else if(e.type==='collected'){ mv(); a.fill_state=e.fillAfter||'empty'; }
@@ -272,7 +277,10 @@ function fakeAssets(T,b){
       else if(e.type==='moved') mv();
       else if(e.type==='sighted') mv();
       else if(e.type==='corrected'){ mv(); if(e.fillAfter) a.fill_state=e.fillAfter; }
-      a.last_seen_at=at; a.last_seen_by='u1'; a.updated_at=now; a.updated_by='u1';
+      else if(e.type==='created'){ mv(); if(e.fillAfter) a.fill_state=e.fillAfter; }
+      if(late){ a.location_kind=keep.kind; a.location_id=keep.id; a.fill_state=keep.fill; res.warning=(res.warning?res.warning+'; ':'')+'recorded late — did not move the container'; }
+      else if(e.type!=='corrected'||e.to||e.fillAfter){ a.last_seen_at=at; a.last_seen_by='u1'; }
+      a.updated_at=now; a.updated_by='u1';
       results.push(res); }
     return {code:200,body:{ok:true,results}}; }
   return {code:400,body:{error:{code:'bad_request',message:'unknown action'}}}; }
@@ -339,7 +347,7 @@ function makeFake(seed){
     if(u.pathname==='/api/customers-out'){ const {company,...b}=JSON.parse(body||'{}'); if(!company) return send(400,{error:{code:'no_company',message:'company required'}}); calls.push(['customers-out',b]);
       return send(200,b.rebuild?{ok:true,rebuilt:T.dispatch_customers.filter(c=>c.company===company).length}:{ok:true,updated:0,appended:(b.customerIds||[]).length}); }
     if(u.pathname==='/api/import'){ const r=fakeImport(T,JSON.parse(body||'{}'),IMP,calls); return send(r.code,r.body); }
-    if(u.pathname==='/api/assets'){ const r=fakeAssets(T,JSON.parse(body||'{}')); return send(r.code,r.body); }
+    if(u.pathname==='/api/assets'){ const b=JSON.parse(body||'{}'); if(b.action==='events') calls.push(['assets-events',(b.events||[]).map(e=>e&&e.serial)]); const r=fakeAssets(T,b); return send(r.code,r.body); }
     if(u.pathname==='/api/docs'){ const r=fakeDocs(T,JSON.parse(body||'{}'),'http://'+req.headers.host); return send(r.code,r.body); }
     if(u.pathname==='/api/expiry'){ const {company,...b}=JSON.parse(body||'{}'); calls.push(['expiry',b]); const sent=[], skipped=[];
       // Send now (the app always sends its company) mails that company only; without one (the cron shape) every company

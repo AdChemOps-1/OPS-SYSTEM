@@ -1745,7 +1745,10 @@ function podIdb(){
     try{
       var r=indexedDB.open("adchem-pod",4);   // q: BOL photos, d: deposit slips, c: document captures (documents.js), a: cylinder batches (assets.js)
       r.onupgradeneeded=function(){ var db=r.result; if(!db.objectStoreNames.contains("q")) db.createObjectStore("q",{keyPath:"orderId"}); if(!db.objectStoreNames.contains("d")) db.createObjectStore("d",{keyPath:"id"}); if(!db.objectStoreNames.contains("c")) db.createObjectStore("c",{keyPath:"id"}); if(!db.objectStoreNames.contains("a")) db.createObjectStore("a",{keyPath:"id"}); };
-      r.onsuccess=function(){ podDb=r.result; resolve(podDb); };
+      // another tab holding an older version blocks the upgrade: answer null now (every caller falls back to not saving on this
+      // phone) rather than leave the queues waiting; a newer version opened elsewhere closes this one so it never blocks that tab
+      r.onsuccess=function(){ var db=r.result; db.onversionchange=function(){ try{ db.close(); }catch(e){} if(podDb===db) podDb=null; }; podDb=db; resolve(db); };
+      r.onblocked=function(){ resolve(null); };
       r.onerror=function(){ resolve(null); };
     }catch(e){ resolve(null); }
   });

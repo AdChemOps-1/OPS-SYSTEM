@@ -205,6 +205,7 @@ async function signIn(page, base){
   // Add assets: two new serials, owned by Airgas, at EB
   await page.click('#aActions [data-act="add"]'); await page.waitForTimeout(200);
   await page.selectOption('#act_hub', 'EB'); await page.selectOption('#act_type', 'ct-co2-20'); await page.selectOption('#act_owner', 'vendor:vend-airgas');
+  await page.selectOption('#act_fill', 'full');
   for (const s of ['ADD1', 'ADD2']) { await page.fill('#act_serial', s); await page.press('#act_serial', 'Enter'); }
   // the network drops the first send: both stay listed as "not sent — try again", and the retry reuses the same event ids
   let firstIds = null;
@@ -220,6 +221,8 @@ async function signIn(page, base){
   assert.equal((flat(await page.textContent('#actResults')).match(/applied/g) || []).length, 2);
   const add1 = T.dispatch_assets.find(a => a.serial === 'ADD1');
   assert.ok(add1 && add1.owner_kind === 'vendor' && add1.owner_id === 'vend-airgas' && add1.location_id === 'EB' && add1.container_type_id === 'ct-co2-20', 'ADD1 created');
+  assert.equal(add1.fill_state, 'full', 'ADD1 has the fill picked on the sheet');
+  assert.equal(T.dispatch_assets.find(a => a.serial === 'ADD2').fill_state, 'full');
   // a whole-batch 400 (bad_event) is a refusal: shown as rejected, not as retryable
   await page.fill('#act_serial', 'ADD3'); await page.press('#act_serial', 'Enter');
   await page.route('**/api/assets', r => JSON.parse(r.request().postData() || '{}').action === 'events'
@@ -230,6 +233,22 @@ async function signIn(page, base){
   const rej = flat(await page.textContent('#actResults'));
   assert.match(rej, /ADD3 — rejected: event 0: occurredAt must be an ISO time/); assert.doesNotMatch(rej, /try again/);
   await page.click('[data-unlist="ADD3"]');
+  // 25 at once go as three calls (10, 10, 5) in order, and each result lines up with its serial: ADD1, 13th, is already registered
+  const many = Array.from({length:25}, (_, i) => i === 12 ? 'ADD1' : 'BULK' + String(i + 1).padStart(2, '0'));
+  for (const s of many) { await page.fill('#act_serial', s); await page.press('#act_serial', 'Enter'); }
+  const nSends = fake.calls.filter(c => c[0] === 'assets-events').length;
+  await page.click('#act_confirm'); await page.waitForTimeout(1500);
+  const chunks = fake.calls.filter(c => c[0] === 'assets-events').slice(nSends).map(c => c[1]);
+  assert.deepEqual(chunks.map(c => c.length), [10, 10, 5], 'sent in chunks of 10');
+  assert.deepEqual(chunks.flat(), many, 'in order');
+  const lines = await page.$$eval('#actResults > div', e => e.map(x => x.textContent.replace(/\s+/g, ' ').trim()));
+  assert.equal(lines.length, 25);
+  lines.forEach((l, i) => i === 12 ? assert.match(l, /^ADD1 — rejected: serial ADD1 is already in the register/) : assert.match(l, new RegExp('^' + many[i] + ' — applied')));
+  assert.equal(T.dispatch_assets.filter(a => /^BULK/.test(a.serial) && a.fill_state === 'full').length, 24);
+  await page.click('[data-unlist="ADD1"]');
+  // drop the 24 again so the rest of the run sees the register it expects
+  const bulk = new Set(T.dispatch_assets.filter(x => /^BULK/.test(x.serial)).map(x => x.id));
+  for (const t of ['dispatch_assets', 'dispatch_asset_events']) { const keep = T[t].filter(x => !bulk.has(t === 'dispatch_assets' ? x.id : x.asset_id)); T[t].length = 0; T[t].push(...keep); }
   await page.click('#actClose'); await page.waitForTimeout(500);
   assert.equal((await regRows()).length, 6, 'register refreshed after the actions');
   // the detail's read fails: back on the register, not stuck on Loading, and the next visit does not reopen it
@@ -479,5 +498,36 @@ async function signIn(page, base){
     // the reads Today makes while the phone is offline (site notes, the register at the stop) are the only console errors
     assert.deepEqual(dv.errs.filter(e => !/ERR_INTERNET_DISCONNECTED/.test(e)), [], 'driver page errors');
   } finally { await fd.stop(); }
+
+  // ---- another tab holds the old IndexedDB version (the upgrade is blocked), and the register saw AB1234 after this phone did ----
+  const fb = makeFake(); const TB = fb.T; const baseB = await fb.start();
+  try {
+    const CID = '11111111-1111-4111-8111-111111111111', SK = 'ADC-0001 — Primary', ORD = 'EB-261020-01';
+    TB.dispatch_customers.push({id:CID,company:'adchem',customer_id:'ADC-0001',name:'Type 7 Manufacturing',account_status:'active',primary_hub:'EB'});
+    TB.dispatch_sites.push({company:'adchem',site_key:SK,customer_id:CID,customer:'Type 7 Manufacturing',addr:'100 Main St, Oakland CA 94607',city:'Oakland',hub:'EB',site_label:'Primary',code_raw:'D - Deliver; no holds',code:'D',synced_at:'2026-10-20T08:00:00Z'});
+    const od = {id:ORD,hub:'EB',date:'2026-10-20',status:'Scheduled',customer:'Type 7 Manufacturing',siteKey:SK,siteLabel:'Primary',code:'D',effCode:'D',window:'7:00a – 11:00a',truck:'T1',
+      shipTo:'100 Main St, Oakland CA 94607',bolNo:9450,lines:[{category:'Gases',product:'Carbon Dioxide',container:'50lb Cylinder',qty:1,unitLb:50,unitDef:false,note:''}]};
+    TB.dispatch_orders.push({company:'adchem',id:ORD,bol_no:9450,hub:'EB',date:'2026-10-20',status:'Scheduled',customer:'Type 7 Manufacturing',data:od,created_at:'2026-10-19T12:00:00Z',updated_at:'2026-10-19T12:00:00Z'});
+    const abB = TB.dispatch_assets.find(x => x.serial === 'AB1234'); abB.last_seen_at = '2099-01-01T00:00:00Z';   // this phone's delivery arrives late
+    const bk = await newPage(b, baseB, {viewport:{width:390,height:844}, members:[{user_id:'u1',company:'adchem',role:'driver',hub:'EB',active:true,is_super_admin:false,permissions:{}}]});
+    // an open request that only ever fires onblocked
+    await bk.addInitScript(() => { indexedDB.open = function(){ const r = {}; setTimeout(() => { if (r.onblocked) r.onblocked({}); }, 50); return r; }; });
+    await signIn(bk, baseB); await bk.waitForTimeout(600);
+    assert.equal(await bk.evaluate(() => Promise.race([podIdb().then(d => d === null ? 'null' : 'db'), new Promise(r => setTimeout(() => r('hung'), 1000))])), 'null', 'a blocked open answers null within a second');
+    await bk.click('#todayList [data-cyl="' + ORD + '"]'); await bk.waitForFunction(() => state.cyl && state.cyl.prior, null, {timeout:3000});
+    await bk.evaluate(() => Promise.race([state.cyl.prior, new Promise((_, no) => setTimeout(() => no(new Error('the sheet is stuck on the queue')), 1500))]));
+    await bk.click('#cylSlots [data-open="s:0"]'); await bk.fill('#cyl_typed', 'AB1234'); await bk.click('#cyl_use'); await bk.waitForTimeout(400);
+    assert.match(flat(await bk.textContent('#cylSlots [data-slot="0"]')), /AB1234/, 'Use answers');
+    // no signal and nowhere to keep it: Done says so and the slot stays ready
+    await bk.context().setOffline(true);
+    await bk.click('#cylDone'); await bk.waitForFunction(() => state.cyl && !state.cyl.sending, null, {timeout:4000}); await bk.waitForTimeout(150);
+    assert.match(flat(await bk.textContent('#cylStatus')), /Not sent yet — no signal\. Keep this open and press Done again when you have signal\./);
+    await bk.context().setOffline(false);
+    await bk.click('#cylDone'); await bk.waitForFunction(() => state.cyl && !state.cyl.sending, null, {timeout:8000}); await bk.waitForTimeout(150);
+    assert.match(flat(await bk.textContent('#cylSlots [data-slot="0"]')), /AB1234.*✓ recorded — recorded late — did not move the container/, 'the late warning on the slot');
+    assert.deepEqual([abB.location_kind, abB.location_id], ['hub', 'EB'], 'the late delivery did not move it');
+    assert.equal(TB.dispatch_asset_events.find(e => e.event_type === 'delivered' && e.asset_id === abB.id).applied, false, 'kept as history, applied = false');
+    assert.deepEqual(bk.errs.filter(e => !/ERR_INTERNET_DISCONNECTED/.test(e)), [], 'blocked-store page errors');
+  } finally { await fb.stop(); }
   } finally { await b.close(); await fake.stop(); }
 })().then(()=>{ console.log('assets.test.cjs: ok'); }, e=>{ console.error(e); process.exit(1); });

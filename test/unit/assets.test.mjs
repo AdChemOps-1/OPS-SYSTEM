@@ -29,7 +29,8 @@ const fixture = name => JSON.parse(readFileSync(new URL('../fixtures/vision/' + 
 const req = (body) => new Request('http://x/api/assets', { method: 'POST', headers: { authorization: 'Bearer tok' }, body: JSON.stringify({ company: 'adchem', ...body }) });
 
 // opts: member, assets [{serial,...}], types, typesFail, eventErrors {id: Response}, existingEvents [ids the pre-check sees],
-// store (Set of event ids already in, invisible to the pre-check), assetInsertError Response, racedAsset (appears on that error),
+// store (Set of event ids already in, invisible to the pre-check), late [ids the trigger marks applied = false], hidden [ids the
+// caller cannot read back], readBackFails, assetInsertError Response, racedAsset (appears on that error),
 // vision Response, photoMissing, settings. Event inserts are atomic per request, like one PostgREST statement.
 async function run(body, opts = {}) {
   const calls = [], real = globalThis.fetch;
@@ -54,6 +55,9 @@ async function run(body, opts = {}) {
     if (u.endsWith('/rest/v1/rpc/dispatch_asset_counts_for')) return ok([{ container_type_id: TYPE_CYL, product: 'Argon', size_label: '300', fill_state: 'full', location_kind: 'hub', hub: 'SAC', condition: 'in_service', n: 4 }]);
     if (u.includes('/rest/v1/dispatch_container_types') && opts.typesFail) throw new TypeError('fetch failed');
     if (u.includes('/rest/v1/dispatch_container_types')) { const id = u.match(/id=eq\.([0-9a-f-]+)/)[1]; return ok(types.filter(t => t.id === id)); }
+    if (u.includes('/rest/v1/dispatch_asset_events') && method === 'GET' && u.includes('select=applied')) {
+      const id = u.match(/id=eq\.([0-9a-f-]+)/)[1]; if (opts.readBackFails) throw new TypeError('fetch failed');
+      return ok(store.has(id) && !(opts.hidden || []).includes(id) ? [{ applied: !(opts.late || []).includes(id) }] : []); }
     if (u.includes('/rest/v1/dispatch_asset_events') && method === 'GET') { const id = u.match(/id=eq\.([0-9a-f-]+)/)[1]; return ok((opts.existingEvents || []).includes(id) ? [{ id }] : []); }
     if (u.endsWith('/rest/v1/dispatch_assets') && method === 'POST') {
       if (opts.assetInsertError) { if (opts.racedAsset) assets.push({ ...opts.racedAsset }); return opts.assetInsertError.clone(); }
@@ -208,6 +212,20 @@ test('events: a dewar fill (no fill_lb) is applied with a warning; a hub cylinde
   assert.equal(b.j.results[0].status, 'applied'); assert.ok(!b.j.results[0].warning);
   const c = await run({ action: 'events', events: [ev({ type: 'filled', from: undefined, to: undefined })] }, { ...MGR, assets: [{ ...EXISTING, location_kind: 'site', location_id: 'S-1' }] });
   assert.equal(c.j.results[0].warning, 'asset is not at a hub');
+});
+
+test('events: a movement the trigger marked applied = false (late) is applied with a warning; an unreadable one has none', async () => {
+  const a = await run({ action: 'events', events: [ev(), ev({ id: EV2, serial: 'AB1234' })] }, { assets: [EXISTING], late: [EV1] });
+  assert.deepEqual(a.j.results.map(r => [r.status, r.warning]), [['applied', 'recorded late — did not move the container'], ['applied', undefined]]);
+  assert.ok(a.calls.some(c => c.method === 'GET' && c.url.includes('dispatch_asset_events?select=applied&id=eq.' + EV1)), 'reads applied back by id');
+  const b = await run({ action: 'events', events: [ev()] }, { assets: [EXISTING], late: [EV1], hidden: [EV1] });
+  assert.equal(b.j.results[0].status, 'applied'); assert.ok(!b.j.results[0].warning);
+  const c = await run({ action: 'events', events: [ev()] }, { assets: [EXISTING], readBackFails: true });
+  assert.equal(c.j.results[0].status, 'applied'); assert.ok(!c.j.results[0].warning);
+  // a late fill keeps its own warning too
+  const MGR = { member: { role: 'coordinator', permissions: { manage_assets: true } } };
+  const d = await run({ action: 'events', events: [ev({ type: 'filled', from: undefined, to: undefined })] }, { ...MGR, assets: [{ ...EXISTING, container_type_id: TYPE_DEWAR }], late: [EV1] });
+  assert.equal(d.j.results[0].warning, 'no fill weight on this container type; recorded late — did not move the container');
 });
 
 test('events: photo_path is stored as given when it is <company>/asset/<uuid>.jpg, never moved', async () => {

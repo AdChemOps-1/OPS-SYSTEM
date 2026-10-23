@@ -55,9 +55,11 @@ One row per serialized container; the latest picture, maintained only through ev
 - `event_type text` in `(created, delivered, collected, to_vendor, from_vendor, filled, moved, loaded, sighted, corrected)`
 - `from_kind/from_id`, `to_kind/to_id` (nullable), `fill_after text` (nullable)
 - `occurred_at timestamptz` (the phone's time; kept when within 30 days and ≤ now, else now — same rule as captures), `recorded_by uuid`
-- `order_id text`, `bol_number int`, `site_id uuid` (nullable)
-- `photo_path text`, `gps jsonb {lat,lng,accuracy}`, `ocr jsonb {raw, candidates, chosen, driver_typed}` (nullable)
+- `order_id text`, `bol_number int`, `site_key text` (nullable) — *amended 10/23/26: `site_key` (the sites' text key) in place of `site_id uuid`*
+- `photo_path text`, `gps jsonb {lat,lng,accuracy}`, `ocr jsonb {raw, candidates, picked}` (nullable) — *amended 10/23/26: `picked` is the serial the driver or manager chose or typed*
 - `note text`
+- `applied boolean` (default true) — *amended 10/23/26*: set only by the triggers; `false` when the event was older than the asset's last sighting (an offline queue sent late), so it is kept as history and did not move the asset or change its fill (a late hub fill still draws the bulk down). A `corrected` event always applies; one that names no place and no fill (an owner/condition correction through `dispatch_asset_correct`) does not change `last_seen_*`.
+- A driver's event must name its `to` (their hub or one of their stop sites); `created` sets the fill it names.
 - No update or delete policy for anyone; corrections are new `corrected` events.
 - After-insert trigger `dispatch_asset_apply_event` (security definer): sets the asset's `location_*`, `fill_state`, `last_seen_*`; for `filled` at a hub it writes a `stock_movements` row of `-fill_lb` pounds of bulk product at that hub (3A writes it; 3B reads it).
 
@@ -119,6 +121,7 @@ Two switches: *View assets*, *Manage assets*.
 ## 6. Server
 
 - `functions/api/assets.js` — `POST /read` (multipart or base64 JPEG → upload to `asset/new/<event_id>.jpg` as the caller → Vision → `{candidates:[{text,score}], raw}`); `POST /events` (batch; validates each event against the caller's role, creates unknown assets, inserts events in order, moves `new/` photos under the asset id; idempotent by event id); `GET /counts`.
+- *Amended 10/23/26 (as built):* one `POST /api/assets` with `action`. `read` — the phone uploads the photo itself to `<company>/asset/<eventId>.jpg` (the event later carries the same id and path); the server reads it as the caller, sends it to Vision and returns `{candidates, raw[, error]}`; nothing is moved. `events` — `{ok, results}`, one result per event in order, each `applied`, `duplicate`, `rejected` (with `reason`) or `error` (retryable), with an optional `warning` (no fill weight, not at a hub, location correction not recorded, or *recorded late — did not move the container* when the event's `applied` reads back false). The client sends a batch in chunks of 10 events, in order, to stay within the function's subrequest cap. `counts` — the grouped rows of `dispatch_asset_counts_for`.
 - `functions/_lib/vision.js` — one call to `images:annotate` with `TEXT_DETECTION` using the existing `gfetch`; returns text blocks with bounding boxes. Health probe: an `images:annotate` on a 1-pixel image → *ok* or the API error (e.g. "Cloud Vision API has not been used in project…").
 - `functions/_lib/serials.js` — pure: takes Vision blocks and `assetSerialRules`, returns ranked candidates. Default rules: uppercase alphanumerics 5–20 chars, no spaces; penalise strings that look like dates, weights (`50LB`, `230L`), DOT markings (`DOT-3AA`, `TC-3AAM`), or years; prefer blocks nearer the top of the image for cylinders; prefer the largest block for bins/totes (kind known from the slot). Unit-tested on fixtures; real photos added as they arrive.
 - 3B: `functions/api/stock.js` — `POST /move` (received / produced / adjusted / counted), `GET /onhand`; the alert line in `expiry.js`.

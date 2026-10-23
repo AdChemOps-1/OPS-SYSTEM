@@ -12,7 +12,8 @@ declare
   a_w uuid := gen_random_uuid(); a_late uuid := gen_random_uuid(); a_v uuid := gen_random_uuid(); e_ss uuid := gen_random_uuid(); e_sv uuid := gen_random_uuid();
   cust uuid; vend uuid; t50 uuid; tdw uuid; tn uuid;
   a_hub uuid := gen_random_uuid(); a_s uuid := gen_random_uuid(); a_o uuid := gen_random_uuid(); a_n uuid := gen_random_uuid();
-  a_f uuid := gen_random_uuid(); a_d uuid := gen_random_uuid(); a_dr uuid := gen_random_uuid(); a_ab uuid;
+  a_f uuid := gen_random_uuid(); a_d uuid := gen_random_uuid(); a_dr uuid := gen_random_uuid(); a_ab uuid; a_c uuid := gen_random_uuid();
+  e_late uuid := gen_random_uuid(); e_after uuid := gen_random_uuid(); seen_at timestamptz; seen_by uuid;
   e_del uuid := gen_random_uuid(); e_f uuid := gen_random_uuid(); e_d uuid := gen_random_uuid();
   n int; n_types int; n_dr int; n_stock int; n_counts int; n_events int; ok boolean; a record; lg record; st record; photo text;
 begin
@@ -120,6 +121,11 @@ begin
   begin insert into public.dispatch_asset_events (company, asset_id, event_type, to_kind, to_id) values ('adchem', a_w, 'sighted', 'site', 'T007-M2');
   exception when others then ok := sqlerrm = 'not your stop'; end;
   if not ok then raise exception 'driver sighted at a site whose order is two days old'; end if;
+  -- every driver event names where it goes: a sighted with no to is refused
+  ok := false;
+  begin insert into public.dispatch_asset_events (company, asset_id, event_type) values ('adchem', a_hub, 'sighted');
+  exception when others then ok := sqlerrm = 'not your stop'; end;
+  if not ok then raise exception 'driver recorded a sighted with no place'; end if;
   ok := false;
   begin insert into public.dispatch_asset_events (company, asset_id, event_type, from_kind, from_id, to_kind, to_id) values ('adchem', a_f, 'collected', 'site', 'T007-S', 'hub', 'LA');
   exception when others then ok := sqlerrm = 'not your stop'; end;
@@ -206,7 +212,23 @@ begin
   if not ok then raise exception 'manager changed an owner directly'; end if;
   update public.dispatch_assets set notes = 'dented' where id = a_s;
   get diagnostics n = row_count;  if n <> 1 then raise exception 'manager could not edit notes'; end if;
+  -- an office correction is not a sighting: last-seen stays, so a driver's earlier offline event that arrives after it still applies
+  insert into public.dispatch_asset_events (company, asset_id, event_type, to_kind, to_id, occurred_at) values ('adchem', a_s, 'sighted', 'site', 'T007-S', now() - interval '1 hour');
+  select last_seen_at, last_seen_by into seen_at, seen_by from public.dispatch_assets where id = a_s;
   perform public.dispatch_asset_correct(a_s, jsonb_build_object('owner_kind', 'vendor', 'owner_id', vend::text, 'condition', 'out_of_service'));
+  select * into a from public.dispatch_assets where id = a_s;
+  if a.last_seen_at is distinct from seen_at or a.last_seen_by is distinct from seen_by or seen_at is distinct from now() - interval '1 hour' then
+    raise exception 'dispatch_asset_correct moved last seen from % to %', seen_at, a.last_seen_at; end if;
+  insert into public.dispatch_asset_events (id, company, asset_id, event_type, to_kind, to_id, occurred_at) values (e_after, 'adchem', a_s, 'sighted', 'site', 'T007-S', now() - interval '30 minutes');
+  if (select applied from public.dispatch_asset_events where id = e_after) is distinct from true
+     or (select last_seen_at from public.dispatch_assets where id = a_s) is distinct from now() - interval '30 minutes' then
+    raise exception 'an event older than a correction but newer than the last sighting did not apply'; end if;
+  -- a created event sets the fill it names
+  insert into public.dispatch_assets (id, company, serial, container_type_id, location_kind, location_id) values (a_c, 'adchem', 'T7CREATED', t50, 'hub', 'EB');
+  insert into public.dispatch_asset_events (company, asset_id, event_type, to_kind, to_id, fill_after) values ('adchem', a_c, 'created', 'hub', 'EB', 'full');
+  select * into a from public.dispatch_assets where id = a_c;
+  if a.fill_state <> 'full' or a.location_kind <> 'hub' or a.location_id <> 'EB' or a.last_seen_by is distinct from mg then
+    raise exception 'a created event with fill full left the asset % at % % seen by %', a.fill_state, a.location_kind, a.location_id, a.last_seen_by; end if;
   ok := false;
   begin perform public.dispatch_asset_correct(a_s, jsonb_build_object('owner_kind', 'vendor', 'owner_id', gen_random_uuid()::text));
   exception when others then ok := sqlerrm = 'owner not found in this company'; end;
@@ -233,8 +255,13 @@ begin
   -- a late event (older than the asset's last sighting) stays as history and does not move the asset
   insert into public.dispatch_asset_events (company, asset_id, event_type, from_kind, from_id, to_kind, to_id, occurred_at) values
     ('adchem', a_late, 'collected', 'site', 'T007-S', 'hub', 'LA', now() - interval '1 hour');
-  insert into public.dispatch_asset_events (company, asset_id, event_type, from_kind, from_id, to_kind, to_id, occurred_at, note) values
-    ('adchem', a_late, 'delivered', 'hub', 'LA', 'site', 'T007-S', now() - interval '3 hours', 't007-late');
+  insert into public.dispatch_asset_events (id, company, asset_id, event_type, from_kind, from_id, to_kind, to_id, occurred_at, note) values
+    (e_late, 'adchem', a_late, 'delivered', 'hub', 'LA', 'site', 'T007-S', now() - interval '3 hours', 't007-late');
+  -- the late one is marked applied = false (the server reads it back and warns); the one before it applied; a caller cannot set it
+  if (select applied from public.dispatch_asset_events where id = e_late) is distinct from false then raise exception 'a late event was not marked applied = false'; end if;
+  if (select count(*) from public.dispatch_asset_events where asset_id = a_late and applied) <> 1 then raise exception 'the in-time event on the late asset is not applied'; end if;
+  insert into public.dispatch_asset_events (company, asset_id, event_type, to_kind, to_id, applied, note) values ('adchem', a_f, 'sighted', 'hub', 'EB', false, 't007-applied');
+  if (select applied from public.dispatch_asset_events where note = 't007-applied') is distinct from true then raise exception 'a caller set applied'; end if;
   select * into a from public.dispatch_assets where id = a_late;
   if a.location_kind <> 'hub' or a.location_id <> 'LA' or a.fill_state <> 'empty' or a.last_seen_at is distinct from now() - interval '1 hour' then
     raise exception 'a late delivery moved the asset: % % % %', a.location_kind, a.location_id, a.fill_state, a.last_seen_at; end if;

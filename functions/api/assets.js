@@ -1,6 +1,8 @@
 // POST /api/assets — the asset register's server side (migration 007; the database guards decide what each caller may record).
 //   {action:'read', eventId, kind, photoPath} -> {candidates, raw[, error]}  Vision reads the photo, the picker ranks serials
-//   {action:'events', events:[…]}             -> {ok, results}               a phone's batch, each event applied on its own
+//   {action:'events', events:[…]}             -> {ok, results}               a phone's batch, each event applied on its own;
+//                                                                            results are applied|duplicate|rejected|error, with an
+//                                                                            optional warning (e.g. recorded late)
 //   {action:'counts'}                         -> {rows}                       grouped counts, no serials
 // read and events: a driver, manage_assets, or a super admin. counts: any member. Everything runs as the caller (RLS applies).
 import { requireUser, sb, json, fail, handle, companyFrom, companyContext, hasPerm } from "../_lib/auth.js";
@@ -17,6 +19,7 @@ const KINDS = ["cylinder", "dewar", "pig", "tank", "bin", "tote"];
 const MAX_EVENTS = 200;
 const MAX_TEXT = 200;
 const MAX_NOTE = 1000;
+const LATE = "recorded late — did not move the container";
 
 export const normSerial = s => String(s == null ? "" : s).toUpperCase().replace(/[\s-]+/g, "");
 const isText = (v, max = MAX_TEXT) => typeof v === "string" && v.length <= max;
@@ -249,6 +252,10 @@ async function applyOne(db, company, e) {
         return { ...out, ...refusal(pe2) };
       }
     }
+    // the apply trigger marks a movement older than the asset's last sighting applied = false: it stays as history only.
+    // A row the caller cannot read back (or a failed read) is taken as applied.
+    const back = await db.get("dispatch_asset_events?select=applied&id=eq." + e.id).catch(() => []);
+    if (Array.isArray(back) && back[0] && back[0].applied === false) warning = (warning ? warning + "; " : "") + LATE;
     if (warning) out.warning = warning;
     return { status: "applied", ...out };
   } catch (err) {

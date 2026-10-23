@@ -73,7 +73,7 @@ One row per serialized container; the latest picture, maintained only through ev
 `dispatch_members.permissions` gains `view_assets` and `manage_assets` (both default false; super admins always have both; the People screen shows two more switches). `dispatch_company_settings.data` gains `assetSerialRules` jsonb (regex list and preferences the server's serial picker reads; default set in code) and, for 3B, `stockAlertRecipients text[]` written through `dispatch_set_warnings`' sibling `dispatch_set_stock_alerts` (super admin).
 
 ### 3.8 Files
-Paths `company/asset/<asset_id>/<event_id>.jpg` and, for a not-yet-created asset, `company/asset/new/<event_id>.jpg` (moved by the server on confirm). Storage insert by any member of role driver under `asset/` of their company and by `manage_assets` holders; select by `view_assets` or the driver who uploaded it (owner = auth.uid()); no update; delete by `manage_assets`.
+Path `company/asset/<event_id>.jpg` (event ids are unique and known before the asset is; nothing is ever moved). Storage insert by any member of role driver under `asset/` of their company and by `manage_assets` holders; select by `view_assets` or the driver who uploaded it (owner = auth.uid()); no update; delete by `manage_assets`.
 
 ## 4. Access rules
 

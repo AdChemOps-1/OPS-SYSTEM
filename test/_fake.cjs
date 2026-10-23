@@ -3,6 +3,9 @@
 // permCheck(T, userId, company, roles, perm) is requireUser's role/permission rule, used by the fake /api/import.
 const http = require('http'); const fs = require('fs'); const path = require('path');
 const ROOT = path.join(__dirname, '..', 'public');
+// One virtual clock for the fake server and every page: 2026-10-20 10:00 Pacific at load, then real elapsed time, so tests do not depend on the machine date
+const CLOCK_OFFSET = Date.parse('2026-10-20T10:00:00-07:00') - Date.now();
+const vNow = () => Date.now() + CLOCK_OFFSET, vDate = () => new Date(vNow());
 
 function seedTables(){ return {
   dispatch_users: [{user_id:'u1',email:'jamie@adchem.pro',name:'Jamie',active:true}],
@@ -87,7 +90,7 @@ function audit(T,t,before,after){ if(!AUDITED.includes(t)) return; const r=after
     if(JSON.stringify(from)!==JSON.stringify(to)) ch[k]={from,to}; });
   if(before&&after&&!Object.keys(ch).length) return;
   const row_id=t==='dispatch_sites'?r.site_key:t==='dispatch_site_hub_notes'?r.site_key+'/'+r.hub:r.id;
-  T.dispatch_log.push({id:T.dispatch_log.length+1,at:new Date().toISOString(),company:r.company,who:'u1',what:'change',detail:{op:!before?'insert':!after?'delete':'update'},table_name:t,row_id:row_id==null?null:String(row_id),changes:ch}); }
+  T.dispatch_log.push({id:T.dispatch_log.length+1,at:vDate().toISOString(),company:r.company,who:'u1',what:'change',detail:{op:!before?'insert':!after?'delete':'update'},table_name:t,row_id:row_id==null?null:String(row_id),changes:ch}); }
 
 function uuid(){ return require('crypto').randomUUID(); }
 // mirrors dispatch_assign_customer_id(): the counter, but never at or below the company's highest ADC-n (a stale counter heals)
@@ -101,7 +104,7 @@ function logVisible(T,row){ const m=T.dispatch_members.find(x=>x.user_id==='u1'&
 
 function fakeRpc(name,b,T){
   if(name==='dispatch_next_bol'){ const co=b.p_company||'adchem'; const s=T.dispatch_company_settings.find(x=>x.company===co).data; const o=T.dispatch_orders.find(x=>x.id===b.p_order_id&&x.company===co); if(o&&o.bol_no) return {code:200,body:o.bol_no}; if(!s.nextBol) return {code:200,body:null}; const n=s.nextBol; s.nextBol=n+1; if(o) o.bol_no=n; return {code:200,body:n}; }
-  if(name==='dispatch_grant'){ T.dispatch_invites.push({email:b.p_email,name:b.p_name,role:b.p_role,hub:b.p_hub,company:b.p_company,invited_at:new Date().toISOString()}); return {code:200,body:'invited'}; }
+  if(name==='dispatch_grant'){ T.dispatch_invites.push({email:b.p_email,name:b.p_name,role:b.p_role,hub:b.p_hub,company:b.p_company,invited_at:vDate().toISOString()}); return {code:200,body:'invited'}; }
   if(name==='dispatch_add_company'){ T.companies.push({id:b.p_id,name:b.p_name,short_name:b.p_short,active:true,data:{}}); T.dispatch_members.push({user_id:'u1',company:b.p_id,role:'admin',hub:'',active:true}); T.dispatch_company_settings.push({company:b.p_id,data:{}}); return {code:200,body:null}; }
   if(name==='dispatch_revoke'){ const u=T.dispatch_users.find(x=>x.email===b.p_email); if(u) T.dispatch_members.forEach(m=>{if(m.user_id===u.user_id&&m.company===b.p_company)m.active=false;}); return {code:200,body:null}; }
   if(name==='dispatch_set_permissions'||name==='dispatch_set_super_admin'){ const u=T.dispatch_users.find(x=>x.user_id===b.p_user||x.email===b.p_user); const m=T.dispatch_members.find(x=>x.company===b.p_company&&(x.user_id===b.p_user||(u&&x.user_id===u.user_id))); if(!m) return {code:404,body:{message:'no member'}};
@@ -111,10 +114,10 @@ function fakeRpc(name,b,T){
     if(!(b.p_warn_days>=1&&b.p_warn_days<=365)) return {code:400,body:{message:'warn days must be 1-365'}};
     const was=st.data||{}; st.data={...st.data,warnDays:b.p_warn_days,warnings:b.p_warnings,expiryEmailRecipients:b.p_recipients};
     // the log row dispatch_set_warnings writes (migration 006): from/to of the three keys
-    T.dispatch_log.push({id:T.dispatch_log.length+1,at:new Date().toISOString(),company:b.p_company,who:'u1',what:'warnings',detail:{},table_name:'dispatch_company_settings',row_id:b.p_company,
+    T.dispatch_log.push({id:T.dispatch_log.length+1,at:vDate().toISOString(),company:b.p_company,who:'u1',what:'warnings',detail:{},table_name:'dispatch_company_settings',row_id:b.p_company,
       changes:{warnDays:{from:was.warnDays??null,to:b.p_warn_days},warnings:{from:was.warnings??null,to:b.p_warnings},expiryEmailRecipients:{from:was.expiryEmailRecipients??null,to:b.p_recipients}}}); return {code:200,body:null}; }
   if(name==='dispatch_asset_correct'){ const a=(T.dispatch_assets||[]).find(x=>x.id===b.p_id); if(!a||!hasPerm(memberOf(T,a.company),'manage_assets')) return {code:403,body:{message:'not allowed'}};
-    const f=b.p_fields||{}, now=new Date().toISOString(); ['owner_kind','owner_id','condition','notes'].forEach(k=>{ if(f[k]!==undefined) a[k]=f[k]; });
+    const f=b.p_fields||{}, now=vDate().toISOString(); ['owner_kind','owner_id','condition','notes'].forEach(k=>{ if(f[k]!==undefined) a[k]=f[k]; });
     a.updated_at=now; a.updated_by='u1';
     T.dispatch_asset_events.push({id:uuid(),company:a.company,asset_id:a.id,event_type:'corrected',from_kind:null,from_id:null,to_kind:null,to_id:null,fill_after:null,occurred_at:now,recorded_by:'u1',order_id:null,bol_number:null,site_key:null,photo_path:null,gps:null,ocr:null,note:'corrected: '+Object.keys(f).join(', '),created_at:now});
     return {code:200,body:a}; }
@@ -123,10 +126,10 @@ function fakeRpc(name,b,T){
 // insert-or-merge on the conflict keys, audited, the way PostgREST's resolution=merge-duplicates does
 function upsertRows(T,t,arr,keys){ if(!T[t]) T[t]=[]; const rows=T[t];
   arr.forEach(r=>{ if(t==='dispatch_customers'){ const hit=rows.find(x=>keys.every(k=>r[k]!=null&&String(x[k])===String(r[k]))); if(!r.id&&!hit) r.id=uuid(); if(!r.customer_id) r.customer_id=nextCustomerId(T,r.company); }
-    if(t==='dispatch_documents'){ if(!r.id) r.id=uuid(); const now=new Date().toISOString(); const hit=rows.find(x=>x.id===r.id);
+    if(t==='dispatch_documents'){ if(!r.id) r.id=uuid(); const now=vDate().toISOString(); const hit=rows.find(x=>x.id===r.id);
       if(!hit) Object.entries({title:'',number:'',status:'',file_name:'',file_type:'',source:'',notes:'',review_status:'live',extra:{},created_at:now,updated_at:now}).forEach(([k,v])=>{ if(r[k]===undefined) r[k]=v; });
       else r.updated_at=now; }
-    if(t==='dispatch_contacts'){ if(!r.id) r.id=uuid(); if(!r.created_at) r.created_at=new Date().toISOString(); }
+    if(t==='dispatch_contacts'){ if(!r.id) r.id=uuid(); if(!r.created_at) r.created_at=vDate().toISOString(); }
     const i=rows.findIndex(x=>keys.every(k=>r[k]!=null&&String(x[k])===String(r[k]))); if(i>=0){ const was={...rows[i]}; rows[i]={...rows[i],...r}; audit(T,t,was,rows[i]); } else { rows.push(r); audit(T,t,null,r); } }); }
 
 // requireUser(request, env, roles, company, perm) from functions/_lib/auth.js, against the fake's tables: null when allowed, else {status, error}
@@ -153,7 +156,7 @@ function fakeImport(T,b,IMP,calls){
   if(b.action==='read') return {code:200,body:{plan:IMP.planImport(WORKBOOK(),existing),sheetId}};
   if(b.action!=='commit'||!b.plan||!Array.isArray(b.plan.items)) return {code:400,body:{error:{code:'bad_request',message:'Read the workbook and review the plan first.'}}};
   if(permCheck(T,'u1',co,null,'manage_customers')) return {code:403,body:{error:{code:'forbidden',message:'Importing writes customers, so it also needs the manage customers permission.'}}};
-  const now=new Date().toISOString(), applied=IMP.applyPlan(b.plan,existing,'u1');
+  const now=vDate().toISOString(), applied=IMP.applyPlan(b.plan,existing,'u1');
   const src=r=>({...r,import_source:{...(r.import_source||{}),sheetId,at:(r.import_source&&r.import_source.at)||now}});
   upsertRows(T,'dispatch_customers',IMP.bindRows({customers:applied.customers},new Map(),co,now).customers.map(src),['company','customer_id']);
   const next=Math.max(Number(st.data.nextCustomerNumber)||1,applied.nextCustomerNumber); st.data={...st.data,nextCustomerNumber:next};   // right after the customers, as the route does
@@ -174,15 +177,15 @@ function fakeDocs(T,b,origin){
   const row=(T.dispatch_documents||[]).find(d=>d.id===b.id);
   if(b.action==='sign'){ if(!row||!docVisible(T,row)) return {code:404,body:{error:{code:'not_found',message:'Document not found.'}}};
     if(!row.file_path) return {code:400,body:{error:{code:'no_file',message:'This document has no file.'}}};
-    T.dispatch_log.push({id:T.dispatch_log.length+1,at:new Date().toISOString(),company:row.company,who:'u1',what:'file_view',detail:{documentId:row.id},table_name:null,row_id:null,changes:null});
+    T.dispatch_log.push({id:T.dispatch_log.length+1,at:vDate().toISOString(),company:row.company,who:'u1',what:'file_view',detail:{documentId:row.id},table_name:null,row_id:null,changes:null});
     return {code:200,body:{url:origin+'/storage/v1/object/sign/dispatch-docs/'+row.file_path+'?token=fake',expiresIn:300,fileName:row.file_name,fileType:row.file_type}}; }
   if(b.action==='review'){ if(!row) return {code:404,body:{error:{code:'not_found',message:'Document not found.'}}};
     const denied=permCheck(T,'u1',row.company,null,'manage_documents'); if(denied) return {code:denied.status,body:{error:denied.error}};
     if(b.decision!=='approve'&&b.decision!=='reject') return {code:400,body:{error:{code:'bad_decision',message:'decision must be approve or reject.'}}};
     if(row.review_status!=='pending_review') return {code:409,body:{error:{code:'not_pending',message:'That capture is no longer pending review.'}}};   // the RPCs raise 'not pending review'
-    if(b.decision==='reject'){ row.review_status='rejected'; row.notes=b.reason||''; row.updated_at=new Date().toISOString(); return {code:200,body:{ok:true,id:row.id}}; }
+    if(b.decision==='reject'){ row.review_status='rejected'; row.notes=b.reason||''; row.updated_at=vDate().toISOString(); return {code:200,body:{ok:true,id:row.id}}; }
     const f=b.fields||{}; ['doc_type','number','status','issued','expires','title','extra','notes'].forEach(k=>{ if(f[k]!==undefined) row[k]=f[k]; });
-    row.review_status='live'; row.checked_on=todayOf(T); row.checked_by='u1'; row.updated_at=new Date().toISOString();
+    row.review_status='live'; row.checked_on=todayOf(T); row.checked_by='u1'; row.updated_at=vDate().toISOString();
     const old=hasVal(row.number)?T.dispatch_documents.find(d=>d!==row&&d.company===row.company&&d.review_status==='live'&&d.subject_type===row.subject_type&&d.subject_id===row.subject_id&&d.doc_type===row.doc_type&&d.number===row.number):null;
     if(old){ old.review_status='rejected'; old.notes=(old.notes||'')+' superseded'; row.supersedes_id=old.id; }
     return {code:200,body:{ok:true,id:row.id}}; }
@@ -239,7 +242,7 @@ function fakeAssets(T,b){
       if(!driver&&!hasPerm(m,'manage_assets')){ reject('not allowed'); continue; }
       if(driver){ if(!DRIVER_TYPES.includes(e.type)){ reject('not allowed'); continue; }
         if(!myStop(e.to)||!myStop(e.from)){ reject('not your stop'); continue; } }
-      const at=e.occurredAt||new Date().toISOString(); const now=new Date().toISOString();
+      const at=e.occurredAt||vDate().toISOString(); const now=vDate().toISOString();
       const ev=(asset,type,from,to,extra)=>{ const row={id:(extra&&extra.id)||uuid(),company:co,asset_id:asset.id,event_type:type,from_kind:from?from.kind:null,from_id:from?from.id:null,to_kind:to?to.kind:null,to_id:to?to.id:null,fill_after:null,occurred_at:at,recorded_by:'u1',order_id:null,bol_number:null,site_key:null,photo_path:null,gps:null,ocr:null,note:'',created_at:now,...extra}; T.dispatch_asset_events.push(row); return row; };
       let a=(T.dispatch_assets||[]).find(x=>x.company===co&&x.serial===res.serial);
       if(!a){ if(!e.containerTypeId||!T.dispatch_container_types.some(c=>c.id===e.containerTypeId&&c.company===co)){ reject('container type required'); continue; }
@@ -287,7 +290,7 @@ function makeFake(seed){
           if(req.method==='POST'&&m&&m.role==='driver'&&!mgr){
             if(r.subject_type!=='customer'||!String(r.file_path||'').startsWith(r.company+'/capture/')) return send(403,{message:'row-level security / capture guard'});
             // the capture guard: as the driver; the phone's captured_at kept when within the last 30 days, never later than now
-            const now=Date.now(), at=r.captured_at?Date.parse(r.captured_at):NaN;
+            const now=vNow(), at=r.captured_at?Date.parse(r.captured_at):NaN;
             r.review_status='pending_review'; r.captured_by='u1'; r.created_by='u1'; r.captured_at=at>=now-30*86400000?new Date(Math.min(at,now)).toISOString():new Date(now).toISOString(); }
           else if(!mgr) return send(403,{message:'row-level security'});
           if(req.method==='POST'){ const ok=r.subject_type==='customer'?T.dispatch_customers.some(c=>c.company===r.company&&String(c.id)===String(r.subject_id)):r.subject_type==='company'?r.subject_id===r.company:r.subject_type==='person'?T.dispatch_members.some(x=>x.company===r.company&&x.user_id===r.subject_id&&x.active):false;
@@ -310,7 +313,7 @@ function makeFake(seed){
       if((T.__objects=T.__objects||[]).includes(p)) return send(400,{statusCode:'409',error:'Duplicate',message:'The resource already exists'});
       T.__objects.push(p); return send(200,{Key:'dispatch-docs/'+p}); }
     if(u.pathname.startsWith('/storage/v1/object/dispatch-pods/')){ calls.push(['upload',u.pathname]); return send(200,{Key:u.pathname.replace('/storage/v1/object/','')}); }
-    if(u.pathname==='/api/feed'){ const co=JSON.parse(body||'{}').company||'adchem'; T.dispatch_sites=T.dispatch_sites.filter(s=>s.company!==co).concat(SITES.map(r=>({company:co,site_key:r[13],customer:r[0],code_raw:r[1],code:r[1].split(' - ')[0],addr:r[2].replace(/\s*\(billing address[^)]*\)\s*/,'').trim(),unconfirmed:/confirm the delivery/.test(r[2]),city:r[3],hub:r[4],contact:r[5],phone:r[6],gate:r[7],hours:r[8],instr:r[11],site_label:r[12],copy_to:'',synced_at:new Date().toISOString()}))); return send(200,{ok:true,sites:SITES.length,customers:5,unconfirmed:1}); }
+    if(u.pathname==='/api/feed'){ const co=JSON.parse(body||'{}').company||'adchem'; T.dispatch_sites=T.dispatch_sites.filter(s=>s.company!==co).concat(SITES.map(r=>({company:co,site_key:r[13],customer:r[0],code_raw:r[1],code:r[1].split(' - ')[0],addr:r[2].replace(/\s*\(billing address[^)]*\)\s*/,'').trim(),unconfirmed:/confirm the delivery/.test(r[2]),city:r[3],hub:r[4],contact:r[5],phone:r[6],gate:r[7],hours:r[8],instr:r[11],site_label:r[12],copy_to:'',synced_at:vDate().toISOString()}))); return send(200,{ok:true,sites:SITES.length,customers:5,unconfirmed:1}); }
     if(u.pathname==='/api/calendar'&&req.method==='GET') return send(200,{calendars:[{id:'cal1',summary:'Dispatch',timeZone:'America/Los_Angeles'},{id:'calEB',summary:'Deliveries — East Bay',timeZone:'America/Los_Angeles'}]});
     if(u.pathname==='/api/calendar'){ const b=JSON.parse(body);
       // mirrors functions/api/calendar.js, using its real calendar resolution
@@ -322,8 +325,8 @@ function makeFake(seed){
       else { id='ev'+(Object.keys(EVENTS).length+1); EVENTS[id]=to; }
       calls.push(['calendar',{hub:b.hub,cal:to,moved,update:!!b.eventId,tz:b.timeZone}]); return send(200,{ok:true,eventId:id,calendarId:to,moved}); }
     if(u.pathname==='/api/drive') return send(200,{ok:true,id:'f1',webViewLink:''});
-    if(u.pathname==='/api/pod'){ const b=JSON.parse(body); calls.push(['pod',b]); if(gmailFail) return send(502,{error:{code:gmailFail,message:'Gmail: boom'}}); const o=T.dispatch_orders.find(x=>x.id===b.orderId); if(!o||!b.photoPath.startsWith('adchem/'+o.hub+'/pod/'+o.id+'/')) return send(400,{error:{code:'bad_path',message:'path '+b.photoPath}}); o.status='Delivered'; o.data.pod={collected:b.collected,issue:b.issue,note:b.note}; return send(200,{ok:true,sentAt:new Date().toISOString(),to:'orders@adchem.pro',cc:b.cc,msgId:'m1',status:'Delivered'}); }
-    if(u.pathname==='/api/deposit'){ const b=JSON.parse(body); calls.push(['deposit',b]); if(!b.photoPath.startsWith('adchem/'+b.hub+'/deposits/')) return send(400,{error:{code:'bad_path',message:'path '+b.photoPath}}); return send(200,{ok:true,sentAt:new Date().toISOString(),to:'accounting@adchem.pro',msgId:'d1'}); }
+    if(u.pathname==='/api/pod'){ const b=JSON.parse(body); calls.push(['pod',b]); if(gmailFail) return send(502,{error:{code:gmailFail,message:'Gmail: boom'}}); const o=T.dispatch_orders.find(x=>x.id===b.orderId); if(!o||!b.photoPath.startsWith('adchem/'+o.hub+'/pod/'+o.id+'/')) return send(400,{error:{code:'bad_path',message:'path '+b.photoPath}}); o.status='Delivered'; o.data.pod={collected:b.collected,issue:b.issue,note:b.note}; return send(200,{ok:true,sentAt:vDate().toISOString(),to:'orders@adchem.pro',cc:b.cc,msgId:'m1',status:'Delivered'}); }
+    if(u.pathname==='/api/deposit'){ const b=JSON.parse(body); calls.push(['deposit',b]); if(!b.photoPath.startsWith('adchem/'+b.hub+'/deposits/')) return send(400,{error:{code:'bad_path',message:'path '+b.photoPath}}); return send(200,{ok:true,sentAt:vDate().toISOString(),to:'accounting@adchem.pro',msgId:'d1'}); }
     if(u.pathname==='/api/orderlog'){ const b=JSON.parse(body); calls.push(['orderlog',b]); return send(200,b.rebuild?{ok:true,rebuilt:T.dispatch_orders.length}:{ok:true,updated:0,appended:(b.orderIds||[]).length}); }
     if(u.pathname==='/api/customers-out'){ const {company,...b}=JSON.parse(body||'{}'); if(!company) return send(400,{error:{code:'no_company',message:'company required'}}); calls.push(['customers-out',b]);
       return send(200,b.rebuild?{ok:true,rebuilt:T.dispatch_customers.filter(c=>c.company===company).length}:{ok:true,updated:0,appended:(b.customerIds||[]).length}); }
@@ -355,6 +358,10 @@ async function newPage(browser,base,opts){ opts=opts||{};
   const page=await browser.newPage({viewport:opts.viewport||{width:1100,height:1500}}); page.errs=[];
   page.on('pageerror',e=>page.errs.push(String(e)));
   page.on('console',m=>{ if(m.type()==='error'&&!/fonts|ERR_FAILED/.test(m.text())) page.errs.push(m.text()); });
+  // the app's clock is the fake's virtual clock (see CLOCK_OFFSET)
+  await page.addInitScript(off=>{ const R=Date;
+    class D extends R{ constructor(...a){ super(...(a.length?a:[R.now()+off])); } static now(){ return R.now()+off; } }
+    window.Date=D; },CLOCK_OFFSET);
   await page.route('**/fonts.*/**',r=>r.abort());
   await page.route('**/config.js',r=>r.fulfill({contentType:'application/javascript',body:`window.ADCHEM_CONFIG={supabaseUrl:"${base}",supabaseAnonKey:"anon",ordersTo:"orders@adchem.pro"};`}));
   return page; }

@@ -73,7 +73,13 @@ const ok = (data) => new Response(JSON.stringify(data), { status: 200, headers: 
 const decode = raw => Buffer.from(raw.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
 const eqParam = (u, k) => { const m = u.match(new RegExp('[?&]' + k + '=eq\\.([^&]+)')); return m ? decodeURIComponent(m[1]) : null; };
 
-async function run({ headers = {}, body = { send: true }, member = {}, env: envExtra = {}, serviceNames = false, waitUntil = false } = {}) {
+// the production code reads "today" from the clock, so the tests pin it: new Date() / Date.now() are 2026-10-20 10:00 Pacific while a run is in flight
+async function run(opts) {
+  const RealDate = globalThis.Date, fixed = RealDate.parse('2026-10-20T10:00:00-07:00');
+  globalThis.Date = class extends RealDate { constructor(...a) { super(...(a.length ? a : [fixed])); } static now() { return fixed; } };
+  try { return await runAt(opts); } finally { globalThis.Date = RealDate; }
+}
+async function runAt({ headers = {}, body = { send: true }, member = {}, env: envExtra = {}, serviceNames = false, waitUntil = false } = {}) {
   const env = { SUPABASE_URL: 'http://sb', SUPABASE_ANON_KEY: 'anon', SUPABASE_SERVICE_ROLE_KEY: 'svc-key', EXPIRY_SECRET: 's3cret-long-random', APP_URL: 'https://ops.adchem.pro', GOOGLE_SA_JSON: await serviceAccount(), ...envExtra };
   const calls = [], real = globalThis.fetch;
   const companies = [...COMPANIES, { id: 'west', name: 'West Co', short_name: 'West', data: {} }];

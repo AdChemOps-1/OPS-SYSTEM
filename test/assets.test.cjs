@@ -239,7 +239,7 @@ async function signIn(page, base){
   const nSends = fake.calls.filter(c => c[0] === 'assets-events').length;
   await page.click('#act_confirm'); await page.waitForTimeout(1500);
   const chunks = fake.calls.filter(c => c[0] === 'assets-events').slice(nSends).map(c => c[1]);
-  assert.deepEqual(chunks.map(c => c.length), [10, 10, 5], 'sent in chunks of 10');
+  assert.deepEqual(chunks.map(c => c.length), [6, 6, 6, 6, 1], 'sent in chunks of 6');
   assert.deepEqual(chunks.flat(), many, 'in order');
   const lines = await page.$$eval('#actResults > div', e => e.map(x => x.textContent.replace(/\s+/g, ' ').trim()));
   assert.equal(lines.length, 25);

@@ -53,7 +53,7 @@ const ADB={
     }
     return {ok:true,results:out};
   },
-  CHUNK:10,
+  CHUNK:6,   // Workers Free plan: 50 subrequests per call; an event costs up to 6 plus 3 for auth
   async read(eventId,kind,photoPath){ return await API.post("/api/assets",{action:"read",eventId:eventId,kind:kind,photoPath:photoPath}); },
   // /api/docs signs a document row's file by id and has no path form, and asset photos have no document row, so the photo
   // (<company>/asset/<event id>.jpg, readable by the company's members) is signed straight from storage for 5 minutes

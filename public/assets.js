@@ -1038,12 +1038,11 @@ async function toggleType(id){
 })();
 
 /* ---------- customer page: Cylinders tab and the site-card hint ---------- */
-// the customer's containers by site: {site_key: [asset rows]} (one ADB.assets read per site; {} without View assets or on a failed read)
-async function custSiteAssets(sites){
+// the customer's containers by site: {site_key: [asset rows]} (one ADB.assets read per site; {} without View assets)
+async function custSiteAssets(sites){   // throws when a read fails; the caller decides what to show
   var out={}; if(!canViewAssets()||!sites||!sites.length) return out;
-  try{ var got=await Promise.all(sites.map(function(s){ return ADB.assets({location_kind:"site",location_id:s.site_key}); }));
-    sites.forEach(function(s,i){ out[s.site_key]=got[i]||[]; }); }
-  catch(e){ out={}; }
+  var got=await Promise.all(sites.map(function(s){ return ADB.assets({location_kind:"site",location_id:s.site_key}); }));
+  sites.forEach(function(s,i){ out[s.site_key]=got[i]||[]; });
   return out;
 }
 function custSiteHint(rows){
@@ -1067,5 +1066,5 @@ async function renderCustAssets(customerId){
             (a.last_seen_at?' <span class="hint">since '+esc(aDay(a.last_seen_at))+"</span>":"")+"</div>"; }).join("")
           :'<div class="hint">No containers here</div>')+"</div>"; }).join("")
       :custEmpty("No sites yet","Containers show here once the customer has a delivery site.");
-  }catch(e){ banner("bad","Couldn't load cylinders","<div>"+esc(e.message)+"</div>"); }
+  }catch(e){ host.innerHTML='<p class="hint">Couldn\'t load the containers.</p>'; banner("bad","Couldn't load the containers","<div>"+esc(e.message)+"</div>"); }
 }

@@ -231,8 +231,8 @@ async function renderSites(){
   $("btnAddSite").disabled=ro||!custSaved();
   if(!custSaved()){ $("siteNew").hidden=true; $("siteList").innerHTML=notSavedYet(); return; }
   var sites=await CDB.sitesFor(c.id)||[]; if(!custStill(c)) return;
-  var notes=await Promise.all(sites.map(function(s){ return CDB.hubNotesFor(s.site_key); })); if(!custStill(c)) return;
-  var held=await custSiteAssets(sites); if(!custStill(c)) return;
+  var both=await Promise.all([Promise.all(sites.map(function(s){ return CDB.hubNotesFor(s.site_key); })),custSiteAssets(sites).catch(function(){ return {}; })]); if(!custStill(c)) return;
+  var notes=both[0], held=both[1];
   state.custSites=sites; state.custHubNotes={}; sites.forEach(function(s,i){ state.custHubNotes[s.site_key]=notes[i]||[]; });
   $("siteList").innerHTML=sites.length?sites.map(function(s){
     return '<details class="site-card"'+(state.openSite===s.site_key?" open":"")+"><summary><b>"+esc(s.site_label||s.site_key)+'</b><span class="chip k-none">'+esc(s.hub||"no hub")+"</span>"+

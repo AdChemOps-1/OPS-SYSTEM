@@ -19,7 +19,17 @@ Every row — customers, orders, BOLs, hubs, settings, photos — belongs to a c
 | **driver** | See their hub's routes on Today, with each site's notes and receiving contact, add a note on a stop, open BOLs, photograph and send the signed BOL, photograph and send bank deposit slips. One account per person (e.g. `maria@adchem.pro`), with their hub set on People |
 | **super admin** | A switch on top of a role, set on People by another super admin (you cannot remove your own). Holds every permission below and is the only one who can change a super admin |
 
-Seven permissions are switched per person on **People**: **Manage customers** (create and edit customers, sites and contacts; log activity), **Approve driver notes** (review the notes drivers add from Today), **Run imports** (read and commit the spreadsheet import on Setup; committing also needs Manage customers), **View documents** (read document records and open their files) and **Manage documents** (add, edit, upload, approve or reject, and delete documents), **View assets** (read the container register, its history and counts) and **Manage assets** (hub actions, corrections, vendors and container types). Everyone who can take orders can see Customers; without Manage customers it is read-only. Only true counts as granted: any other value in a person's permissions is no.
+Seven permissions are switched per person on **People**:
+
+- **Manage customers** — create and edit customers, sites and contacts; log activity.
+- **Approve driver notes** — review the notes drivers add from Today.
+- **Run imports** — read and commit the spreadsheet import on Setup (committing also needs Manage customers).
+- **View documents** — read document records and open their files.
+- **Manage documents** — add, edit, upload, approve or reject, and delete documents.
+- **View assets** — read the container register, its history and counts.
+- **Manage assets** — hub actions, corrections, vendors and container types.
+
+Everyone who can take orders can see Customers; without Manage customers it is read-only. Only true counts as granted: any other value in a person's permissions is no.
 
 Drivers never see billing contacts, balances, terms or prices. The server reads only the 14 FEED_ORDERS columns from the AR Command Center, and the import never reads a money column.
 
@@ -64,7 +74,7 @@ Two switches on **People** control it: **View assets** (read the register, a con
 - **Hub actions** (Manage assets, on the Assets tab) — **Fill**, **To vendor**, **From vendor**, **Move** and **Add assets**: type or scan the serials, then confirm; each serial is recorded on its own. Fill draws the product down by the type's fill weight.
 - **Counts** — containers by type, fill state and place, and the product on hand, so the hubs can see what is full, empty or out.
 - **Customer → Cylinders** tab — the containers at each of the customer's sites with "since" dates; the site card on the Sites tab says "N containers here since <date>". Needs View assets.
-- **Setup → Vendors and container types** — who fills, rents or supplies containers, and the sizes and products that serials are filed under.
+- **Setup → Vendors** — who fills, rents or supplies containers; its **Container types** disclosure holds the sizes and products that serials are filed under.
 - **Serials** are normalised before they are stored or matched: spaces and dashes are removed and letters are upper-cased, so `ab-12 34` and `AB1234` are the same container.
 
 ## Expiry email

@@ -107,6 +107,12 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.match(flat(await page.textContent('#siteList')), /1 containers? here since/, 'the site card hints at the containers there');
   await page.click('#ctab-cylinders'); await page.waitForTimeout(500);
   assert.match(flat(await page.textContent('#cpane-cylinders')), /Primary.*CD5678.*50lb Cylinder.*empty.*since/, 'the Cylinders tab lists CD5678 at the site');
+  // a failed asset read is an error, never an empty site
+  await page.route('**/rest/v1/dispatch_assets*', r=>r.fulfill({status:500,contentType:'application/json',body:'{"message":"boom"}'}));
+  await page.click('#ctab-profile'); await page.click('#ctab-cylinders'); await page.waitForTimeout(500);
+  assert.match(flat(await page.textContent('#banners')+await page.textContent('#cpane-cylinders')), /Couldn't load the containers/, 'failed read shows the banner and the line');
+  assert.doesNotMatch(flat(await page.textContent('#cpane-cylinders')), /No containers here/, 'a failed read is not an empty site');
+  await page.unroute('**/rest/v1/dispatch_assets*');
   await page.click('#ctab-sites'); await page.waitForTimeout(300);
   const sf = '#siteList form[data-site="ADC-0001 — Primary"]';
   assert.match(await page.$eval(sf,e=>e.id), /^s_[a-z0-9]+$/, 'site form id is s_ + hash');
@@ -472,7 +478,7 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
     await pcw.close();
   }
   // no page errors except the deliberate Customers Out 502
-  assert.deepEqual(pages.flatMap(p=>p.errs).filter(e=>!/status of 502/.test(e)), [], 'unexpected page errors');
+  assert.deepEqual(pages.flatMap(p=>p.errs).filter(e=>!/status of (502|500)/.test(e)), [], 'unexpected page errors');
   assert.equal(page.errs.filter(e=>/status of 502/.test(e)).length, 1, 'the Customers Out failure case ran');
   } finally { await b.close(); await fake.stop(); for (const f of fakes) await f.stop(); }
 })().then(()=>{ console.log('customers.test.cjs: ok'); }, e=>{ console.error(e); process.exit(1); });

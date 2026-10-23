@@ -199,11 +199,12 @@ function seedAssets(){ const t0='2026-10-01T00:00:00Z';
     dispatch_vendors:[{id:'vend-airgas',company:'adchem',name:'Airgas',roles:['fill','rent'],contact_name:'',phone:'',email:'',addr:'',notes:'',active:true}],
     dispatch_container_types:[{id:'ct-co2-50',company:'adchem',kind:'cylinder',size_label:'50lb Cylinder',product:'Carbon Dioxide',fill_lb:50,active:true},
       {id:'ct-co2-20',company:'adchem',kind:'cylinder',size_label:'20lb Cylinder',product:'Carbon Dioxide',fill_lb:20,active:true},
-      {id:'ct-n2-260',company:'adchem',kind:'dewar',size_label:'260L Dewar',product:'Nitrogen',fill_lb:null,active:true}],
+      {id:'ct-n2-260',company:'adchem',kind:'dewar',size_label:'260L Dewar',product:'Nitrogen',fill_lb:null,active:true},
+      {id:'ct-north-co2-50',company:'north',kind:'cylinder',size_label:'50lb Cylinder',product:'Carbon Dioxide',fill_lb:50,active:true}],
     dispatch_assets:[A('as-ab1234','adchem','AB1234','ct-co2-50','adchem',null,'full','hub','EB'),
       A('as-cd5678','adchem','CD5678','ct-co2-50','vendor','vend-airgas','empty','site',SITE_ADC1),
       A('as-ef9012','adchem','EF9012','ct-co2-20','adchem',null,'full','vendor','vend-airgas'),
-      A('as-zz0001','north','ZZ0001','ct-co2-50','north',null,'full','hub','LA')],
+      A('as-zz0001','north','ZZ0001','ct-north-co2-50','adchem',null,'full','hub','LA')],
     dispatch_asset_events:[], dispatch_stock_movements:[] }; }
 const normSerial=s=>String(s==null?'':s).trim().toUpperCase().replace(/\s+/g,'');
 const memberOf=(T,co,userId)=>T.dispatch_members.find(x=>x.user_id===(userId||'u1')&&x.company===co&&x.active)||null;
@@ -230,12 +231,13 @@ function fakeAssets(T,b){
     if(T.__visionDown) return {code:200,body:{candidates:[],raw:'',error:'Vision is not enabled'}};
     return {code:200,body:{candidates:[{text:'AB1234',score:0.9},{text:'DOT3AA2015',score:0.2}],raw:'AB1234 DOT3AA2015'}}; }
   if(b.action==='counts'){ if(!hasPerm(m,'view_assets')) return {code:403,body:{error:{code:'forbidden',message:"You don't have the view assets permission."}}};
-    const g={}; (T.dispatch_assets||[]).filter(a=>a.company===co).forEach(a=>{ const ct=T.dispatch_container_types.find(c=>c.id===a.container_type_id)||{};
+    const g={}; (T.dispatch_assets||[]).filter(a=>a.company===co).forEach(a=>{ const ct=T.dispatch_container_types.find(c=>c.company===co&&c.id===a.container_type_id)||{};
       const k=[a.container_type_id,a.fill_state,a.location_kind,a.condition].join('|'); (g[k]=g[k]||{container_type_id:a.container_type_id,product:ct.product||null,size_label:ct.size_label||null,fill_state:a.fill_state,location_kind:a.location_kind,condition:a.condition,n:0}).n++; });
     return {code:200,body:{rows:Object.values(g)}}; }
   if(b.action==='events'){ if(!m) return {code:403,body:{error:{code:'no_access',message:'You are not a member of that company.'}}};
     const driver=m.role==='driver'&&!hasPerm(m,'manage_assets'); const results=[];
     const myStop=p=>!p||!p.kind||(p.kind==='hub'&&p.id===m.hub)||(p.kind==='site'&&siteOnTodayOrder(T,co,m.hub,p.id));
+    const bad=(b.events||[]).findIndex(e=>!e||e.id==null||e.id===''); if(bad>=0) return {code:400,body:{error:{code:'bad_event',message:'event '+bad+' has no id'}}};
     for(const e of (b.events||[])){ const res={eventId:e.id,assetId:null,serial:normSerial(e.serial),status:'applied'};
       const reject=r=>{ res.status='rejected'; res.reason=r; results.push(res); };
       if((T.dispatch_asset_events||[]).some(x=>x.id===e.id)){ const old=T.dispatch_asset_events.find(x=>x.id===e.id); res.status='duplicate'; res.assetId=old.asset_id; results.push(res); continue; }
@@ -258,8 +260,9 @@ function fakeAssets(T,b){
       else if(e.type==='collected'){ mv(); a.fill_state=e.fillAfter||'empty'; }
       else if(e.type==='to_vendor') mv();
       else if(e.type==='from_vendor'){ mv(); a.fill_state=e.fillAfter||'full'; }
-      else if(e.type==='filled'){ a.fill_state='full'; const ct=T.dispatch_container_types.find(c=>c.id===a.container_type_id);
-        if(ct&&typeof ct.fill_lb==='number') T.dispatch_stock_movements.push({id:uuid(),company:co,hub:a.location_id,product:ct.product,container:'',item:'',qty:-ct.fill_lb,unit:'lb',reason:'filled',vendor_id:null,order_id:null,asset_event_id:row.id,note:'',occurred_at:at,recorded_by:'u1'});
+      else if(e.type==='filled'){ a.fill_state='full'; const ct=T.dispatch_container_types.find(c=>c.company===co&&c.id===a.container_type_id);
+        if(a.location_kind!=='hub') res.warning='asset is not at a hub';
+        else if(ct&&typeof ct.fill_lb==='number') T.dispatch_stock_movements.push({id:uuid(),company:co,hub:a.location_id,product:ct.product,container:'',item:'',qty:-ct.fill_lb,unit:'lb',reason:'filled',vendor_id:null,order_id:null,asset_event_id:row.id,note:'',occurred_at:at,recorded_by:'u1'});
         else res.warning='no fill weight on this container type'; }
       else if(e.type==='moved') mv();
       else if(e.type==='sighted') mv();
@@ -275,7 +278,7 @@ function makeFake(seed){
   server=http.createServer(async (req,res)=>{
     const u=new URL(req.url,'http://x'); let body=''; for await (const c of req) body+=c;
     const send=(code,obj,hdr={})=>{res.writeHead(code,{'content-type':'application/json',...hdr});res.end(JSON.stringify(obj));};
-    if(u.pathname.startsWith('/auth/v1/token')){ const b=JSON.parse(body); if(b.password==='bad') return send(400,{error:'invalid',error_description:'Invalid login credentials',msg:'Invalid login credentials'}); return send(200,{access_token:'tok',token_type:'bearer',expires_in:3600,expires_at:Math.floor(Date.now()/1000)+3600,refresh_token:'r',user:{id:'u1',email:b.email,aud:'authenticated',role:'authenticated'}}); }
+    if(u.pathname.startsWith('/auth/v1/token')){ const b=JSON.parse(body); if(b.password==='bad') return send(400,{error:'invalid',error_description:'Invalid login credentials',msg:'Invalid login credentials'}); return send(200,{access_token:'tok',token_type:'bearer',expires_in:3600,expires_at:Math.floor(vNow()/1000)+3600,refresh_token:'r',user:{id:'u1',email:b.email,aud:'authenticated',role:'authenticated'}}); }
     if(u.pathname==='/auth/v1/user') return send(200,{id:'u1',email:'jamie@adchem.pro',aud:'authenticated',role:'authenticated'});
     if(u.pathname==='/auth/v1/logout') return send(204,{});
     if(u.pathname.startsWith('/rest/v1/rpc/')){ const r=fakeRpc(u.pathname.split('/').pop(),JSON.parse(body||'{}'),T); return send(r.code,r.body); }

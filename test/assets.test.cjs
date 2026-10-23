@@ -5,6 +5,8 @@ const { chromium } = require('playwright');
 const { makeFake, newPage } = require('./_fake.cjs');
 const flat = s => (s || '').replace(/\s+/g, ' ').trim();
 
+// the browser logs a console error for each deliberately failed request; remove just that one entry
+function dropExpected(page, status){ const i = page.errs.findIndex(e => e.includes('Failed to load resource') && e.includes(status)); assert.ok(i >= 0, 'expected a ' + status + ' console entry'); page.errs.splice(i, 1); }
 async function signIn(page, base){
   await page.goto(base+'/'); await page.waitForTimeout(400);
   await page.fill('#lEmail','jamie@adchem.pro'); await page.fill('#lPass','correct-horse'); await page.click('#btnLogin'); await page.waitForTimeout(1000);
@@ -218,8 +220,30 @@ async function signIn(page, base){
   assert.equal((flat(await page.textContent('#actResults')).match(/applied/g) || []).length, 2);
   const add1 = T.dispatch_assets.find(a => a.serial === 'ADD1');
   assert.ok(add1 && add1.owner_kind === 'vendor' && add1.owner_id === 'vend-airgas' && add1.location_id === 'EB' && add1.container_type_id === 'ct-co2-20', 'ADD1 created');
+  // a whole-batch 400 (bad_event) is a refusal: shown as rejected, not as retryable
+  await page.fill('#act_serial', 'ADD3'); await page.press('#act_serial', 'Enter');
+  await page.route('**/api/assets', r => JSON.parse(r.request().postData() || '{}').action === 'events'
+    ? r.fulfill({status:400, contentType:'application/json', body:JSON.stringify({error:{code:'bad_event', message:'event 0: occurredAt must be an ISO time'}})}) : r.continue());
+  await page.click('#act_confirm'); await page.waitForTimeout(600);
+  await page.unroute('**/api/assets');
+  dropExpected(page, '400 (Bad Request)');
+  const rej = flat(await page.textContent('#actResults'));
+  assert.match(rej, /ADD3 — rejected: event 0: occurredAt must be an ISO time/); assert.doesNotMatch(rej, /try again/);
+  await page.click('[data-unlist="ADD3"]');
   await page.click('#actClose'); await page.waitForTimeout(500);
   assert.equal((await regRows()).length, 6, 'register refreshed after the actions');
+  // the detail's read fails: back on the register, not stuck on Loading, and the next visit does not reopen it
+  await page.route('**/rest/v1/dispatch_assets?*id=eq.as-ef9012*', r => r.fulfill({status:500, contentType:'application/json', body:JSON.stringify({message:'boom'})}));
+  await page.click('.a-row[data-id="as-ef9012"]'); await page.waitForTimeout(600);
+  await page.unroute('**/rest/v1/dispatch_assets?*id=eq.as-ef9012*');
+  dropExpected(page, '500 (Internal Server Error)');
+  assert.match(flat(await page.textContent('#banners')), /Couldn't load the container/);
+  assert.equal(await page.$eval('#aDetail', e => e.hidden), true, 'detail closed');
+  assert.equal(await page.$eval('#aList', e => e.hidden), false, 'register list visible again');
+  assert.equal(await page.$eval('#aTools', e => e.hidden), false, 'filters visible again');
+  await page.click('#tab-setup'); await page.waitForTimeout(300); await page.click('#tab-assets'); await page.waitForTimeout(600);
+  assert.equal(await page.$eval('#aDetail', e => e.hidden), true, 'not reopened on the next visit');
+  assert.deepEqual(page.errs, [], 'no page errors after the failed detail');
   // Mark lost
   await page.click('.a-row[data-id="as-cd5678"]'); await page.waitForTimeout(500);
   await page.click('#aLost'); await page.waitForTimeout(600);

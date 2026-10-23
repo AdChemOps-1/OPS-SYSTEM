@@ -80,7 +80,9 @@ async function aLoadSites(rows){
   var have=state.feed.rows||[], keys=[];
   rows.forEach(function(a){ if(a.location_kind==="site"&&!(a.location_id in state.aSites)&&keys.indexOf(a.location_id)<0&&!have.some(function(x){ return x.siteKey===a.location_id; })) keys.push(a.location_id); });
   if(!keys.length) return;
-  try{ var got=sbErr(await supa.from("dispatch_sites").select("site_key,customer,site_label").eq("company",state.company).in("site_key",keys))||[];
+  var co=state.company;
+  try{ var got=sbErr(await supa.from("dispatch_sites").select("site_key,customer,site_label").eq("company",co).in("site_key",keys))||[];
+    if(co!==state.company) return;   // switched company while loading
     keys.forEach(function(k){ state.aSites[k]=k; });
     got.forEach(function(s){ state.aSites[s.site_key]=s.customer+(s.site_label?" — "+s.site_label:""); }); }
   catch(e){ /* names fall back to the site_key */ }
@@ -199,7 +201,8 @@ async function aOpenDetail(id){
   if(!det.firstChild) det.innerHTML='<p class="hint">Loading…</p>';
   var a, evs;
   try{ var r=await Promise.all([ADB.asset(id),ADB.events(id)]); a=r[0]; evs=r[1]; }
-  catch(e){ banner("bad","Couldn't load the container","<div>"+esc(e.message)+"</div>",{key:"assets"}); return; }
+  catch(e){ if(co!==state.company||state.aDetail!==id) return;
+    banner("bad","Couldn't load the container","<div>"+esc(e.message)+"</div>",{key:"assets"}); aCloseDetail(); return; }
   if(co!==state.company||state.aDetail!==id) return;
   if(!a){ banner("warn","That container is not in the register","",{autoclose:6000,key:"assets"}); aCloseDetail(); return; }
   var i=state.aRows.findIndex(function(x){ return x.id===id; }); if(i>=0) state.aRows[i]=a;
@@ -404,8 +407,11 @@ async function actConfirm(){
   var items=A.items.slice(), events=items.map(function(i){ return actBuild(kind,i,ctx,!known[i.serial]); });
   var r;
   try{ r=await ADB.sendEvents(events); }
-  catch(e){ A.sending=false; A.results=items.map(function(i){ return {serial:i.serial,status:"error",reason:e.message}; }); actDraw();
-    banner("bad","Not sent — try again","<div>"+esc(e.message)+"</div>",{key:"act"}); return; }
+  catch(e){
+    // a whole-batch 4xx (the server's bad_event) is a refusal sending again won't change; a network error or 5xx is retryable
+    var refused=e.status>=400&&e.status<500;
+    A.sending=false; A.results=items.map(function(i){ return {serial:i.serial,status:refused?"rejected":"error",reason:e.message}; }); actDraw();
+    banner("bad",refused?"Not recorded":"Not sent — try again","<div>"+esc(e.message)+"</div>",{key:"act"}); return; }
   if(state.act!==A) return;
   var res=(r&&r.results)||[], keep=[], warns={}, applied=0, failed=0;
   A.results=items.map(function(i,n){ var x=res[n]||{status:"error",reason:"no answer for this serial"};

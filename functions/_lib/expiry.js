@@ -108,7 +108,7 @@ export async function sendExpiryEmails(env, db, { company, who, mailFrom, today,
 }
 
 // The daily stock email (migration 008): per company with stockAlertRecipients, the dispatch_stock_onhand_for rows below their
-// minimum. db: the caller's client (Send now) or the service role (cron; the 008 grant lets it read every company). companies and
+// minimum whose minimum has its alert on (alert = false rows are flagged on the screen only). db: the caller's client (Send now) or the service role (cron; the 008 grant lets it read every company). companies and
 // settingsByCompany may be passed in (sendExpiryEmails has just read them); otherwise they are read the same way.
 // → {sent:[{company,to,count}], skipped:[{company, reason: no_recipients|nothing_below|send_failed|read_failed[, message]}]}
 export async function sendStockAlerts(env, db, { company, who, mailFrom, today, appUrl, companies, settingsByCompany }) {
@@ -124,7 +124,7 @@ export async function sendStockAlerts(env, db, { company, who, mailFrom, today, 
     let rows;
     try { rows = await db.rpc("dispatch_stock_onhand_for", { c: co.id }); }
     catch (e) { skipped.push({ company: co.id, reason: "read_failed", message: String((e && e.message) || e) }); continue; }
-    const [mail] = buildStockAlerts([co], { [co.id]: Array.isArray(rows) ? rows : [] }, { [co.id]: s }, today, appUrl || s.appUrl || "");
+    const [mail] = buildStockAlerts([co], { [co.id]: (Array.isArray(rows) ? rows : []).filter(r => r && r.alert !== false) }, { [co.id]: s }, today, appUrl || s.appUrl || "");
     if (!mail) { skipped.push({ company: co.id, reason: "nothing_below" }); continue; }
     try { await sendMail(env, { from: (company && mailFrom) || mailFromOf(co.data, env), to: mail.to, subject: mail.subject, text: mail.text }); }
     catch (e) { skipped.push({ company: co.id, reason: "send_failed", message: String(e.message || e) }); continue; }

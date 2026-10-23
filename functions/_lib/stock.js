@@ -35,13 +35,23 @@ export function stockKeyOf(entry) {
   return { hub, product, container, item, unit, kind };
 }
 
+// The gas-container keys of a company, 'product|size_label' per container type row ({product, size_label}); the register owns the
+// counts under those keys (full, in-service containers at a hub), so no stock entry may be written under one.
+export function gasKeysOf(types) {
+  return new Set((Array.isArray(types) ? types : []).filter(t => t && typeof t === "object")
+    .map(t => String(t.product || "").trim() + "|" + String(t.size_label || "").trim()).filter(k => k !== "|"));
+}
+
 // entry = {kind, hub, product, container, item, qty, unit, vendorId?, note?, bulkProduct?, lbPerUnit?, onhand?}; company; who (the
-// caller's user id); now (a Date). → rows shaped as dispatch_stock_movements (no id). counted uses entry.onhand as the current
-// figure (the server passes its own) and writes nothing when the count already matches.
-export function movementsFor(entry, company, who, now) {
+// caller's user id); now (a Date); gasKeys (optional: a Set from gasKeysOf, or an array of 'product|container' strings). → rows
+// shaped as dispatch_stock_movements (no id). counted uses entry.onhand as the current figure (the server passes its own) and
+// writes nothing when the count already matches. Any kind whose key is a gas-container key throws (the register counts those).
+export function movementsFor(entry, company, who, now, gasKeys) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) bad("entry must be an object");
   if (!KINDS.includes(entry.kind)) bad("kind must be one of " + KINDS.join(", "));
   const k = stockKeyOf(entry);
+  if (k.kind === "container" && gasKeys && (gasKeys instanceof Set ? gasKeys.has(k.product + "|" + k.container) : Array.isArray(gasKeys) && gasKeys.includes(k.product + "|" + k.container)))
+    bad(k.product + " " + k.container + " is a gas container: the register counts those (record fills and moves on the Assets tab)");
   const qty = num(entry.qty, "qty");
   const note = text(entry.note, "note", MAX_NOTE);
   // 'undelivered <order id>' is the orders trigger's reversal marker (008 net rule); a hand entry must never look like one
@@ -93,14 +103,15 @@ const shortName = co => (co && (co.short_name || co.name || co.id)) || "";
 export const stockLabel = r => r.item ? String(r.item) : String(r.product || "") + (r.container ? " " + r.container : "");
 const fmt = v => (v === null || v === undefined ? "—" : String(Number(v)));
 
-// companies: [{id, name, short_name}]; belowRowsByCompany: {id: dispatch_stock_onhand_for rows} (rows not below are ignored);
-// settingsByCompany: {id: settings data}; today: YYYY-MM-DD; appUrl: footer link ('' omits it).
-// → [{company, to, subject, text, count}], one per company with at least one valid recipient and at least one row below minimum.
+// companies: [{id, name, short_name}]; belowRowsByCompany: {id: dispatch_stock_onhand_for rows} (rows not below, and rows whose
+// minimum has alert = false, are ignored); settingsByCompany: {id: settings data}; today: YYYY-MM-DD; appUrl: footer link ('' omits it).
+// → [{company, to, subject, text, count}], one per company with at least one valid recipient and at least one row below minimum with
+// its alert on.
 export function buildStockAlerts(companies, belowRowsByCompany, settingsByCompany, today, appUrl) {
   const out = [];
   for (const co of companies || []) {
     const to = stockRecipientsOf((settingsByCompany || {})[co.id]);
-    const rows = (((belowRowsByCompany || {})[co.id]) || []).filter(r => r && r.below === true)
+    const rows = (((belowRowsByCompany || {})[co.id]) || []).filter(r => r && r.below === true && r.alert !== false)
       .sort((a, b) => String(a.hub).localeCompare(String(b.hub)) || stockLabel(a).localeCompare(stockLabel(b)));
     if (!to.length || !rows.length) continue;
     const name = shortName(co);

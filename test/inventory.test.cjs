@@ -119,14 +119,15 @@ async function uiPart(b){
     assert.ok(pal, 'Pallet minimum stored'); assert.deepEqual([pal.hub, pal.product, pal.container, pal.min_qty, pal.unit, pal.alert], ['EB', '', '', 2, 'count', true]);
     assert.match(await row('||Pallet', 'invSup'), /^Pallet 0 .*below min 2/, 'a minimum with no stock shows at zero');
     assert.match(flat(await page.textContent('#invBelow')), /3 below minimum at EB/);
-    // edit the regulator minimum down to 2 and the alert off, then delete the pallet minimum
+    // edit the regulator minimum up to 5 with the alert off (3 on hand stays below on the screen), then delete the pallet minimum
     await page.click('#invMins [data-min-edit="min-reg"]'); await page.waitForTimeout(100);
-    await page.fill('#min_qty', '2'); await page.uncheck('#min_alert'); await page.click('#btnSaveMin'); await page.waitForTimeout(600);
-    assert.deepEqual([T.dispatch_stock_settings.find(x => x.id === 'min-reg').min_qty, T.dispatch_stock_settings.find(x => x.id === 'min-reg').alert], [2, false]);
-    assert.doesNotMatch(await row(K.reg), /below/);
+    await page.fill('#min_qty', '5'); await page.uncheck('#min_alert'); await page.click('#btnSaveMin'); await page.waitForTimeout(600);
+    assert.deepEqual([T.dispatch_stock_settings.find(x => x.id === 'min-reg').min_qty, T.dispatch_stock_settings.find(x => x.id === 'min-reg').alert], [5, false]);
+    assert.match(await row(K.reg), /^Regulator 3 .*below min 5/, 'alert off still flags the row');
+    assert.match(flat(await page.textContent('#invMins')), /Regulator.*5.*count.*alert off/);
     await page.click('#invMins [data-min-del="' + pal.id + '"]'); await page.waitForTimeout(600);
     assert.ok(!T.dispatch_stock_settings.some(x => x.item === 'Pallet'), 'deleted');
-    assert.match(flat(await page.textContent('#invBelow')), /1 below minimum at EB/, 'only the bulk is below now');
+    assert.match(flat(await page.textContent('#invBelow')), /2 below minimum at EB/, 'the bulk (alert on) and the regulators (alert off) are below');
 
     // Setup -> Warnings: the stock alert recipients go through the RPC; a settings save never carries them
     await page.click('#tab-setup'); await page.waitForTimeout(500);
@@ -142,6 +143,11 @@ async function uiPart(b){
     assert.equal(await page.$eval('#warnStockTo', e => e.value), 'ops@adchem.pro\nlead@adchem.pro');
     await page.evaluate(async () => { state.settings.stockAlertRecipients = ['someone@else.example']; await DB.saveSettings(); });
     assert.deepEqual(T.dispatch_company_settings[0].data.stockAlertRecipients, ['ops@adchem.pro', 'lead@adchem.pro'], 'DB.saveSettings does not carry it');
+    // the daily email honours the switch: of the two rows below (bulk alert on, regulators alert off) only the bulk is mailed
+    const ex = await (await fetch(base + '/api/expiry', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({send:true, company:'adchem'})})).json();
+    assert.deepEqual(ex.stock.sent, [{company:'adchem', to:['ops@adchem.pro', 'lead@adchem.pro'], count:1}], 'one row mailed');
+    const below = (await (await fetch(base + '/api/stock', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({action:'below', company:'adchem'})})).json()).rows;
+    assert.deepEqual(below.map(r => [r.product || r.item, r.alert]).sort(), [['Carbon Dioxide', true], ['Regulator', false]], 'both still read as below');
     assert.deepEqual(page.errs, [], 'page errors');
     await page.close();
 
@@ -224,11 +230,22 @@ async function fakePart(b){
     await api('/api/pod', {orderId:'o2', photoPath:'adchem/EB/pod/o2/x.jpg'});
     assert.equal(T.dispatch_orders.find(o => o.id === 'o2').status, 'Cancelled', 'pod leaves other statuses alone');
 
-    // a minimum with no stock rows still shows, at zero and below
+    // a minimum with no stock rows still shows, at zero and below; the alert column follows the minimum (none = false)
     T.dispatch_stock_settings.push({id:'min-pal', company:'adchem', hub:'EB', product:'', container:'', item:'Pallet', min_qty:2, unit:'count'});
     const pal = (await api('/api/stock', {action:'onhand', company:'adchem'})).body.rows.find(r => r.item === 'Pallet');
-    assert.deepEqual([pal.qty, pal.below], [0, true]);
+    assert.deepEqual([pal.qty, pal.below, pal.alert], [0, true, true]);
+    assert.equal((await api('/api/stock', {action:'onhand', company:'adchem'})).body.rows.find(r => r.container === 'Bin').alert, false, 'no minimum: alert false');
     T.dispatch_stock_settings.pop();
+
+    // a gas-container key (a product + container that is one of the company's container types) is refused for every kind: the register counts those
+    const cyl = {hub:'EB', product:'Carbon Dioxide', container:'50lb Cylinder', unit:'count'};
+    const nMv = T.dispatch_stock_movements.length;
+    for (const entry of [{kind:'received', ...cyl, qty:1}, {kind:'adjusted', ...cyl, qty:1, note:'x'}, {kind:'counted', ...cyl, qty:3}, {kind:'produced', ...cyl, qty:1}]) {
+      const g = await api('/api/stock', {action:'move', company:'adchem', entry});
+      assert.deepEqual([g.status, g.body.error.code], [400, 'gas_key'], entry.kind); assert.match(g.body.error.message, /gas container/);
+    }
+    assert.equal(T.dispatch_stock_movements.length, nMv, 'nothing written');
+    assert.equal((await api('/api/stock', {action:'onhand', company:'adchem'})).body.rows.filter(r => r.container === '50lb Cylinder').length, 1, 'one row per key');
 
     // minimum rows through REST need manage_assets; filled / delivered cannot be inserted by a client
     const bad = await fetch(base+'/rest/v1/dispatch_stock_movements', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({company:'adchem', hub:'EB', product:'x', container:'', item:'', qty:-1, unit:'lb', reason:'delivered'})});
@@ -244,6 +261,14 @@ async function fakePart(b){
     await api('/api/stock', {action:'move', company:'adchem', entry:{kind:'consumed', hub:'EB', item:'Regulator', qty:3, unit:'count', note:'jobs'}});
     await api('/api/expiry', {send:true, company:'adchem'});
     assert.deepEqual(fake.calls.filter(c => c[0] === 'stock_alert').map(c => c[1]), [{company:'adchem', to:['ops@adchem.pro'], count:1}]);
+    // a second minimum below with its alert off: both read as below, only the alert-on one is mailed
+    T.dispatch_stock_settings.push({id:'min-pal2', company:'adchem', hub:'EB', product:'', container:'', item:'Pallet', min_qty:2, unit:'count', alert:false});
+    assert.deepEqual((await api('/api/stock', {action:'below', company:'adchem'})).body.rows.map(r => [r.item, r.alert]).sort(), [['Pallet', false], ['Regulator', true]]);
+    await api('/api/expiry', {send:true, company:'adchem'});
+    assert.deepEqual(fake.calls.filter(c => c[0] === 'stock_alert').map(c => c[1].count), [1, 1], 'the alert-off row is not mailed');
+    T.dispatch_stock_settings.find(x => x.id === 'min-reg').alert = false;
+    assert.equal((await api('/api/expiry', {send:true, company:'adchem'})).body.stock.skipped[0].reason, 'nothing_below', 'every below row alert off: no mail');
+    T.dispatch_stock_settings.find(x => x.id === 'min-reg').alert = true; T.dispatch_stock_settings.pop();
     T.dispatch_members[0].is_super_admin = false;
     assert.equal((await rpc({p_company:'adchem', p_recipients:[]})).status, 403, 'super admin only');
     T.dispatch_members[0].is_super_admin = true;

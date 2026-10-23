@@ -1,12 +1,14 @@
 // POST /api/stock — stock movements and on-hand (migration 008; functions/_lib/stock.js shapes the rows).
 //   {action:'move', entry:{kind, hub, product, container, item, qty, unit, vendorId?, note?, bulkProduct?, lbPerUnit?}} -> {ok, ids[, note]}
 //        manage_assets (or a super admin). counted reads on-hand here and writes the delta from the server's figure (the client's
-//        entry.onhand is ignored); a count that already matches writes nothing ({ok:true, ids:[], note:'no change'}).
-//   {action:'onhand'} -> {rows}   dispatch_stock_onhand_for rows; view_assets, an editor (admin / coordinator), or a super admin
-//   {action:'below'}  -> {rows}   the same rows with below = true
+//        entry.onhand is ignored); a count that already matches writes nothing ({ok:true, ids:[], note:'no change'}). An entry under
+//        a gas-container key (a product + container that is one of the company's container types) is 400: the register owns those.
+//   {action:'onhand'} -> {rows}   dispatch_stock_onhand_for rows (qty, min_qty, below, alert); view_assets, an editor (admin /
+//                                 coordinator), or a super admin
+//   {action:'below'}  -> {rows}   the same rows with below = true (alert on or off: the screen flags both)
 // Everything runs as the caller (RLS applies; dstock_insert refuses filled and delivered rows whatever is sent).
 import { requireUser, sb, json, fail, handle, companyFrom, hasPerm } from "../_lib/auth.js";
-import { movementsFor, stockKeyOf } from "../_lib/stock.js";
+import { movementsFor, stockKeyOf, gasKeysOf } from "../_lib/stock.js";
 
 const EDITORS = ["admin", "coordinator"];
 
@@ -32,10 +34,15 @@ export async function onRequestPost({ request, env }) {
 
     if (!hasPerm(me, "manage_assets")) return fail("You don't have the manage assets permission.", 403, "forbidden");
     const entry = body.entry;
-    const shape = e => { try { return { rows: movementsFor(e, company, user.id, new Date()) }; } catch (err) { return { why: String((err && err.message) || err) }; } };
+    let gasKeys = null;
+    const shape = e => { try { return { rows: movementsFor(e, company, user.id, new Date(), gasKeys) }; } catch (err) { return { why: String((err && err.message) || err) }; } };
     // the client's onhand is never used: counted reads the figure here, after the shape is checked (a bad entry is 400 before any read)
     let v = shape(entry && typeof entry === "object" && !Array.isArray(entry) ? { ...entry, onhand: 0 } : entry);
     if (v.why) return fail(v.why, 400, "bad_entry");
+    // a gas-container key (product + size_label of one of the company's container types) is never written here: the register counts those
+    gasKeys = gasKeysOf(await db.get("dispatch_container_types?select=product,size_label&company=eq." + encodeURIComponent(company)));
+    v = shape({ ...entry, onhand: 0 });
+    if (v.why) return fail(v.why, 400, "gas_key");
     if (entry.kind === "counted") {
       // the count's delta is taken from on-hand, so a caller who cannot read on-hand (no rows ≠ zero) may not count
       if (!(hasPerm(me, "view_assets") || EDITORS.includes(me.role))) return fail("counting needs View assets", 403, "forbidden");

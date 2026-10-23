@@ -1,13 +1,14 @@
 -- AdChem Ops — 008 policy test. Run inside a transaction that is rolled back:  begin; <008> <008 again> <this file> rollback;
 -- Creates throw-away users (super admin sa, manager mg with view_assets + manage_assets, viewer vw with view_assets only,
--- coordinator cn with no switches, a super admin nm of a second company `north`), then acts as each one (role authenticated +
+-- coordinator cn with no switches, driver dr at EB with no switches, a super admin nm of a second company `north`), then acts as each one (role authenticated +
 -- request.jwt.claims, which auth.uid() reads) and raises on any wrong answer. Ends with raise exception 'VERIFY-OK …' carrying the
 -- key counts, so the whole batch aborts and nothing persists even if the caller forgets to roll back.
 do $t$
 declare
   sa uuid := gen_random_uuid(); mg uuid := gen_random_uuid(); vw uuid := gen_random_uuid(); cn uuid := gen_random_uuid(); nm uuid := gen_random_uuid();
+  dr uuid := gen_random_uuid();
   t50 uuid; a_f uuid := gen_random_uuid(); e_f uuid := gen_random_uuid();
-  n int; n_onhand int; n_cn int; n_order int; q numeric; net numeric; ok boolean; r record; v jsonb; lg record;
+  n int; n_onhand int; n_cn int; n_order int; n_dr int; q numeric; net numeric; ok boolean; r record; v jsonb; lg record;
 begin
   -- ---- setup (as the database owner; RLS does not apply) ----
   insert into public.companies (id, name, short_name) values ('north', 'North Test Co', 'North') on conflict (id) do nothing;
@@ -20,20 +21,20 @@ begin
   insert into auth.users (id, instance_id, aud, role, email, raw_user_meta_data, raw_app_meta_data, created_at, updated_at)
   select u, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', e, '{}'::jsonb, '{}'::jsonb, now(), now()
     from (values (sa,'t008-sa@example.test'), (mg,'t008-mg@example.test'), (vw,'t008-vw@example.test'),
-                 (cn,'t008-cn@example.test'), (nm,'t008-nm@example.test')) v(u, e);
+                 (cn,'t008-cn@example.test'), (dr,'t008-dr@example.test'), (nm,'t008-nm@example.test')) v(u, e);
   insert into public.dispatch_users (user_id, email, name, role, hub, active) values
     (sa,'t008-sa@example.test','T SA','admin','',true), (mg,'t008-mg@example.test','T MG','coordinator','',true),
     (vw,'t008-vw@example.test','T VW','coordinator','',true), (cn,'t008-cn@example.test','T CN','coordinator','',true),
-    (nm,'t008-nm@example.test','T NM','admin','',true)
+    (dr,'t008-dr@example.test','T DR','driver','EB',true), (nm,'t008-nm@example.test','T NM','admin','',true)
     on conflict (user_id) do update set name = excluded.name, role = excluded.role, hub = excluded.hub, active = true;
   insert into public.dispatch_members (user_id, company, role, hub, active) values
     (sa,'adchem','admin','',true), (mg,'adchem','coordinator','',true), (vw,'adchem','coordinator','',true),
-    (cn,'adchem','coordinator','',true), (nm,'north','admin','',true)
+    (cn,'adchem','coordinator','',true), (dr,'adchem','driver','EB',true), (nm,'north','admin','',true)
     on conflict (user_id, company) do update set role = excluded.role, hub = excluded.hub, active = true;
   update public.dispatch_members set is_super_admin = true where (user_id = sa and company = 'adchem') or (user_id = nm and company = 'north');
   update public.dispatch_members set permissions = '{"view_assets":true,"manage_assets":true}' where user_id = mg and company = 'adchem';
   update public.dispatch_members set permissions = '{"view_assets":true}' where user_id = vw and company = 'adchem';
-  update public.dispatch_members set permissions = '{}' where user_id = cn and company = 'adchem';
+  update public.dispatch_members set permissions = '{}' where user_id in (cn, dr) and company = 'adchem';
   select id into t50 from public.dispatch_container_types where company = 'adchem' and product = 'Carbon Dioxide' and size_label = '50lb Cylinder';
   if t50 is null then raise exception 'the 007 seed 50lb Cylinder type is missing'; end if;
   insert into public.dispatch_assets (id, company, serial, container_type_id, owner_kind, owner_id, fill_state, location_kind, location_id) values
@@ -57,8 +58,8 @@ begin
   insert into public.dispatch_stock_movements (company, hub, product, container, qty, unit, reason) values ('adchem', 'EB', 'Dry Ice - Pellet', 'Bin', 6, 'count', 'produced');
   insert into public.dispatch_stock_movements (company, hub, product, item, qty, unit, reason) values ('adchem', 'EB', '', 'Regulator', 3, 'count', 'received');
   insert into public.dispatch_stock_settings (company, hub, product, item, min_qty, unit) values ('adchem', 'EB', '', 'Regulator', 4, 'count');
-  -- minimums on keys with no movements: Pallet 2 (below at qty 0), Strap 0 (not below)
-  insert into public.dispatch_stock_settings (company, hub, product, item, min_qty, unit) values ('adchem', 'EB', '', 'Pallet', 2, 'count'), ('adchem', 'EB', '', 'Strap', 0, 'count');
+  -- minimums on keys with no movements: Pallet 2 (below at qty 0, alert off), Strap 0 (not below)
+  insert into public.dispatch_stock_settings (company, hub, product, item, min_qty, unit, alert) values ('adchem', 'EB', '', 'Pallet', 2, 'count', false), ('adchem', 'EB', '', 'Strap', 0, 'count', true);
   insert into public.dispatch_asset_events (id, company, asset_id, event_type) values (e_f, 'adchem', a_f, 'filled');   -- draws 50 lb at EB
   ok := false;
   begin insert into public.dispatch_stock_movements (company, hub, product, container, qty, unit, reason, order_id) values ('adchem', 'EB', 'Dry Ice - Pellet', 'Bin', -1, 'count', 'delivered', 'T008-EB-1');
@@ -78,18 +79,34 @@ begin
   select qty into q from public.dispatch_stock_onhand where company = 'adchem' and hub = 'EB' and product = 'Carbon Dioxide' and container = '50lb Cylinder' and item = '' and unit = 'count';
   if q is distinct from 1::numeric then raise exception 'full 50lb Cylinders at EB on-hand % (want 1)', q; end if;
   select * into r from public.dispatch_stock_onhand_for('adchem') x where x.hub = 'EB' and x.item = 'Regulator';
-  if not found or r.qty <> 3 or r.min_qty is distinct from 4::numeric or r.below is not true then raise exception 'Regulator at EB: qty % min % below % (want 3, 4, true)', r.qty, r.min_qty, r.below; end if;
+  if not found or r.qty <> 3 or r.min_qty is distinct from 4::numeric or r.below is not true or r.alert is not true then
+    raise exception 'Regulator at EB: qty % min % below % alert % (want 3, 4, true, true)', r.qty, r.min_qty, r.below, r.alert; end if;
   insert into public.dispatch_stock_movements (company, hub, product, item, qty, unit, reason) values ('adchem', 'EB', '', 'Regulator', 1, 'count', 'received');
   select * into r from public.dispatch_stock_onhand_for('adchem') x where x.hub = 'EB' and x.item = 'Regulator';
   if not found or r.qty <> 4 or r.below is not false then raise exception 'Regulator at EB: qty % below % (want 4, false)', r.qty, r.below; end if;
   select * into r from public.dispatch_stock_onhand_for('adchem') x where x.hub = 'EB' and x.product = 'Carbon Dioxide' and x.container = '';
-  if not found or r.min_qty is not null or r.below is not false then raise exception 'bulk with no minimum: min % below % (want null, false)', r.min_qty, r.below; end if;
+  if not found or r.min_qty is not null or r.below is not false or r.alert is not false then
+    raise exception 'bulk with no minimum: min % below % alert % (want null, false, false)', r.min_qty, r.below, r.alert; end if;
   select * into r from public.dispatch_stock_onhand_for('adchem') x where x.hub = 'EB' and x.item = 'Pallet';
-  if not found or r.qty is distinct from 0::numeric or r.min_qty is distinct from 2::numeric or r.below is not true or r.unit <> 'count' then
-    raise exception 'Pallet minimum with no movements: qty % min % below % (want 0, 2, true)', r.qty, r.min_qty, r.below; end if;
+  if not found or r.qty is distinct from 0::numeric or r.min_qty is distinct from 2::numeric or r.below is not true or r.unit <> 'count' or r.alert is not false then
+    raise exception 'Pallet minimum with no movements: qty % min % below % alert % (want 0, 2, true, false)', r.qty, r.min_qty, r.below, r.alert; end if;
   select * into r from public.dispatch_stock_onhand_for('adchem') x where x.hub = 'EB' and x.item = 'Strap';
-  if not found or r.qty is distinct from 0::numeric or r.below is not false then
-    raise exception 'Strap minimum 0 with no movements: qty % below % (want 0, false)', r.qty, r.below; end if;
+  if not found or r.qty is distinct from 0::numeric or r.below is not false or r.alert is not true then
+    raise exception 'Strap minimum 0 with no movements: qty % below % alert % (want 0, false, true)', r.qty, r.below, r.alert; end if;
+  -- the alert switch rides with the minimum: off on the Regulator row (still below), and the full-cylinder row (no minimum) reads false
+  update public.dispatch_stock_settings set alert = false where company = 'adchem' and hub = 'EB' and item = 'Regulator';
+  select * into r from public.dispatch_stock_onhand_for('adchem') x where x.hub = 'EB' and x.item = 'Regulator';
+  if not found or r.alert is not false or r.below is not false then raise exception 'Regulator alert off: alert % below % (want false, false)', r.alert, r.below; end if;
+  update public.dispatch_stock_settings set alert = true where company = 'adchem' and hub = 'EB' and item = 'Regulator';
+  select * into r from public.dispatch_stock_onhand_for('adchem') x where x.hub = 'EB' and x.product = 'Carbon Dioxide' and x.container = '50lb Cylinder';
+  if not found or r.qty <> 1 or r.alert is not false or r.min_qty is not null then raise exception 'full cylinders row: qty % min % alert % (want 1, null, false)', r.qty, r.min_qty, r.alert; end if;
+  -- the view is one row per key even with a stray movement under a gas-container key (the server refuses one; a direct insert sums in)
+  insert into public.dispatch_stock_movements (company, hub, product, container, qty, unit, reason) values ('adchem', 'EB', 'Carbon Dioxide', '50lb Cylinder', 2, 'count', 'received');
+  if (select count(*) from public.dispatch_stock_onhand where company = 'adchem' and hub = 'EB' and product = 'Carbon Dioxide' and container = '50lb Cylinder') <> 1 then
+    raise exception 'a gas-container key with a movement and a register count shows as two rows'; end if;
+  select qty into q from public.dispatch_stock_onhand where company = 'adchem' and hub = 'EB' and product = 'Carbon Dioxide' and container = '50lb Cylinder';
+  if q is distinct from 3::numeric then raise exception 'gas-container key summed to % (want 1 register + 2 movement = 3)', q; end if;
+  insert into public.dispatch_stock_movements (company, hub, product, container, qty, unit, reason, note) values ('adchem', 'EB', 'Carbon Dioxide', '50lb Cylinder', -2, 'count', 'adjusted', 't008 undo');
   if (select count(*) from public.dispatch_stock_onhand_for('adchem') x where x.hub = 'EB' and x.item = 'Regulator') <> 1 then
     raise exception 'a minimum with on-hand rows appears twice'; end if;
   select count(*) into n_onhand from public.dispatch_stock_onhand_for('adchem');
@@ -156,6 +173,25 @@ begin
   select qty into q from public.dispatch_stock_onhand_for('adchem') x where x.hub = 'EB' and x.product = 'Dry Ice - Pellet' and x.container = 'Bin';
   if q is distinct from 4::numeric then raise exception 'Bin on-hand at EB % (want 6 produced - 2 delivered = 4)', q; end if;
   if (select count(*) from public.dispatch_stock_onhand_for('north')) <> 0 then raise exception 'coordinator gets north on-hand'; end if;
+  reset role;
+
+  -- ---- driver at EB, no switches: nothing through the function, no insert; the view shows only the register's gas counts for assets the driver can read ----
+  perform set_config('request.jwt.claims', json_build_object('sub', dr, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  if (select count(*) from public.dispatch_stock_onhand_for('adchem')) <> 0 then raise exception 'driver gets rows from dispatch_stock_onhand_for'; end if;
+  ok := false;
+  begin insert into public.dispatch_stock_movements (company, hub, product, qty, unit, reason) values ('adchem', 'EB', 'Carbon Dioxide', 5, 'lb', 'received');
+  exception when insufficient_privilege then ok := true; end;
+  if not ok then raise exception 'the driver wrote a stock row'; end if;
+  if (select count(*) from public.dispatch_stock_movements where company = 'adchem') <> 0 then raise exception 'driver reads stock movements'; end if;
+  -- the driver reads the full cylinder at their hub (dasset_read's driver rule), so the view carries that one gas count and nothing else
+  select count(*) into n_dr from public.dispatch_stock_onhand where company = 'adchem';
+  if n_dr = 0 then raise exception 'driver sees no on-hand row through the view (want the register count at EB)'; end if;
+  if exists (select 1 from public.dispatch_stock_onhand v where v.company = 'adchem' and (v.hub <> 'EB' or v.item <> '' or v.unit <> 'count'
+               or not exists (select 1 from public.dispatch_container_types t where t.company = v.company and t.product = v.product and t.size_label = v.container))) then
+    raise exception 'driver sees an on-hand row that is not a register gas count at their hub'; end if;
+  select qty into q from public.dispatch_stock_onhand where company = 'adchem' and hub = 'EB' and product = 'Carbon Dioxide' and container = '50lb Cylinder';
+  if q is distinct from 1::numeric then raise exception 'driver''s full 50lb Cylinders at EB % (want 1: the register only, never the movements)', q; end if;
   reset role;
 
   -- ---- viewer: reads on-hand; cannot insert ----
@@ -228,5 +264,5 @@ begin
      or has_function_privilege('anon', 'public.dispatch_set_stock_alerts(text,text[])', 'execute') then
     raise exception 'an 008 function is executable by anon, or the trigger function by authenticated'; end if;
 
-  raise exception 'VERIFY-OK 008: onhand_rows=% coordinator_rows=% order_rows=% order_net=%', n_onhand, n_cn, n_order, net;
+  raise exception 'VERIFY-OK 008: onhand_rows=% coordinator_rows=% driver_view_rows=% order_rows=% order_net=%', n_onhand, n_cn, n_dr, n_order, net;
 end $t$;

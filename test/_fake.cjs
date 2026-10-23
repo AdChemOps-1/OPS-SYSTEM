@@ -305,13 +305,14 @@ function seedStock(){ const at=vDate().toISOString();
       {id:'min-reg',company:'adchem',hub:'EB',product:'',container:'',item:'Regulator',min_qty:4,unit:'count'}],
     dispatch_stock_movements:[M('sm-co2','Carbon Dioxide','','',800,'lb','received'),M('sm-reg','','','Regulator',10,'count','received'),M('sm-bin','Dry Ice - Pellet','Bin','',6,'count','produced')] }; }
 const stockKey=r=>[r.hub,r.product,r.container,r.item,r.unit].join('|');
-// the dispatch_stock_onhand_for view: movements summed per key, plus full in-service gas containers at hubs by type; minimums joined on (hub, product, container, item)
-function onhandOf(T,company){ const g={}, row=(r)=>g[stockKey(r)]=g[stockKey(r)]||{hub:r.hub,product:r.product||'',container:r.container||'',item:r.item||'',unit:r.unit,qty:0,min_qty:null,below:false};
+// the dispatch_stock_onhand_for view: movements summed per key, plus full in-service gas containers at hubs by type (one summed row per key);
+// minimums joined on (hub, product, container, item): min_qty, below, and alert (the minimum's switch, null reads true; no minimum row = false)
+function onhandOf(T,company){ const g={}, row=(r)=>g[stockKey(r)]=g[stockKey(r)]||{hub:r.hub,product:r.product||'',container:r.container||'',item:r.item||'',unit:r.unit,qty:0,min_qty:null,below:false,alert:false};
   (T.dispatch_stock_movements||[]).filter(m=>m.company===company).forEach(m=>{ row(m).qty+=Number(m.qty); });
   (T.dispatch_assets||[]).filter(a=>a.company===company&&a.fill_state==='full'&&a.location_kind==='hub'&&a.condition==='in_service').forEach(a=>{
     const ct=T.dispatch_container_types.find(c=>c.company===company&&c.id===a.container_type_id); if(!ct) return;
     row({hub:a.location_id,product:ct.product,container:ct.size_label,item:'',unit:'count'}).qty+=1; });
-  (T.dispatch_stock_settings||[]).filter(x=>x.company===company).forEach(x=>{ const r=row({hub:x.hub,product:x.product,container:x.container,item:x.item,unit:x.unit}); r.min_qty=x.min_qty==null?null:Number(x.min_qty); });
+  (T.dispatch_stock_settings||[]).filter(x=>x.company===company).forEach(x=>{ const r=row({hub:x.hub,product:x.product,container:x.container,item:x.item,unit:x.unit}); r.min_qty=x.min_qty==null?null:Number(x.min_qty); r.alert=x.alert!==false; });
   return Object.values(g).map(r=>({...r,below:r.min_qty!=null&&r.qty<r.min_qty}))
     .sort((a,b)=>(a.hub+'|'+a.product+'|'+a.container+'|'+a.item)<(b.hub+'|'+b.product+'|'+b.container+'|'+b.item)?-1:1); }
 const DELIVERED=['Delivered','POD Received'], isDelivered=s=>DELIVERED.includes(s);
@@ -325,8 +326,10 @@ function orderStatusHook(T,o,prevStatus){ if(isDelivered(prevStatus)===isDeliver
       const r={...base,id:uuid(),hub:o.hub,product:l.product,container:l.container,qty:-qty,reason:'delivered',note:''}; mv.push(r); mine.push(r); }); }
   else { const seen=new Set(); mine.slice().forEach(m=>{ const k=m.product+'|'+m.container; if(seen.has(k)) return; seen.add(k); const d=drawn(m.product,m.container);
       if(d!==0) mv.push({...base,id:uuid(),hub:m.hub,product:m.product,container:m.container,qty:-d,reason:'adjusted',note:'undelivered '+o.id}); }); } }
+// the company's gas-container keys ('product|size_label' per container type): the register owns those counts, so no entry is written under one
+const gasKeysOf=(T,co)=>new Set((T.dispatch_container_types||[]).filter(c=>c.company===co).map(c=>c.product+'|'+c.size_label));
 // movementsFor (functions/_lib/stock.js) as the fake's /api/stock applies it; throws Error(message) on a bad entry
-function fakeMovementsFor(e,co,onhandQty){ const fail=m=>{ throw new Error(m); };
+function fakeMovementsFor(e,co,onhandQty,gasKeys){ const fail=m=>{ throw new Error(m); };
   if(!e||!['received','produced','adjusted','counted','consumed'].includes(e.kind)) fail('kind must be received, produced, adjusted, counted or consumed');
   const qty=Number(e.qty); if(e.qty===''||e.qty==null||!Number.isFinite(qty)) fail('qty must be a number');
   if(!hasVal(e.hub)) fail('hub required');
@@ -335,6 +338,7 @@ function fakeMovementsFor(e,co,onhandQty){ const fail=m=>{ throw new Error(m); }
   const bulk=hasVal(product)&&!hasVal(container)&&!hasVal(item), unit=e.unit;
   if(!hasVal(product)&&!hasVal(item)) fail('product or item required');
   if(unit!==(bulk?'lb':'count')) fail('unit must be '+(bulk?'lb':'count')+' for this item');
+  if(hasVal(product)&&hasVal(container)&&gasKeys&&gasKeys.has(product+'|'+container)) fail(product+' '+container+' is a gas container: the register counts those (record fills and moves on the Assets tab)');
   const row=(p,c,i,u,q,reason)=>({id:uuid(),company:co,hub:e.hub,product:p,container:c,item:i,qty:q,unit:u,reason,vendor_id:e.vendorId||null,order_id:null,asset_event_id:null,note,occurred_at:vDate().toISOString(),recorded_by:'u1'});
   if(e.kind==='received'){ if(!(qty>0)) fail('qty must be above zero'); return [row(product,container,item,unit,qty,'received')]; }
   if(e.kind==='consumed'){ if(!(qty>0)) fail('qty must be above zero'); if(!hasVal(note)) fail('a note is required'); return [row(product,container,item,unit,-qty,'consumed')]; }
@@ -352,7 +356,7 @@ function fakeStock(T,b){
     // as the server: a count's delta comes from on-hand, so a caller who cannot read it may not count
     if(e.kind==='counted'&&!reads) return deny('forbidden','counting needs View assets');
     let rows; try{ const cur=onhandOf(T,co).find(r=>r.hub===e.hub&&(r.product||'')===(e.product||'')&&(r.container||'')===(e.container||'')&&(r.item||'')===(e.item||'')&&r.unit===e.unit);
-      rows=fakeMovementsFor(e,co,cur?cur.qty:0); }catch(err){ return {code:400,body:{error:{code:'bad_entry',message:err.message}}}; }
+      rows=fakeMovementsFor(e,co,cur?cur.qty:0,gasKeysOf(T,co)); }catch(err){ return {code:400,body:{error:{code:/gas container/.test(err.message)?'gas_key':'bad_entry',message:err.message}}}; }
     if(!rows.length) return {code:200,body:{ok:true,ids:[],note:'no change'}};
     rows.forEach(r=>T.dispatch_stock_movements.push(r)); return {code:200,body:{ok:true,ids:rows.map(r=>r.id)}}; }
   if(b.action==='onhand'||b.action==='below'){ if(!m) return deny('no_access','You are not a member of that company.');
@@ -436,9 +440,9 @@ function makeFake(seed){
       // Send now (the app always sends its company) mails that company only; without one (the cron shape) every company
       if(b.send){ T.companies.filter(c=>!company||c.id===company).forEach(c=>{ const st=T.dispatch_company_settings.find(x=>x.company===c.id), to=(st&&st.data.expiryEmailRecipients)||[], n=docsDue(T).filter(d=>d.company===c.id).length;
         if(to.length&&n) sent.push({company:c.id,to,count:n}); else skipped.push({company:c.id,reason:to.length?'nothing_due':'no_recipients'}); }); }
-      // the stock email rides the same job: one per company with recipients and at least one row below its minimum
+      // the stock email rides the same job: one per company with recipients and at least one row below its minimum with its alert on
       const stock={sent:[],skipped:[]};
-      if(b.send){ T.companies.filter(c=>!company||c.id===company).forEach(c=>{ const st=T.dispatch_company_settings.find(x=>x.company===c.id), to=(st&&st.data.stockAlertRecipients)||[], n=onhandOf(T,c.id).filter(r=>r.below).length;
+      if(b.send){ T.companies.filter(c=>!company||c.id===company).forEach(c=>{ const st=T.dispatch_company_settings.find(x=>x.company===c.id), to=(st&&st.data.stockAlertRecipients)||[], n=onhandOf(T,c.id).filter(r=>r.below&&r.alert!==false).length;
         if(to.length&&n){ calls.push(['stock_alert',{company:c.id,to,count:n}]); stock.sent.push({company:c.id,to,count:n}); } else stock.skipped.push({company:c.id,reason:to.length?'nothing_below':'no_recipients'}); }); }
       return send(200,{ok:true,sent,skipped,stock}); }
     if(u.pathname==='/api/health') return send(200,{googleConfigured:!u.searchParams.has('nogoogle'),impersonate:'ops-system@adchem.pro',mailFrom:'orders@adchem.pro',ordersTo:'orders@adchem.pro',accountingTo:'accounting@adchem.pro',checks:{token:'ok',vision:'ok',customersOut:'ok',importSheet:'ok',docsBucket:'ok',expiryCron:'ok'},lastExpiryEmail:null});

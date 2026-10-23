@@ -1,7 +1,7 @@
 -- AdChem Ops — 008 inventory, as written 10/23/26 (Stage 3B of the assets and inventory spec, 2026-10-22-assets-and-inventory-design.md).
 -- Reads what 007 created: dispatch_stock_movements (append-only, signed) and dispatch_stock_settings (minimums). Adds the on-hand view
 -- (movements summed per key, plus full in-service gas containers at hubs counted from the register), dispatch_stock_onhand_for
--- (the same rows with the minimum and a below flag, for view_assets holders, editors and the cron's service role), the delivered
+-- (the same rows with the minimum, a below flag and the minimum's alert switch, for view_assets holders, editors and the cron's service role), the delivered
 -- draw-down on dispatch_orders (counted lines leave stock when an order enters Delivered / POD Received and come back when it leaves
 -- both), stock alert recipients in dispatch_company_settings.data (super admin, through dispatch_set_stock_alerts only), and the
 -- stock insert policy now refusing delivered rows as well as filled ones. Re-runnable as is (create or replace, if not exists,
@@ -9,29 +9,34 @@
 
 -- ---------- on-hand: one row per (company, hub, product, container, item, unit) ----------
 -- Movements are summed as they are (a negative bulk figure stays negative, never clamped). Gas containers have no movements of their
--- own: a full, in-service container at a hub counts 1 under its type's product and size_label. Rows follow the caller's RLS on
--- movements and assets (security_invoker), so only view_assets holders read anything here; editors use dispatch_stock_onhand_for.
+-- own: a full, in-service container at a hub counts 1 under its type's product and size_label. Both sources go through one outer
+-- sum ... group by, so a key is one row even when a movement was written under a gas-container key (the server refuses such entries;
+-- this keeps a stray one from doubling the row). Rows follow the caller's RLS on movements and assets (security_invoker), so only
+-- view_assets holders read anything here; editors use dispatch_stock_onhand_for.
 create or replace view public.dispatch_stock_onhand with (security_invoker = true) as
-select m.company, m.hub, m.product, m.container, m.item, m.unit, sum(m.qty) as qty
-  from public.dispatch_stock_movements m
- group by m.company, m.hub, m.product, m.container, m.item, m.unit
-union all
-select a.company, a.location_id as hub, t.product, t.size_label as container, ''::text as item, 'count'::text as unit, count(*)::numeric as qty
-  from public.dispatch_assets a
-  join public.dispatch_container_types t on t.id = a.container_type_id and t.company = a.company
- where a.fill_state = 'full' and a.location_kind = 'hub' and a.condition = 'in_service'
- group by a.company, a.location_id, t.product, t.size_label;
+select u.company, u.hub, u.product, u.container, u.item, u.unit, sum(u.qty) as qty
+  from (select m.company, m.hub, m.product, m.container, m.item, m.unit, m.qty
+          from public.dispatch_stock_movements m
+        union all
+        select a.company, a.location_id as hub, t.product, t.size_label as container, ''::text as item, 'count'::text as unit, 1::numeric as qty
+          from public.dispatch_assets a
+          join public.dispatch_container_types t on t.id = a.container_type_id and t.company = a.company
+         where a.fill_state = 'full' and a.location_kind = 'hub' and a.condition = 'in_service') u
+ group by u.company, u.hub, u.product, u.container, u.item, u.unit;
 revoke all on public.dispatch_stock_onhand from anon;
 
--- The view's rows of company c with the key's minimum (null when none is set) and below = qty under the minimum, plus every minimum
--- of c whose key has no on-hand row (qty 0, below when the minimum is above 0). Through the owner,
--- for view_assets holders and editors of c (a coordinator without switches sees on-hand, as with dispatch_asset_counts_for), and for
--- the service role (the daily stock email's cron path reads every company).
+-- The view's rows of company c with the key's minimum (null when none is set), below = qty under the minimum, and alert = the
+-- minimum's "Alert when below" switch (true where a minimum row exists and its alert is null, false where the key has no minimum
+-- row: such a row is never below anyway), plus every minimum of c whose key has no on-hand row (qty 0, below when the minimum is
+-- above 0, alert from the minimum). The daily stock email mails rows with below and alert both true; the screen flags every below
+-- row. Through the owner, for view_assets holders and editors of c (a coordinator without switches sees on-hand, as with
+-- dispatch_asset_counts_for), and for the service role (the daily stock email's cron path reads every company).
 create or replace function public.dispatch_stock_onhand_for(c text)
-returns table (company text, hub text, product text, container text, item text, unit text, qty numeric, min_qty numeric, below boolean)
+returns table (company text, hub text, product text, container text, item text, unit text, qty numeric, min_qty numeric, below boolean, alert boolean)
 language sql stable security definer set search_path = public as $fn$
   select v.company, v.hub, v.product, v.container, v.item, v.unit, v.qty, s.min_qty,
-         coalesce(s.min_qty is not null and v.qty < s.min_qty, false) as below
+         coalesce(s.min_qty is not null and v.qty < s.min_qty, false) as below,
+         case when s.id is null then false else coalesce(s.alert, true) end as alert
     from public.dispatch_stock_onhand v
     left join public.dispatch_stock_settings s
       on s.company = v.company and s.hub = v.hub and s.product = v.product and s.container = v.container and s.item = v.item
@@ -39,7 +44,7 @@ language sql stable security definer set search_path = public as $fn$
      and (current_setting('role', true) = 'service_role' or public.dispatch_perm_in(c, 'view_assets') or public.dispatch_can_edit_in(c))
   union all
   -- a minimum whose key has no on-hand row (nothing ever received or counted there) reads as qty 0, below while the minimum is above 0
-  select s.company, s.hub, s.product, s.container, s.item, s.unit, 0::numeric, s.min_qty, s.min_qty > 0
+  select s.company, s.hub, s.product, s.container, s.item, s.unit, 0::numeric, s.min_qty, s.min_qty > 0, coalesce(s.alert, true)
     from public.dispatch_stock_settings s
    where s.company = c
      and not exists (select 1 from public.dispatch_stock_onhand v where v.company = s.company and v.hub = s.hub and v.product = s.product

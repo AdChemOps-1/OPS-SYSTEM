@@ -401,4 +401,4 @@ body.role-driver #foot,body.role-driver #todayHint{display:none}
 .inv-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;padding:6px 0;border-top:1px solid var(--line)}
 .inv-row .inv-label{flex:1 1 140px;min-width:0;overflow-wrap:anywhere}
 .inv-row .inv-qty{font-weight:700}.inv-row .inv-unit{color:var(--ink-3);font-size:12px}
-.inv-mins .inv-row .btn{margin-left:auto}
+.inv-mins .inv-row .btn:first-of-type{margin-left:auto}   /* Edit pushes right; Delete sits beside it */

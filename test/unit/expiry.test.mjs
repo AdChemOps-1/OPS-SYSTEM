@@ -188,10 +188,10 @@ test('Send now: a coordinator or a plain admin is 403; nothing read or sent', as
 // ---------- the stock-below-minimum email rides the same run ----------
 const subjectOf = m => Buffer.from(m.match(/Subject: =\?UTF-8\?B\?([^?]+)\?=/)[1], 'base64').toString('utf8');
 const STOCK_ROWS = {
-  adchem: [{ company: 'adchem', hub: 'EB', product: 'Carbon Dioxide', container: '', item: '', unit: 'lb', qty: 450, min_qty: 500, below: true },
-    { company: 'adchem', hub: 'EB', product: '', container: '', item: 'Regulator', unit: 'count', qty: 3, min_qty: 4, below: true },
-    { company: 'adchem', hub: 'EB', product: 'Dry Ice - Pellet', container: 'Bin', item: '', unit: 'count', qty: 6, min_qty: null, below: false }],
-  north: [{ company: 'north', hub: 'N1', product: 'Acetone', container: '55gal Drum', item: '', unit: 'count', qty: 3, min_qty: 1, below: false }],
+  adchem: [{ company: 'adchem', hub: 'EB', product: 'Carbon Dioxide', container: '', item: '', unit: 'lb', qty: 450, min_qty: 500, below: true, alert: true },
+    { company: 'adchem', hub: 'EB', product: '', container: '', item: 'Regulator', unit: 'count', qty: 3, min_qty: 4, below: true, alert: true },
+    { company: 'adchem', hub: 'EB', product: 'Dry Ice - Pellet', container: 'Bin', item: '', unit: 'count', qty: 6, min_qty: null, below: false, alert: false }],
+  north: [{ company: 'north', hub: 'N1', product: 'Acetone', container: '55gal Drum', item: '', unit: 'count', qty: 3, min_qty: 1, below: false, alert: true }],
 };
 const STOCK_SETTINGS = { adchem: { stockAlertRecipients: ['yard@adchem.pro', 'bad'] }, north: { stockAlertRecipients: ['n@north.example'] } };
 
@@ -224,6 +224,17 @@ test('Send now: the result carries stock {sent, skipped} beside the documents; r
   assert.deepEqual(log, { company: 'adchem', who: 'u1', what: 'stock_alert', detail: { count: 2, to: ['yard@adchem.pro'] } });
   const north = await run({ headers: { authorization: 'Bearer tok' }, body: { send: true, company: 'north' }, member: { company: 'north' }, stock: { settings: STOCK_SETTINGS, onhand: STOCK_ROWS } });
   assert.deepEqual(north.j.stock, { sent: [], skipped: [{ company: 'north', reason: 'nothing_below' }] }); assert.equal(north.gmail.length, 0);
+});
+
+test('stock email: a below row whose minimum has its alert off is not mailed; only alert-off rows below is nothing_below', async () => {
+  const off = { adchem: [STOCK_ROWS.adchem[0], { ...STOCK_ROWS.adchem[1], alert: false }, STOCK_ROWS.adchem[2]] };
+  const r = await run({ headers: { authorization: 'Bearer tok' }, body: { send: true, company: 'adchem' }, stock: { settings: STOCK_SETTINGS, onhand: off } });
+  assert.deepEqual(r.j.stock, { sent: [{ company: 'adchem', to: ['yard@adchem.pro'], count: 1 }], skipped: [] });
+  const m = r.gmail.find(g => /stock below minimum/.test(subjectOf(g)));
+  assert.equal(subjectOf(m), 'AdChem — stock below minimum: 1 item(s)');
+  assert.match(m, /EB: Carbon Dioxide 450 lb \(min 500\)/); assert.ok(!/Regulator/.test(m), 'alert off: left out of the mail');
+  const none = await run({ headers: { authorization: 'Bearer tok' }, body: { send: true, company: 'adchem' }, stock: { settings: STOCK_SETTINGS, onhand: { adchem: off.adchem.map(x => ({ ...x, alert: false })) } } });
+  assert.deepEqual(none.j.stock, { sent: [], skipped: [{ company: 'adchem', reason: 'nothing_below' }] }); assert.equal(none.gmail.length, 1, 'the documents mail only');
 });
 
 test('stock email: a failed send or a failed read is skipped and never spoils the documents result', async () => {

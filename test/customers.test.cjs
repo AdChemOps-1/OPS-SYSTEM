@@ -104,6 +104,10 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.deepEqual({hub:hn.hub,scale_on_route:hn.scale_on_route,route_notes:hn.route_notes,site_key:hn.site_key,company:hn.company},
     {hub:'EB',scale_on_route:true,route_notes:'Scale on 580',site_key:'ADC-0001 — Primary',company:'adchem'});
   assert.equal(await page.$eval('#siteNew',e=>e.hidden), true, 'new site form closes after saving');
+  assert.match(flat(await page.textContent('#siteList')), /1 containers? here since/, 'the site card hints at the containers there');
+  await page.click('#ctab-cylinders'); await page.waitForTimeout(500);
+  assert.match(flat(await page.textContent('#cpane-cylinders')), /Primary.*CD5678.*50lb Cylinder.*empty.*since/, 'the Cylinders tab lists CD5678 at the site');
+  await page.click('#ctab-sites'); await page.waitForTimeout(300);
   const sf = '#siteList form[data-site="ADC-0001 — Primary"]';
   assert.match(await page.$eval(sf,e=>e.id), /^s_[a-z0-9]+$/, 'site form id is s_ + hash');
   assert.equal(await page.inputValue(sf+' [data-k=gate_code]'), '4321');
@@ -198,6 +202,7 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.match(flat(await page.textContent('#customersOutState')), /Customers Out is set/);
   assert.match(flat(await page.textContent('#healthState')), /Customers Out: ok.*Import sheet: ok/, 'the health card lists both Customers Out and the import sheet');
   assert.match(flat(await page.textContent('#healthState')), /Documents bucket: ok.*Expiry email: ok.*Last expiry email: never/, 'the health card lists the documents bucket, the expiry email job and its last run');
+  assert.match(flat(await page.textContent('#healthState')), /Token: ok.*Vision: ok.*AR Command Center/, 'the health card lists Vision right after Token');
   assert.equal(await page.inputValue('#sCustomersOut'), '1COUTseedAAAAAAAAAAAAAA');
   // before Google is configured the card still shows the Supabase lines, so the migration can be seen landing
   await page.evaluate(()=>{ const g=API.get; API.get=p=>g(p+(p.indexOf('/api/health')===0?'?nogoogle=1':'')); return renderHealth().then(()=>{ API.get=g; }); });

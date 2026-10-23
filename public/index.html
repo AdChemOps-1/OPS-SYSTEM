@@ -500,6 +500,7 @@
         <button class="tab" role="tab" id="ctab-contacts" aria-selected="false">Contacts</button>
         <button class="tab" role="tab" id="ctab-activity" aria-selected="false">Activity</button>
         <button class="tab" role="tab" id="ctab-documents" aria-selected="false">Documents</button>
+        <button class="tab" role="tab" id="ctab-cylinders" aria-selected="false" hidden>Cylinders</button>
         <button class="tab" role="tab" id="ctab-history" aria-selected="false">History</button>
       </div>
       <div id="cpane-profile" class="card pad sec">
@@ -567,6 +568,10 @@
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px"><button class="btn primary" type="submit">Log activity</button><span class="hint" id="actHint"></span></div>
         </form>
         <div id="actList"></div>
+      </div>
+      <div id="cpane-cylinders" class="card pad sec" hidden>
+        <p class="hint" style="margin-top:0">Containers at this customer's sites, as last seen.</p>
+        <div id="custCylList"></div>
       </div>
       <div id="cpane-documents" class="card pad sec" hidden>
         <div class="cust-chips" id="docChips" style="margin-bottom:10px"></div>

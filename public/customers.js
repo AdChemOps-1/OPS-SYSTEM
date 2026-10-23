@@ -7,7 +7,7 @@ state.customers=state.customers||[]; state.customer=null; state.custStatus={}; s
 const CUST_FIELDS=[["cName","name"],["cAka","also_known_as"],["cLegal","legal_name"],["cStatus","account_status"],["cHub","primary_hub"],["cParent","parent_customer_id"],
   ["cBillStreet","billing_street"],["cBillCity","billing_city"],["cBillState","billing_state"],["cBillZip","billing_zip"],["cVerified","last_verified"],["cNotes","notes"]];
 const CUST_NULLABLE={parent_customer_id:true,last_verified:true};
-const CUST_TABS=["profile","sites","contacts","activity","documents","history"];
+const CUST_TABS=["profile","sites","contacts","activity","documents","cylinders","history"];
 const CUST_MUST=15;
 
 function canManageCustomers(){ var me=state.me||{}; return !!(me.isSuper||(me.perms||{}).manage_customers); }
@@ -105,6 +105,7 @@ function drawCustomers(){
 
 /* ---------- customer page ---------- */
 function setCustTab(t){ state.custTab=t;
+  $("ctab-cylinders").hidden=!canViewAssets(); if(t==="cylinders"&&!canViewAssets()) t=state.custTab="profile";
   CUST_TABS.forEach(function(k){ $("ctab-"+k).setAttribute("aria-selected",k===t?"true":"false"); $("cpane-"+k).hidden=(k!==t); });
   if(t!=="profile") loadCustPane(t); }
 function custHeader(){
@@ -195,7 +196,7 @@ async function refreshComplete(){ if(!custSaved()) return;
   catch(e){ banner("warn","Couldn't refresh profile completeness","<div>"+esc(e.message)+"</div>",{autoclose:6000}); } }
 async function loadCustPane(t){
   if(!state.customer) return;
-  try{ if(t==="sites") await renderSites(); else if(t==="contacts") await renderContacts(); else if(t==="activity") await renderActivity(); else if(t==="documents") await renderCustDocs(); else if(t==="history") await renderHistory(); }
+  try{ if(t==="sites") await renderSites(); else if(t==="contacts") await renderContacts(); else if(t==="activity") await renderActivity(); else if(t==="documents") await renderCustDocs(); else if(t==="cylinders") await renderCustAssets(state.customer.id); else if(t==="history") await renderHistory(); }
   catch(e){ banner("bad","Couldn't load "+esc(t),"<div>"+esc(e.message)+"</div>"); }
 }
 
@@ -231,10 +232,11 @@ async function renderSites(){
   if(!custSaved()){ $("siteNew").hidden=true; $("siteList").innerHTML=notSavedYet(); return; }
   var sites=await CDB.sitesFor(c.id)||[]; if(!custStill(c)) return;
   var notes=await Promise.all(sites.map(function(s){ return CDB.hubNotesFor(s.site_key); })); if(!custStill(c)) return;
+  var held=await custSiteAssets(sites); if(!custStill(c)) return;
   state.custSites=sites; state.custHubNotes={}; sites.forEach(function(s,i){ state.custHubNotes[s.site_key]=notes[i]||[]; });
   $("siteList").innerHTML=sites.length?sites.map(function(s){
     return '<details class="site-card"'+(state.openSite===s.site_key?" open":"")+"><summary><b>"+esc(s.site_label||s.site_key)+'</b><span class="chip k-none">'+esc(s.hub||"no hub")+"</span>"+
-      '<span class="hint">'+esc([s.addr,s.city].filter(Boolean).join(", ")||"no address")+"</span></summary>"+siteForm(s,state.custHubNotes[s.site_key],false)+"</details>"; }).join("")
+      '<span class="hint">'+esc([s.addr,s.city].filter(Boolean).join(", ")||"no address")+"</span>"+custSiteHint(held[s.site_key])+"</summary>"+siteForm(s,state.custHubNotes[s.site_key],false)+"</details>"; }).join("")
     :custEmpty("No sites yet",ro?"Someone with the Manage customers permission can add them.":"Press Add site to add the first delivery site.");
 }
 function openNewSite(){

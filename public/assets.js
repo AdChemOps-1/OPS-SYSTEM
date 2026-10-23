@@ -1036,3 +1036,36 @@ async function toggleType(id){
     else if((a=el.getAttribute("data-toggle-type"))) toggleType(a);
   });
 })();
+
+/* ---------- customer page: Cylinders tab and the site-card hint ---------- */
+// the customer's containers by site: {site_key: [asset rows]} (one ADB.assets read per site; {} without View assets or on a failed read)
+async function custSiteAssets(sites){
+  var out={}; if(!canViewAssets()||!sites||!sites.length) return out;
+  try{ var got=await Promise.all(sites.map(function(s){ return ADB.assets({location_kind:"site",location_id:s.site_key}); }));
+    sites.forEach(function(s,i){ out[s.site_key]=got[i]||[]; }); }
+  catch(e){ out={}; }
+  return out;
+}
+function custSiteHint(rows){
+  if(!rows||!rows.length) return "";
+  var first=rows.map(function(a){ return a.last_seen_at; }).filter(Boolean).sort()[0];
+  return '<span class="hint site-cyl-hint">'+rows.length+(rows.length===1?" container":" containers")+" here"+(first?" since "+esc(aDay(first)):"")+"</span>";
+}
+function aDay(t){ var d=new Date(t); return isNaN(d)?String(t):d.toLocaleDateString([], {month:"numeric",day:"numeric",year:"2-digit"}); }
+async function renderCustAssets(customerId){
+  var host=$("custCylList"); if(!host) return;
+  var c=state.customer; if(!c||c.id!==customerId||!canViewAssets()){ host.innerHTML=""; return; }
+  try{
+    var sites=await CDB.sitesFor(c.id)||[], r=await Promise.all([custSiteAssets(sites),ADB.types()]);
+    if(!state.customer||state.customer.id!==customerId) return;
+    if(r[1]&&r[1].length) state.ctypes=r[1];
+    var held=r[0];
+    host.innerHTML=sites.length?sites.map(function(s){ var rows=held[s.site_key]||[];
+      return '<div class="site-cyl"><div><b>'+esc(s.site_label||s.site_key)+"</b></div>"+
+        (rows.length?rows.map(function(a){
+          return '<div class="row"><span class="mono">'+esc(a.serial)+"</span> "+esc(aTypeLabel(a.container_type_id))+" "+aChips(a)+
+            (a.last_seen_at?' <span class="hint">since '+esc(aDay(a.last_seen_at))+"</span>":"")+"</div>"; }).join("")
+          :'<div class="hint">No containers here</div>')+"</div>"; }).join("")
+      :custEmpty("No sites yet","Containers show here once the customer has a delivery site.");
+  }catch(e){ banner("bad","Couldn't load cylinders","<div>"+esc(e.message)+"</div>"); }
+}

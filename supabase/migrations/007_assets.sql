@@ -400,7 +400,7 @@ do $$ begin
   if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_stock_movements' and policyname = 'dstock_insert') then
     create policy dstock_insert on public.dispatch_stock_movements for insert with check (public.dispatch_perm_in(company, 'manage_assets') and reason <> 'filled');
   end if;
-  -- Files: {company}/asset/<asset_id>/<event_id>.jpg and {company}/asset/new/<event_id>.jpg. Insert by a driver or manage_assets of
+  -- Files: {company}/asset/<event_id>.jpg (never moved). Insert by a driver or manage_assets of
   -- that company; read by view_assets or the member who uploaded it; delete by manage_assets; no update.
   if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'dispatch assets read') then
     create policy "dispatch assets read" on storage.objects for select using (bucket_id = 'dispatch-docs' and (storage.foldername(name))[2] = 'asset'

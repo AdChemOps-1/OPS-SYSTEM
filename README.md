@@ -19,7 +19,7 @@ Every row — customers, orders, BOLs, hubs, settings, photos — belongs to a c
 | **driver** | See their hub's routes on Today, with each site's notes and receiving contact, add a note on a stop, open BOLs, photograph and send the signed BOL, photograph and send bank deposit slips. One account per person (e.g. `maria@adchem.pro`), with their hub set on People |
 | **super admin** | A switch on top of a role, set on People by another super admin (you cannot remove your own). Holds every permission below and is the only one who can change a super admin |
 
-Five permissions are switched per person on **People**: **Manage customers** (create and edit customers, sites and contacts; log activity), **Approve driver notes** (review the notes drivers add from Today), **Run imports** (read and commit the spreadsheet import on Setup; committing also needs Manage customers), **View documents** (read document records and open their files) and **Manage documents** (add, edit, upload, approve or reject, and delete documents). Everyone who can take orders can see Customers; without Manage customers it is read-only. Only true counts as granted: any other value in a person's permissions is no.
+Seven permissions are switched per person on **People**: **Manage customers** (create and edit customers, sites and contacts; log activity), **Approve driver notes** (review the notes drivers add from Today), **Run imports** (read and commit the spreadsheet import on Setup; committing also needs Manage customers), **View documents** (read document records and open their files) and **Manage documents** (add, edit, upload, approve or reject, and delete documents), **View assets** (read the container register, its history and counts) and **Manage assets** (hub actions, corrections, vendors and container types). Everyone who can take orders can see Customers; without Manage customers it is read-only. Only true counts as granted: any other value in a person's permissions is no.
 
 Drivers never see billing contacts, balances, terms or prices. The server reads only the 14 FEED_ORDERS columns from the AR Command Center, and the import never reads a money column.
 
@@ -52,7 +52,20 @@ Who sees what: **View documents** reads the records and files, **Manage document
 
 **Warnings** are off by default. A super admin switches them per type (cannabis license, PSA, entity status) on **Setup → Warnings**, with a note shown alongside, and sets the expiring window (`warnDays`, default 30). A type that is on shows under the customer on New order and is stamped on the order; it never blocks the order. Everything on that card is written only through `dispatch_set_warnings`. The daily expiry email (below) goes only to the addresses listed there.
 
-Not here yet: reading licenses and tags from photos (Vision/OCR), assets, intake, and importing the Licensing & Entity and Account Terms tabs.
+Not here yet: intake, and importing the Licensing & Entity and Account Terms tabs.
+
+## Assets
+
+The **Assets** tab is the register of the company's returnable containers (cylinders, dewars and the like), kept in `dispatch_assets` with one row per physical container, found by its serial. Each row has an owner (the company, a vendor or a customer), a container type, a fill state, a condition and where it is now (a hub, a vendor or a customer site, with when it was last seen). Every move is also an event in its history, with who recorded it and, for a driver, the photo of the tag.
+
+Two switches on **People** control it: **View assets** (read the register, a container's history and the counts) and **Manage assets** (the hub actions, corrections, and the vendors and container types on Setup). Super admins hold both. Without View assets the Assets tab, the customer's Cylinders tab and the counts are hidden.
+
+- **Driver flow** — on Today a stop with gas on the order shows **Cylinders / Cilindros**. The sheet lists what to deliver and what is at the site to collect; the driver photographs each tag (or types the serial) and the server reads the serial from the photo (Google Cloud Vision, see GOOGLE-SETUP.md B2) for the driver to confirm. With no signal the events and photos are kept on the phone and **Send waiting photos** on Today sends them later with the times they happened; a resend of the same event is recorded once.
+- **Hub actions** (Manage assets, on the Assets tab) — **Fill**, **To vendor**, **From vendor**, **Move** and **Add assets**: type or scan the serials, then confirm; each serial is recorded on its own. Fill draws the product down by the type's fill weight.
+- **Counts** — containers by type, fill state and place, and the product on hand, so the hubs can see what is full, empty or out.
+- **Customer → Cylinders** tab — the containers at each of the customer's sites with "since" dates; the site card on the Sites tab says "N containers here since <date>". Needs View assets.
+- **Setup → Vendors and container types** — who fills, rents or supplies containers, and the sizes and products that serials are filed under.
+- **Serials** are normalised before they are stored or matched: spaces and dashes are removed and letters are upper-cased, so `ab-12 34` and `AB1234` are the same container.
 
 ## Expiry email
 
@@ -78,14 +91,14 @@ Create a repository under the **AdChemOps-1** account (e.g. `Ops`) and upload th
 ### 3. Supabase — one setting
 Supabase dashboard → project **adchem-hours** → **Authentication → URL Configuration → Redirect URLs**: add the app's address (the `pages.dev` URL and, later, the custom domain). The Site URL can stay as AdChem Time's.
 
-The database objects through `005` are already created (`supabase/migrations/` is the record; `005_customers.sql` was applied as version `20261020170155`). **Only `006_documents.sql` is to be applied, followed by a re-run of the security advisor** (record the result at the foot of the file; `006` creates the private `dispatch-docs` bucket and turns on `pg_cron` and `pg_net`). The existing admin account already holds admin for AdChem.
+The database objects through `006` are already created (`supabase/migrations/` is the record; `005_customers.sql` was applied as version `20261020170155`). **Only `007_assets.sql` is to be applied, followed by a re-run of the security advisor** (record the result at the foot of the file; `007` creates the asset register, its history, vendors, container types and stock tables, the two asset permissions and the asset photo storage rules in the existing `dispatch-docs` bucket). The existing admin account already holds admin for AdChem.
 
 ### 4. Google setup (Workspace admin, about 25 minutes)
 See **`GOOGLE-SETUP.md`**. It starts with the dedicated user `ops-system@adchem.pro`.
 
 ### 5. First run
 1. Open the app, sign in with your existing AdChem account.
-2. **Setup → Google connection → Check again** — the first ten lines should read *ok* (token, AR Command Center, calendars, Drive, Gmail, Orders Out, Customers Out, Import sheet, Documents bucket, Expiry email; Orders Out, Customers Out and Import sheet read *no … set* until step 4 is done, calendars until step 5, Expiry email *not scheduled* until step 9) and the eleventh, *Last expiry email*, gives the time of the last one sent for the company, or *never*; the Gmail line should say it can send as orders@adchem.pro. (The calendars line reads *no delivery calendar set* until step 5.)
+2. **Setup → Google connection → Check again** — the first eleven lines should read *ok* (token, Vision, AR Command Center, calendars, Drive, Gmail, Orders Out, Customers Out, Import sheet, Documents bucket, Expiry email; Orders Out, Customers Out and Import sheet read *no … set* until step 4 is done, calendars until step 5, Expiry email *not scheduled* until step 9; Vision reads *ok* once the Cloud Vision API is enabled and billing is linked, see GOOGLE-SETUP.md B2) and the twelfth, *Last expiry email*, gives the time of the last one sent for the company, or *never*; the Gmail line should say it can send as orders@adchem.pro. (The calendars line reads *no delivery calendar set* until step 5.)
 3. **Setup → Customer feed → Refresh the feed now** — reads FEED_ORDERS.
 4. **Setup → Orders Out** — paste the *AdChem Dispatch Orders Out* sheet link, **Save**, then **Rebuild Orders Out**. On the AR Command Center, click **Allow access** on Orders In A8 once.
    - **Setup → Customers Out** — paste the *Customers Out* sheet link, **Save**, then **Rebuild Customers Out**.
@@ -118,11 +131,11 @@ Every `/api` call carries the caller's sign-in token and the company it is actin
 ## Files
 
 ```
-public/            the app (index.html, app.js, customers.js, documents.js, import.js, styles.css, config.js, icons, vendor/supabase.js)
-functions/api/     feed.js · calendar.js · drive.js · pod.js · deposit.js · orderlog.js · customers-out.js · import.js · docs.js · expiry.js · health.js
-functions/_lib/    google.js (service-account token) · auth.js (who is calling, in which company) · orderlog.js (the Orders Out writer) · customersout.js (the Customers Out writer) · expiry.js (what is due, and the email body) · mail.js (the Gmail sender) · importsheet.js (the spreadsheet reader) · calendars.js (which calendar a hub's events go on)
+public/            the app (index.html, app.js, customers.js, documents.js, assets.js, import.js, styles.css, config.js, icons, vendor/supabase.js)
+functions/api/     feed.js · calendar.js · drive.js · pod.js · deposit.js · orderlog.js · customers-out.js · import.js · docs.js · expiry.js · assets.js · health.js
+functions/_lib/    google.js (service-account token) · auth.js (who is calling, in which company) · orderlog.js (the Orders Out writer) · customersout.js (the Customers Out writer) · expiry.js (what is due, and the email body) · vision.js (the serial reader) · mail.js (the Gmail sender) · importsheet.js (the spreadsheet reader) · calendars.js (which calendar a hub's events go on)
 api/               [route].js — adapter so the same server code could run on Vercel; not used by Cloudflare
-supabase/          001_dispatch.sql … 005_customers.sql as applied; 006_documents.sql to be applied (safe to run twice); tests/005_policies.sql, tests/006_policies.sql (run inside begin … rollback)
-test/              ui.test.cjs · customers.test.cjs · documents.test.cjs (headless UI suites) · _fake.cjs (the fake Supabase and /api routes they share) · unit/ (auth, customersout, importsheet, docs.test.mjs, expiry.test.mjs) · fixtures/ · run.cjs (runs everything)
+supabase/          001_dispatch.sql … 006_documents.sql as applied; 007_assets.sql to be applied (safe to run twice); tests/005_policies.sql, tests/006_policies.sql, tests/007_policies.sql (run inside begin … rollback)
+test/              ui.test.cjs · customers.test.cjs · documents.test.cjs · assets.test.cjs (headless UI suites) · _fake.cjs (the fake Supabase and /api routes they share) · unit/ (auth, customersout, importsheet, docs.test.mjs, expiry.test.mjs) · fixtures/ · run.cjs (runs everything)
 GOOGLE-SETUP.md    the Workspace / Google Cloud steps
 ```

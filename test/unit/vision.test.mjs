@@ -50,7 +50,7 @@ test('readText: posts the base64 image with TEXT_DETECTION, as the service accou
 
 test('readText: an ArrayBuffer works, an empty page gives no blocks, an API error carries message and status', async () => {
   await withStub(jres({ responses: [{}] }), async env => {
-    assert.deepEqual(await readText(env, new Uint8Array([9]).buffer), { blocks: [], raw: '' });
+    assert.deepEqual(await readText(env, new Uint8Array([9]).buffer), { blocks: [], raw: '', imageHeight: null });
   });
   await withStub(jres({ error: { code: 400, message: 'Bad image data.' } }, 400), async env => {
     await assert.rejects(() => readText(env, new Uint8Array([9])), e => e.message === 'Bad image data.' && e.status === 400);
@@ -64,4 +64,12 @@ test('probe: ok on 200 (even with no text), and plain sentences for the two setu
   await withStub(jres({ error: { code: 403, status: 'PERMISSION_DENIED', message: 'This API method requires billing to be enabled.' } }, 403),
     async env => assert.equal(await probe(env), 'billing is not linked to the Google Cloud project'));
   await withStub(jres({ error: { code: 500, message: 'Boom' } }, 500), async env => assert.equal(await probe(env), 'Boom'));
+});
+
+test('readText returns the page height when Vision gives one; a long non-JSON error body is cut to 200 characters', async () => {
+  const f = fixture('tote-card.json'); f.responses[0].fullTextAnnotation = { pages: [{ width: 800, height: 1200 }] };
+  await withStub(jres(f), async env => assert.equal((await readText(env, new Uint8Array([1]))).imageHeight, 1200));
+  await withStub(new Response('x'.repeat(500), { status: 502 }), async env => {
+    await assert.rejects(() => readText(env, new Uint8Array([1])), e => e.message.length === 200 && e.status === 502);
+  });
 });

@@ -18,14 +18,15 @@ test('the indented cylinder picks the serial, not the DOT mark, tare or year', (
   const r = pickSerials(blocksFrom(fixture('cylinder-indented.json')), { kind: 'cylinder' });
   assert.equal(r[0].text, 'AB1234');
   assert.ok(scoreOf(r, 'DOT3AA2015') <= 0.1);
-  assert.ok(scoreOf(r, 'TW48.2') <= 0.1, 'tare weight is not a candidate');
-  assert.ok(scoreOf(r, '2019') <= 0.1);
+  assert.ok(!r.some(x => x.text === 'TW48.2'), 'tare weight with a dot is not a candidate');
+  assert.ok(!r.some(x => x.text === '2019'), 'a year is too short to be a candidate');
 });
 
 test('the sticker cylinder picks the serial over the brand and the expiry', () => {
   const r = pickSerials(blocksFrom(fixture('cylinder-sticker.json')), { kind: 'cylinder' });
   assert.equal(r[0].text, 'KX77821');
-  assert.ok(scoreOf(r, 'EXP03/2027') <= 0.1);
+  assert.ok(!r.some(x => x.text === 'EXP03/2027'), 'an expiry date is not a candidate');
+  assert.ok(!r.some(x => x.text === 'AIRGAS'), 'no digit, no serial');
 });
 
 test('the tote card picks the big block, not the weight', () => {
@@ -54,5 +55,26 @@ test('custom rules are added to the defaults, not replacing them', () => {
   assert.ok(scoreOf(r, 'DOT3AA2015') < scoreOf(base, 'AB1234'), 'default rejects still apply');
   const p = pickSerials([{ text: 'Q-9', box: { x: 0, y: 0, w: 1, h: 1 } }], { rules: { patterns: ['^Q\\d$'] } });
   assert.equal(p[0].text, 'Q9');
-  assert.ok(DEFAULT_RULES.patterns.length >= 1 && DEFAULT_RULES.reject.length >= 6);
+  assert.ok(DEFAULT_RULES.patterns.length >= 1 && DEFAULT_RULES.reject.length >= 4);
+});
+
+test('a brand above the serial is still not a candidate (digit gate); custom patterns need a digit too', () => {
+  const blocks = [{ text: 'AIRGAS', box: { x: 0, y: 50, w: 300, h: 60 } }, { text: 'KX77821', box: { x: 0, y: 400, w: 280, h: 50 } }];
+  const r = pickSerials(blocks, { kind: 'cylinder' });
+  assert.ok(!r.some(x => x.text === 'AIRGAS')); assert.equal(r[0].text, 'KX77821');
+  assert.deepEqual(pickSerials([{ text: 'ABCDEF', box: { x: 0, y: 0, w: 1, h: 1 } }], { rules: { patterns: ['^[A-Z]+$'] } }), []);
+});
+
+test('default rejects that can pass the gate: DOT mark, tare code, capacity, expiry code', () => {
+  const b = t => ({ text: t, box: { x: 0, y: 500, w: 10, h: 10 } });
+  const r = pickSerials([b('DOT3AA2015'), b('TW4820'), b('525LB'), b('EXP2027'), b('KX77821')]);
+  assert.equal(r[0].text, 'KX77821');
+  for (const t of ['DOT3AA2015', 'TW4820', '525LB', 'EXP2027']) assert.ok(scoreOf(r, t) <= 0.1, t);
+});
+
+test('opts.imageHeight sets the top 40%; without it the block extent is used', () => {
+  const blocks = [{ text: 'AB1234', box: { x: 0, y: 500, w: 10, h: 10 } }, { text: 'CD5678', box: { x: 0, y: 900, w: 10, h: 100 } }];
+  assert.equal(scoreOf(pickSerials(blocks), 'AB1234'), 1, 'extent 1000: y=500 is not in the top 40%');
+  assert.equal(scoreOf(pickSerials(blocks, { imageHeight: 1000 }), 'AB1234'), 1);
+  assert.equal(scoreOf(pickSerials(blocks, { imageHeight: 2000 }), 'AB1234'), 1.2, 'a taller image puts y=500 in the top 40%');
 });

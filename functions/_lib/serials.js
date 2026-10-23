@@ -2,10 +2,10 @@
 // blocks: [{ text, box: { x, y, w, h } }] -> [{ text, score }], best first, at most five. The driver confirms the pick.
 
 // What a serial looks like (patterns), and what only looks like one (reject): DOT/TC marks, tare weights, years,
-// capacities, expiry/manufacture dates.
+// capacities, expiry/manufacture codes. (Years and dd/yy dates never pass the 5-20 alphanumeric gate, so they need no rule.)
 export const DEFAULT_RULES = {
   patterns: ["^[A-Z0-9]{5,20}$"],
-  reject: ["^(DOT|TC)", "^TW", "^(19[5-9]\\d|20[0-3]\\d)$", "^\\d{1,4}(LB|L|KG|CUFT)$", "^(EXP|MFG|DUE)", "^\\d{1,2}/\\d{2,4}$"],
+  reject: ["^(DOT|TC)", "^TW", "^\\d{1,4}(LB|L|KG|CUFT)$", "^(EXP|MFG|DUE)"],
 };
 export const MAX_RESULTS = 5;
 const REJECT_FACTOR = 0.1;
@@ -29,7 +29,8 @@ export function pickSerials(blocks, opts = {}) {
   const best = new Map();
   for (const b of list) {
     const text = normalise(b.text);
-    if (!patterns.some(re => re.test(text))) continue;          // not serial-shaped: dropped before ranking
+    // not serial-shaped, or no digit at all (a brand or a word, never a serial): dropped before ranking
+    if (!/\d/.test(text) || !patterns.some(re => re.test(text))) continue;
     let score = 1;
     const rejected = reject.some(re => re.test(text));
     if (rejected) score *= REJECT_FACTOR;

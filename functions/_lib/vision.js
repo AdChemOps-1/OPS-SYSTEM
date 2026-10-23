@@ -26,7 +26,7 @@ async function annotate(env, base64) {
   try { json = text ? JSON.parse(text) : null; } catch (e) { json = null; }
   const inner = json && json.responses && json.responses[0];
   if (!res.ok || (inner && inner.error)) {
-    const msg = (json && json.error && (json.error.message || json.error)) || (inner && inner.error && inner.error.message) || text || res.status;
+    const msg = (json && json.error && (json.error.message || json.error)) || (inner && inner.error && inner.error.message) || String(text || res.status).slice(0, 200);
     const err = new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
     err.status = res.ok ? 400 : res.status;
     throw err;
@@ -45,7 +45,8 @@ export async function readText(env, imageBytes) {
     const x = xs.length ? Math.min(...xs) : 0, y = ys.length ? Math.min(...ys) : 0;
     return { text: a.description || "", box: { x, y, w: xs.length ? Math.max(...xs) - x : 0, h: ys.length ? Math.max(...ys) - y : 0 } };
   });
-  return { blocks, raw: (all[0] && all[0].description) || "" };
+  const page = r.fullTextAnnotation && r.fullTextAnnotation.pages && r.fullTextAnnotation.pages[0];
+  return { blocks, raw: (all[0] && all[0].description) || "", imageHeight: (page && page.height) || null };
 }
 
 // 'ok', or a plain sentence for the Setup health line

@@ -95,6 +95,8 @@ create table if not exists public.dispatch_stock_movements (
   created_by uuid default auth.uid(), updated_by uuid);
 create index if not exists dispatch_stock_movements_onhand_idx on public.dispatch_stock_movements (company, hub, product, container, item);
 create index if not exists dispatch_stock_movements_event_idx on public.dispatch_stock_movements (asset_event_id);
+-- one draw-down per fill event (a retried event can never write a second row)
+create unique index if not exists dispatch_stock_movements_event_uq on public.dispatch_stock_movements (asset_event_id) where asset_event_id is not null;
 
 -- ---------- stock settings (3B reads and writes; minimums and alerts per hub × product/container/item) ----------
 create table if not exists public.dispatch_stock_settings (
@@ -128,12 +130,12 @@ create or replace function public.dispatch_driver_stop_ok(c text, k text, i text
                                and o.data->>'siteKey' = i)
     else false end, false) $$;
 -- The driver read rule (dasset_read, devent_read): a driver of the asset's company, and the asset is at their hub, at one of today's
--- stop sites in their hub, or they recorded an event on it today.
+-- stop sites in their hub, or they recorded an event on it today (today = the Pacific date, as in the stop window).
 create or replace function public.dispatch_driver_can_see_asset(a_id uuid) returns boolean language sql stable security definer set search_path = public as $$
   select coalesce((select public.dispatch_role_in(a.company) = 'driver' and (
       (a.location_kind in ('hub','site') and public.dispatch_driver_stop_ok(a.company, a.location_kind, a.location_id))
       or exists (select 1 from public.dispatch_asset_events e where e.asset_id = a.id and e.recorded_by = auth.uid()
-                  and (e.created_at >= current_date or e.occurred_at >= current_date)))
+                  and (e.occurred_at at time zone 'America/Los_Angeles')::date >= (now() at time zone 'America/Los_Angeles')::date))
     from public.dispatch_assets a where a.id = a_id), false) $$;
 
 -- ---------- triggers ----------
@@ -146,7 +148,8 @@ end $fn$;
 -- Places and owners must exist in the row's company. Location, fill and last-seen change only inside dispatch_asset_apply_event
 -- (flag dispatch.apply_event); owner only inside dispatch_asset_correct (flag dispatch.asset_correct). Both flags are
 -- transaction-local and cleared after the one write. A driver (without manage_assets) adds only an in-service container owned by
--- the company or by the stop's customer, at their hub or one of today's stop sites.
+-- the company or by the stop's customer, at their hub or one of today's stop sites. created_by is always the caller; a new row has
+-- no last-seen until an event gives it one.
 create or replace function public.dispatch_assets_guard() returns trigger language plpgsql security definer set search_path = public as $fn$
 declare drv boolean := coalesce(public.dispatch_role_in(new.company) = 'driver' and not public.dispatch_perm_in(new.company, 'manage_assets'), false);
 begin
@@ -174,6 +177,10 @@ begin
     if not exists (select 1 from public.dispatch_container_types t where t.id = new.container_type_id and t.company = new.company) then
       raise exception 'container type not found in this company'; end if;
   end if;
+  if tg_op = 'INSERT' then
+    new.created_by := auth.uid();
+    if coalesce(current_setting('dispatch.apply_event', true), '') <> '1' then new.last_seen_at := null; new.last_seen_by := null; end if;
+  end if;
   if tg_op = 'INSERT' and drv then
     if not (new.condition = 'in_service' and new.location_kind in ('hub','site')
             and public.dispatch_driver_stop_ok(new.company, new.location_kind, new.location_id)
@@ -181,7 +188,6 @@ begin
                  or (new.owner_kind = 'customer' and new.location_kind = 'site'
                      and exists (select 1 from public.dispatch_sites s where s.company = new.company and s.site_key = new.location_id and s.customer_id::text = new.owner_id)))) then
       raise exception 'a driver adds only an in-service container owned by AdChem or the stop''s customer, at their hub or stop'; end if;
-    new.created_by := auth.uid();
   end if;
   return new;
 end $fn$;
@@ -212,6 +218,8 @@ begin
 end $fn$;
 -- After an event: the asset's place, fill and last-seen follow it (through the apply flag); owner never changes here. A hub fill of
 -- a type with a nominal weight draws that many pounds of the product down at the hub; otherwise no stock row (the server warns).
+-- An event older than the asset's last sighting (an offline queue sent late) stays as history but does not move the asset or
+-- change its fill — the newer event already describes it; a corrected event always applies. A late fill still draws the bulk down.
 create or replace function public.dispatch_asset_apply_event() returns trigger language plpgsql security definer set search_path = public as $fn$
 declare a public.dispatch_assets%rowtype; lb numeric; prod text; lk text; li text; fs text;
 begin
@@ -237,6 +245,7 @@ begin
       if new.event_type = 'corrected' then fs := coalesce(new.fill_after, fs); end if;
     else null;   -- loaded, created: last seen only
   end case;
+  if new.event_type <> 'corrected' and new.occurred_at < a.last_seen_at then return null; end if;
   perform set_config('dispatch.apply_event', '1', true);
   update public.dispatch_assets set location_kind = lk, location_id = li, fill_state = fs,
          last_seen_at = new.occurred_at, last_seen_by = new.recorded_by, updated_at = now(), updated_by = new.recorded_by
@@ -376,7 +385,8 @@ do $$ begin
   if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_container_types' and policyname = 'dctype_write') then
     create policy dctype_write on public.dispatch_container_types for all using (public.dispatch_perm_in(company, 'manage_assets')) with check (public.dispatch_perm_in(company, 'manage_assets'));
   end if;
-  -- Stock movements: view_assets reads; manage_assets inserts (fills arrive through dispatch_asset_apply_event as the owner). Append-only.
+  -- Stock movements: view_assets reads; manage_assets inserts anything but a fill. Fill rows come only from dispatch_asset_apply_event,
+  -- a security definer owned by the tables' owner, and RLS does not apply to the table owner (no FORCE), as in 006. Append-only.
   if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_stock_movements' and policyname = 'dstock_read') then
     create policy dstock_read on public.dispatch_stock_movements for select using (public.dispatch_perm_in(company, 'view_assets'));
   end if;
@@ -388,7 +398,7 @@ do $$ begin
     create policy dstockset_write on public.dispatch_stock_settings for all using (public.dispatch_perm_in(company, 'manage_assets')) with check (public.dispatch_perm_in(company, 'manage_assets'));
   end if;
   if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_stock_movements' and policyname = 'dstock_insert') then
-    create policy dstock_insert on public.dispatch_stock_movements for insert with check (public.dispatch_perm_in(company, 'manage_assets'));
+    create policy dstock_insert on public.dispatch_stock_movements for insert with check (public.dispatch_perm_in(company, 'manage_assets') and reason <> 'filled');
   end if;
   -- Files: {company}/asset/<asset_id>/<event_id>.jpg and {company}/asset/new/<event_id>.jpg. Insert by a driver or manage_assets of
   -- that company; read by view_assets or the member who uploaded it; delete by manage_assets; no update.
@@ -410,7 +420,16 @@ end $$;
 -- as documents need view_documents since 006. dl_editor_read exists since 005, so it is altered in place (re-runnable).
 alter policy dl_editor_read on public.dispatch_log using (public.dispatch_can_edit_in(company) and table_name is not null and what = 'change'
   and (table_name <> 'dispatch_documents' or public.dispatch_perm_in(company, 'view_documents'))
-  and (table_name not in ('dispatch_assets','dispatch_asset_events','dispatch_stock_movements') or public.dispatch_perm_in(company, 'view_assets')));
+  and (table_name not in ('dispatch_assets','dispatch_asset_events','dispatch_stock_movements','dispatch_stock_settings') or public.dispatch_perm_in(company, 'view_assets')));
+-- 006's document storage policies are permissive and OR with the asset ones, so without this a view_documents holder would read,
+-- and a manage_documents holder delete, {company}/asset/ photos. Both are re-stated with asset/ excluded (altered in place, re-runnable).
+-- "dispatch docs write" needs no change: it only admits document/ and capture/ paths.
+alter policy "dispatch docs read" on storage.objects using (bucket_id = 'dispatch-docs' and (storage.foldername(name))[2] is distinct from 'asset'
+  and (public.dispatch_perm_in((storage.foldername(name))[1], 'view_documents')
+       or ((storage.foldername(name))[2] = 'document' and (storage.foldername(name))[3] = 'person' and (storage.foldername(name))[4] = (select auth.uid())::text
+           and public.dispatch_role_in((storage.foldername(name))[1]) is not null)));
+alter policy "dispatch docs delete" on storage.objects using (bucket_id = 'dispatch-docs' and (storage.foldername(name))[2] is distinct from 'asset'
+  and public.dispatch_perm_in((storage.foldername(name))[1], 'manage_documents'));
 
 -- ---------- seed: the order form's gas containers for adchem, only where (company, product, size_label) is absent ----------
 do $$ begin
@@ -432,5 +451,5 @@ do $$ begin
 end $$;
 
 -- Applied: pending — verified 10/23/26 on project adchem-hours as one rolled-back batch through the Supabase MCP (begin; 007; 007;
--- supabase/tests/007_policies.sql; rollback), which ended with "VERIFY-OK 007: types=17 driver_sees=4 events=7 stock_rows=1
--- coordinator_count_rows=7" (fix round 1); nothing persisted. apply_migration only on the user's word.
+-- supabase/tests/007_policies.sql; rollback), which ended with "VERIFY-OK 007: types=17 driver_sees=4 events=12 stock_rows=1
+-- coordinator_count_rows=9" (fix round 2); nothing persisted. apply_migration only on the user's word.

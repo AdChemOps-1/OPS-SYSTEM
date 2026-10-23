@@ -44,7 +44,9 @@ begin
   -- the driver's stop today: an EB order at site S (the order's site lives in data.siteKey); site O has no order today
   insert into public.dispatch_orders (company, id, hub, date, customer, data) values
     ('adchem', 'T007-EB-1', 'EB', current_date, 'T007 Customer', '{"siteKey":"T007-S"}'),
-    ('adchem', 'T007-EB-0', 'EB', current_date - 1, 'T007 Other', '{"siteKey":"T007-O"}');
+    ('adchem', 'T007-EB-0', 'EB', current_date - 5, 'T007 Other', '{"siteKey":"T007-O"}');
+  -- a stock minimum (3B's table, created by 007)
+  insert into public.dispatch_stock_settings (company, hub, product, min_qty, unit) values ('adchem', 'EB', 'Carbon Dioxide', 500, 'lb');
 
   -- ---- seed: the order form's 17 gas containers for adchem, once each even though 007 ran twice ----
   select count(*) into n_types from public.dispatch_container_types where company = 'adchem' and created_by is null;
@@ -97,10 +99,14 @@ begin
   begin insert into public.dispatch_asset_events (company, asset_id, event_type, from_kind, from_id, to_kind, to_id) values ('adchem', a_f, 'delivered', 'hub', 'EB', 'site', 'T007-O');
   exception when others then ok := sqlerrm = 'not your stop'; end;
   if not ok then raise exception 'driver delivered to a site with no stop today'; end if;
-  ok := false;
-  begin insert into public.dispatch_asset_events (company, asset_id, event_type, from_kind, from_id, to_kind, to_id) values ('adchem', a_f, 'collected', 'site', 'T007-O', 'hub', 'EB');
-  exception when others then ok := sqlerrm = 'not your stop'; end;
-  if not ok then raise exception 'driver collected from a site with no stop today'; end if;
+  -- from is never checked for a driver: a sighted correction may carry another customer's site (the register's last place)
+  insert into public.dispatch_asset_events (company, asset_id, event_type, from_kind, from_id, to_kind, to_id, note) values ('adchem', a_f, 'sighted', 'site', 'T007-O', 'hub', 'EB', 'was at T007-O');
+  -- the driver finds an asset the register has at another customer's site by serial (normalised), with no notes or tag
+  select count(*) into n from public.dispatch_asset_by_serial('adchem', ' t7other01 ') x where x.id = a_o and x.location_kind = 'site' and x.location_id = 'T007-O';
+  if n <> 1 then raise exception 'driver did not find the asset at another site by serial'; end if;
+  if (select count(*) from public.dispatch_asset_by_serial('adchem', 'NOSUCH01')) <> 0 then raise exception 'by_serial found a missing serial'; end if;
+  if exists (select 1 from pg_proc p where p.proname = 'dispatch_asset_by_serial' and ('notes' = any(p.proargnames) or 'tag' = any(p.proargnames))) then
+    raise exception 'dispatch_asset_by_serial returns notes or tag'; end if;
   ok := false;
   begin insert into public.dispatch_asset_events (company, asset_id, event_type, from_kind, from_id, to_kind, to_id) values ('adchem', a_f, 'delivered', 'hub', 'EB', 'hub', 'EB');
   exception when others then ok := sqlerrm = 'delivered goes to a site'; end;
@@ -149,6 +155,7 @@ begin
   begin insert into public.dispatch_vendors (company, name) values ('adchem', 't007 gas co');
   exception when unique_violation then ok := true; end;
   if not ok then raise exception 'a vendor name repeated (case-insensitive) was accepted'; end if;
+  if (select count(*) from public.dispatch_stock_settings where company = 'adchem' and hub = 'EB') <> 1 then raise exception 'manager cannot read stock settings'; end if;
   ok := false;
   begin update public.dispatch_assets set location_id = 'LA' where id = a_f;
   exception when others then ok := sqlerrm = 'location and fill change only through events'; end;
@@ -228,6 +235,7 @@ begin
   if (select coalesce(sum(x.n), 0) from public.dispatch_asset_counts_for('adchem') x where x.container_type_id = t50 and x.fill_state = 'full' and x.hub = 'EB') < 1 then
     raise exception 'counts miss the full 50lb at EB'; end if;
   if (select count(*) from public.dispatch_asset_counts_for('north')) <> 0 then raise exception 'coordinator gets north counts'; end if;
+  if (select count(*) from public.dispatch_stock_settings) <> 0 then raise exception 'coordinator without switches reads stock settings'; end if;
   select (select count(*) from public.dispatch_assets) + (select count(*) from public.dispatch_asset_events) + (select count(*) from public.dispatch_asset_counts)
        + (select count(*) from public.dispatch_stock_movements) + (select count(*) from public.dispatch_log where table_name in ('dispatch_assets','dispatch_asset_events','dispatch_stock_movements')) into n;
   if n <> 0 then raise exception 'coordinator without switches reads % asset rows', n; end if;
@@ -294,6 +302,10 @@ begin
   begin insert into public.dispatch_asset_events (company, asset_id, event_type, to_kind, to_id) values ('adchem', a_hub, 'sighted', 'hub', 'EB');
   exception when insufficient_privilege then ok := true; end;
   if not ok then raise exception 'north driver recorded an adchem event'; end if;
+  ok := false;
+  begin perform * from public.dispatch_asset_by_serial('adchem', 'T7OTHER01');
+  exception when others then ok := sqlerrm = 'not allowed'; end;
+  if not ok then raise exception 'north driver looked up an adchem serial'; end if;
   reset role;
   perform set_config('request.jwt.claims', json_build_object('sub', nm, 'role', 'authenticated')::text, true);
   set local role authenticated;

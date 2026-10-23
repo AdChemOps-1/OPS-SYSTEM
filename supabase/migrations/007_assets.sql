@@ -96,6 +96,19 @@ create table if not exists public.dispatch_stock_movements (
 create index if not exists dispatch_stock_movements_onhand_idx on public.dispatch_stock_movements (company, hub, product, container, item);
 create index if not exists dispatch_stock_movements_event_idx on public.dispatch_stock_movements (asset_event_id);
 
+-- ---------- stock settings (3B reads and writes; minimums and alerts per hub × product/container/item) ----------
+create table if not exists public.dispatch_stock_settings (
+  id uuid primary key default gen_random_uuid(),
+  company text not null references public.companies(id),
+  hub text not null,
+  product text not null default '', container text not null default '', item text not null default '',
+  min_qty numeric not null default 0,
+  unit text not null default 'count' check (unit in ('count','lb')),
+  alert boolean not null default true,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  created_by uuid default auth.uid(), updated_by uuid,
+  unique (company, hub, product, container, item));
+
 -- ---------- helpers (security definer; called only from the guard functions below) ----------
 -- A place of a kind exists in the company: a hub code, a site_key, a vendor id.
 create or replace function public.dispatch_asset_place_ok(c text, k text, i text) returns boolean language sql stable security definer set search_path = public as $$
@@ -104,11 +117,15 @@ create or replace function public.dispatch_asset_place_ok(c text, k text, i text
     when 'site'   then exists (select 1 from public.dispatch_sites s where s.company = c and s.site_key = i)
     when 'vendor' then exists (select 1 from public.dispatch_vendors v where v.company = c and v.id::text = i)
     else false end, false) $$;
--- The caller's own stop places today: their hub, or the site of an order dated today in their hub (the order's site is data.siteKey).
+-- The caller's own stop places: their hub, or the site of an order in their hub dated within a day of today in Pacific time (the
+-- order's site is data.siteKey). The ±1 day window covers late-evening and early-morning stops on either side of the UTC date and
+-- offline queues sent the next morning.
 create or replace function public.dispatch_driver_stop_ok(c text, k text, i text) returns boolean language sql stable security definer set search_path = public as $$
   select coalesce(case k
     when 'hub'  then i = public.dispatch_hub_in(c)
-    when 'site' then exists (select 1 from public.dispatch_orders o where o.company = c and o.hub = public.dispatch_hub_in(c) and o.date = current_date and o.data->>'siteKey' = i)
+    when 'site' then exists (select 1 from public.dispatch_orders o where o.company = c and o.hub = public.dispatch_hub_in(c)
+                               and o.date between (now() at time zone 'America/Los_Angeles')::date - 1 and (now() at time zone 'America/Los_Angeles')::date + 1
+                               and o.data->>'siteKey' = i)
     else false end, false) $$;
 -- The driver read rule (dasset_read, devent_read): a driver of the asset's company, and the asset is at their hub, at one of today's
 -- stop sites in their hub, or they recorded an event on it today.
@@ -170,7 +187,8 @@ begin
 end $fn$;
 -- An event belongs to an asset of its company; each movement type names where it goes; occurred_at is the phone's time when within
 -- the last 30 days and not after now, else now; recorded_by is always the caller. A driver (without manage_assets) records only the
--- five driver types, and every place they name (from and to) is their hub or one of today's stop sites.
+-- five driver types, and the place an event goes to (to) is their hub or one of their stop sites. from is never checked for a
+-- driver: it records where the register last had the asset (a sighted correction can carry another customer's site).
 create or replace function public.dispatch_asset_events_guard() returns trigger language plpgsql security definer set search_path = public as $fn$
 declare c text; drv boolean := coalesce(public.dispatch_role_in(new.company) = 'driver' and not public.dispatch_perm_in(new.company, 'manage_assets'), false);
 begin
@@ -187,8 +205,7 @@ begin
   new.recorded_by := auth.uid(); new.created_by := auth.uid();
   if drv then
     if new.event_type not in ('delivered','collected','sighted','loaded','created') then raise exception 'a driver cannot record %', new.event_type; end if;
-    if (new.to_kind is not null and not public.dispatch_driver_stop_ok(new.company, new.to_kind, new.to_id))
-       or (new.from_kind is not null and not public.dispatch_driver_stop_ok(new.company, new.from_kind, new.from_id)) then
+    if new.to_kind is not null and not public.dispatch_driver_stop_ok(new.company, new.to_kind, new.to_id) then
       raise exception 'not your stop'; end if;
   end if;
   return new;
@@ -243,6 +260,20 @@ create or replace trigger dispatch_asset_events_audit after insert or update or 
 create or replace trigger dispatch_asset_events_apply after insert on public.dispatch_asset_events for each row execute function public.dispatch_asset_apply_event();
 create or replace trigger dispatch_stock_movements_keep_company before update on public.dispatch_stock_movements for each row execute function public.dispatch_keep_company();
 create or replace trigger dispatch_stock_movements_audit after insert or update or delete on public.dispatch_stock_movements for each row execute function public.dispatch_audit();
+create or replace trigger dispatch_stock_settings_keep_company before update on public.dispatch_stock_settings for each row execute function public.dispatch_keep_company();
+create or replace trigger dispatch_stock_settings_audit after insert or update or delete on public.dispatch_stock_settings for each row execute function public.dispatch_audit();
+
+-- ---------- RPC: find an asset by serial (any active member), wherever it is ----------
+-- A driver scanning a container the register has at another customer cannot read that row (dasset_read), so the server looks it up
+-- here: place, fill, owner and type only (no notes, tag or history). The serial is normalised as dispatch_assets_normalize stores it.
+create or replace function public.dispatch_asset_by_serial(p_company text, p_serial text)
+returns table (id uuid, serial text, container_type_id uuid, fill_state text, location_kind text, location_id text, owner_kind text, owner_id text)
+language plpgsql stable security definer set search_path = public as $fn$
+begin
+  if public.dispatch_role_in(p_company) is null then raise exception 'not allowed'; end if;
+  return query select a.id, a.serial, a.container_type_id, a.fill_state, a.location_kind, a.location_id, a.owner_kind, a.owner_id
+    from public.dispatch_assets a where a.company = p_company and a.serial = upper(btrim(coalesce(p_serial, '')));
+end $fn$;
 
 -- ---------- RPC: owner, condition and detail corrections (manage_assets), logged as a corrected event and by dispatch_audit ----------
 -- The update's dispatch_log 'change' row (dispatch_audit) carries the from/to of every changed field. Setting owner_kind to adchem
@@ -291,8 +322,10 @@ language sql stable security definer set search_path = public as $fn$
 -- dispatch_driver_can_see_asset is called by dasset_read / devent_read, and a policy expression runs with the caller's privileges
 -- (not the table owner's), so authenticated needs execute on it — revoked, every driver read fails with "permission denied for
 -- function" (seen in the rolled-back run). It answers only "may I, the caller, see this asset id", like dispatch_perm_in.
-grant execute on function public.dispatch_asset_correct(uuid,jsonb), public.dispatch_asset_counts_for(text), public.dispatch_driver_can_see_asset(uuid) to authenticated;
-revoke execute on function public.dispatch_asset_correct(uuid,jsonb), public.dispatch_asset_counts_for(text), public.dispatch_driver_can_see_asset(uuid) from anon, public;
+grant execute on function public.dispatch_asset_correct(uuid,jsonb), public.dispatch_asset_counts_for(text), public.dispatch_driver_can_see_asset(uuid),
+  public.dispatch_asset_by_serial(text,text) to authenticated;
+revoke execute on function public.dispatch_asset_correct(uuid,jsonb), public.dispatch_asset_counts_for(text), public.dispatch_driver_can_see_asset(uuid),
+  public.dispatch_asset_by_serial(text,text) from anon, public;
 revoke execute on function public.dispatch_asset_place_ok(text,text,text), public.dispatch_driver_stop_ok(text,text,text),
   public.dispatch_assets_normalize(), public.dispatch_assets_guard(),
   public.dispatch_asset_events_guard(), public.dispatch_asset_apply_event()
@@ -304,6 +337,7 @@ alter table public.dispatch_container_types enable row level security;  revoke a
 alter table public.dispatch_assets enable row level security;           revoke all on public.dispatch_assets from anon;
 alter table public.dispatch_asset_events enable row level security;     revoke all on public.dispatch_asset_events from anon;
 alter table public.dispatch_stock_movements enable row level security;  revoke all on public.dispatch_stock_movements from anon;
+alter table public.dispatch_stock_settings enable row level security;   revoke all on public.dispatch_stock_settings from anon;
 do $$ begin
   -- Register: view_assets, or a driver by the rule in dispatch_driver_can_see_asset. Insert: manage_assets or a driver (the guard
   -- narrows a driver's row). Update and delete: manage_assets (the guard keeps place, fill and owner out of a direct update).
@@ -345,6 +379,13 @@ do $$ begin
   -- Stock movements: view_assets reads; manage_assets inserts (fills arrive through dispatch_asset_apply_event as the owner). Append-only.
   if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_stock_movements' and policyname = 'dstock_read') then
     create policy dstock_read on public.dispatch_stock_movements for select using (public.dispatch_perm_in(company, 'view_assets'));
+  end if;
+  -- Stock settings (minimums, alerts): view_assets reads; manage_assets writes.
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_stock_settings' and policyname = 'dstockset_read') then
+    create policy dstockset_read on public.dispatch_stock_settings for select using (public.dispatch_perm_in(company, 'view_assets'));
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_stock_settings' and policyname = 'dstockset_write') then
+    create policy dstockset_write on public.dispatch_stock_settings for all using (public.dispatch_perm_in(company, 'manage_assets')) with check (public.dispatch_perm_in(company, 'manage_assets'));
   end if;
   if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'dispatch_stock_movements' and policyname = 'dstock_insert') then
     create policy dstock_insert on public.dispatch_stock_movements for insert with check (public.dispatch_perm_in(company, 'manage_assets'));
@@ -391,5 +432,5 @@ do $$ begin
 end $$;
 
 -- Applied: pending — verified 10/23/26 on project adchem-hours as one rolled-back batch through the Supabase MCP (begin; 007; 007;
--- supabase/tests/007_policies.sql; rollback), which ended with "VERIFY-OK 007: types=17 driver_sees=4 events=6 stock_rows=1
--- coordinator_count_rows=7"; nothing persisted. apply_migration only on the user's word.
+-- supabase/tests/007_policies.sql; rollback), which ended with "VERIFY-OK 007: types=17 driver_sees=4 events=7 stock_rows=1
+-- coordinator_count_rows=7" (fix round 1); nothing persisted. apply_migration only on the user's word.

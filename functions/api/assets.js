@@ -21,7 +21,6 @@ const MAX_NOTE = 1000;
 export const normSerial = s => String(s == null ? "" : s).toUpperCase().replace(/[\s-]+/g, "");
 const isText = (v, max = MAX_TEXT) => typeof v === "string" && v.length <= max;
 const isObj = v => v !== null && typeof v === "object" && !Array.isArray(v);
-const photoOk = (company, p) => typeof p === "string" && new RegExp("^" + company.replace(/-/g, "\\-") + "/asset/" + UUID_RE + "\\.jpg$", "i").test(p);
 
 export async function onRequestPost({ request, env }) {
   return handle(async () => {
@@ -90,7 +89,7 @@ function invalid(e, company) {
   if (e.orderId != null && !isText(e.orderId)) return "orderId must be text";
   if (e.bolNumber != null && !(Number.isInteger(e.bolNumber) && e.bolNumber >= 0 && e.bolNumber <= 2147483647)) return "bolNumber must be a whole number";
   if (e.siteKey != null && !isText(e.siteKey)) return "siteKey must be text";
-  if (e.photoPath != null && !photoOk(company, e.photoPath)) return "photoPath must be " + company + "/asset/<uuid>.jpg";
+  if (e.photoPath != null && e.photoPath !== company + "/asset/" + e.id + ".jpg") return "photoPath must be " + company + "/asset/" + e.id + ".jpg";
   if (e.gps != null && !isObj(e.gps)) return "gps must be an object";
   if (e.ocr != null && !isObj(e.ocr)) return "ocr must be an object";
   if (e.gps != null && JSON.stringify(e.gps).length > 2000) return "gps is too large";
@@ -99,13 +98,32 @@ function invalid(e, company) {
   return "";
 }
 
-// PostgREST's error body ({code, message}) as thrown by sb(); anything else keeps its text
+// A UUID-shaped SHA-256 of a seed (version 5 bits, RFC 4122 variant): the ids the server makes for an event's companions (its
+// asset, its created event, its sighted correction) are the same on every retry, so the primary key catches a second write.
+export async function derivedId(seed) {
+  const b = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(seed))).slice(0, 16);
+  b[6] = (b[6] & 0x0f) | 0x50; b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map(x => x.toString(16).padStart(2, "0")).join("");
+  return h.slice(0, 8) + "-" + h.slice(8, 12) + "-" + h.slice(12, 16) + "-" + h.slice(16, 20) + "-" + h.slice(20);
+}
+
+// PostgREST's error body ({code, message, details}) as thrown by sb(); anything else (network, a gateway page) keeps its text
 function pgError(err) {
   const text = String((err && err.message) || err);
-  try { const j = JSON.parse(text); if (j && typeof j === "object") return { code: String(j.code || ""), message: String(j.message || text) }; } catch (e) { /* not JSON */ }
-  return { code: "", message: text };
+  try {
+    const j = JSON.parse(text);
+    if (j && typeof j === "object" && !Array.isArray(j)) return { code: String(j.code || ""), message: String(j.message || text), details: String(j.details || "") };
+  } catch (e) { /* not JSON */ }
+  return { code: "", message: text, details: "" };
 }
-const isDup = pe => pe.code === "23505" && /dispatch_asset_events_pkey/.test(pe.message);
+const dupOn = (pe, constraint) => pe.code === "23505" && pe.message.includes(constraint);
+// a refusal the caller cannot fix by retrying (RLS, a guard raise) vs anything else, which the phone keeps and sends again
+const refusal = pe => (pe.code === "42501" || pe.code === "P0001" ? { status: "rejected", reason: pe.message } : { status: "error", reason: pe.message });
+
+async function lookup(db, company, serial) {
+  const found = await db.rpc("dispatch_asset_by_serial", { p_company: company, p_serial: serial });
+  return Array.isArray(found) && found[0] ? found[0] : null;
+}
 
 function eventRow(company, assetId, e, over = {}) {
   const row = {
@@ -124,6 +142,21 @@ function eventRow(company, assetId, e, over = {}) {
   };
   return { ...row, ...over };
 }
+const COMPANION = { fill_after: null, order_id: null, bol_number: null, photo_path: null, gps: null, ocr: null };
+
+// the created event of an asset the server made for event e (same id on every retry; already there is fine)
+async function createdEvent(db, company, assetId, e, place) {
+  try {
+    await db.insert("dispatch_asset_events", [eventRow(company, assetId, e, {
+      ...COMPANION, id: await derivedId(e.id + ":created"), event_type: "created", from_kind: null, from_id: null,
+      to_kind: place.kind, to_id: place.id, site_key: null, note: "",
+    })], true);
+    return null;
+  } catch (err) {
+    const pe = pgError(err);
+    return dupOn(pe, "dispatch_asset_events_pkey") ? null : refusal(pe);
+  }
+}
 
 async function applyOne(db, company, e) {
   const out = { id: e.id };
@@ -133,72 +166,92 @@ async function applyOne(db, company, e) {
     const seen = await db.get("dispatch_asset_events?select=id&id=eq." + e.id).catch(() => []);
     if (seen.length) return { ...out, status: "duplicate" };
 
-    const found = await db.rpc("dispatch_asset_by_serial", { p_company: company, p_serial: serial });
-    let asset = Array.isArray(found) && found[0] ? found[0] : null;
+    const myAssetId = await derivedId(e.id + ":asset");
+    const place = e.from || e.to;
+    let asset = await lookup(db, company, serial);
+    let mine = false;   // the asset is the one this event creates (now, or on an earlier try of the same batch)
 
     if (!asset) {
-      const place = e.from || e.to;
       if (e.type !== "created" && !e.containerTypeId) return { ...out, status: "rejected", reason: "a new serial needs a container type" };
       if (!place) return { ...out, status: "rejected", reason: "a new serial needs a place (from or to)" };
-      asset = {
-        id: crypto.randomUUID(), company, serial,
+      const row = {
+        id: myAssetId, company, serial,
         container_type_id: e.containerTypeId || null,
         owner_kind: e.ownerKind || "adchem", owner_id: e.ownerId || "",
         fill_state: "unknown", location_kind: place.kind, location_id: place.id,
       };
-      await db.insert("dispatch_assets", [asset], true);
-      out.assetId = asset.id; out.created = true;
-      if (e.type !== "created") {
-        await db.insert("dispatch_asset_events", [eventRow(company, asset.id, e, {
-          id: crypto.randomUUID(), event_type: "created", from_kind: null, from_id: null,
-          to_kind: place.kind, to_id: place.id, fill_after: null, order_id: null, bol_number: null,
-          photo_path: null, gps: null, ocr: null, note: "",
-        })], true);
+      try {
+        await db.insert("dispatch_assets", [row], true);
+        asset = row; out.created = true;
+      } catch (err) {
+        const pe = pgError(err);
+        if (pe.code !== "23505") return { ...out, ...refusal(pe) };
+        // another phone (or an earlier try) created this serial a moment ago: look again, once
+        asset = await lookup(db, company, serial);
+        if (!asset) return { ...out, status: "error", reason: pe.message };
       }
-    } else {
-      out.assetId = asset.id;
-      if (e.type === "created") return { ...out, status: "rejected", reason: "serial " + serial + " is already in the register" };
+    }
+    out.assetId = asset.id;
+    mine = asset.id === myAssetId;
+    if (e.type === "created" && !mine) return { ...out, status: "rejected", reason: "serial " + serial + " is already in the register" };
+    if (mine && e.type !== "created") {
+      const bad = await createdEvent(db, company, asset.id, e, place);
+      if (bad) return { ...out, ...bad };
     }
 
-    // the register had it somewhere else: record where it really was first, a millisecond earlier so it sorts before the movement
-    let at = { kind: asset.location_kind, id: asset.location_id };
-    if (e.from && (e.from.kind !== at.kind || e.from.id !== at.id)) {
-      try {
-        await db.insert("dispatch_asset_events", [eventRow(company, asset.id, e, {
-          id: crypto.randomUUID(), event_type: "sighted",
-          from_kind: at.kind, from_id: at.id, to_kind: e.from.kind, to_id: e.from.id,
-          fill_after: null, occurred_at: new Date(Date.parse(e.occurredAt) - 1).toISOString(),
-          order_id: null, bol_number: null, photo_path: null, ocr: null,
-          note: "was at " + at.kind + " " + at.id,
-        })], true);
-        out.corrected = true;
-      } catch (err) {
-        out.warning = "location correction not recorded: " + pgError(err).message;
-      }
+    // the register had it somewhere else: a sighted correction {from: current, to: from} goes in with the movement, in one
+    // statement, so a retry whose movement is already in writes neither (and a stale correction can never move the asset back)
+    const current = { kind: asset.location_kind, id: asset.location_id };
+    const rows = [];
+    let at = current;
+    if (e.from && (e.from.kind !== current.kind || e.from.id !== current.id)) {
+      rows.push(eventRow(company, asset.id, e, {
+        ...COMPANION, id: await derivedId(e.id + ":sighted"), event_type: "sighted",
+        from_kind: current.kind, from_id: current.id, to_kind: e.from.kind, to_id: e.from.id,
+        note: "was at " + current.kind + " " + current.id,
+      }));
       at = { kind: e.from.kind, id: e.from.id };
     }
+    rows.push(eventRow(company, asset.id, e));
 
-    let fillWarning = "";
+    let warning = "";
     if (e.type === "filled") {
-      if (at.kind !== "hub") fillWarning = "asset is not at a hub";
+      if (at.kind !== "hub") warning = "asset is not at a hub";
+      else if (!asset.container_type_id) warning = "no fill weight on this container type";
       else {
-        const t = asset.container_type_id
-          ? await db.get("dispatch_container_types?select=fill_lb&company=eq." + encodeURIComponent(company) + "&id=eq." + asset.container_type_id).catch(() => [])
-          : [];
-        if (!t[0] || t[0].fill_lb == null) fillWarning = "no fill weight on this container type";
+        let t = null;
+        try { t = await db.get("dispatch_container_types?select=fill_lb&company=eq." + encodeURIComponent(company) + "&id=eq." + asset.container_type_id); } catch (err) { t = null; }
+        if (!t) warning = "could not read container type";
+        else if (!t[0] || t[0].fill_lb == null) warning = "no fill weight on this container type";
       }
     }
 
     try {
-      await db.insert("dispatch_asset_events", [eventRow(company, asset.id, e)], true);
+      await db.insert("dispatch_asset_events", rows, true);
+      if (rows.length > 1) out.corrected = true;
     } catch (err) {
       const pe = pgError(err);
-      if (isDup(pe)) return { ...out, status: "duplicate" };
-      return { ...out, status: "rejected", reason: pe.message };
+      if (dupOn(pe, "dispatch_asset_events_pkey")) {
+        // the correction's id already in means it went in with this movement before; either way, let the movement's own insert decide
+        if (rows.length === 1 || !pe.details.includes(rows[0].id)) return { ...out, status: "duplicate" };
+      } else if (rows.length === 1 || refusal(pe).status === "error") {
+        return { ...out, ...refusal(pe) };
+      } else {
+        // the correction or the movement was refused: try the movement on its own (a driver's correction can name a place
+        // that is not their stop); if the movement is the refused one it fails again below
+        warning = "location correction not recorded: " + pe.message + (warning ? "; " + warning : "");
+      }
+      try {
+        await db.insert("dispatch_asset_events", [rows[rows.length - 1]], true);
+      } catch (err2) {
+        const pe2 = pgError(err2);
+        if (dupOn(pe2, "dispatch_asset_events_pkey")) return { ...out, status: "duplicate" };
+        return { ...out, ...refusal(pe2) };
+      }
     }
-    if (fillWarning) out.warning = out.warning ? out.warning + "; " + fillWarning : fillWarning;
+    if (warning) out.warning = warning;
     return { status: "applied", ...out };
   } catch (err) {
-    return { ...out, status: "rejected", reason: pgError(err).message };
+    return { ...out, ...refusal(pgError(err)) };
   }
 }

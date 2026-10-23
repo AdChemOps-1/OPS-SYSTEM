@@ -37,7 +37,7 @@ create table if not exists public.dispatch_container_types (
 create table if not exists public.dispatch_assets (
   id uuid primary key default gen_random_uuid(),
   company text not null references public.companies(id),
-  serial text not null,                                      -- trimmed and uppercased by dispatch_assets_normalize
+  serial text not null,                                      -- uppercased, spaces and hyphens removed by dispatch_assets_normalize
   tag text not null default '',                              -- sticker / card id
   container_type_id uuid references public.dispatch_container_types(id),
   owner_kind text not null default 'adchem' check (owner_kind in ('adchem','vendor','customer')),   -- adchem = the company that owns the row
@@ -141,7 +141,7 @@ create or replace function public.dispatch_driver_can_see_asset(a_id uuid) retur
 -- ---------- triggers ----------
 create or replace function public.dispatch_assets_normalize() returns trigger language plpgsql security definer set search_path = public as $fn$
 begin
-  new.serial := upper(btrim(coalesce(new.serial, '')));
+  new.serial := regexp_replace(upper(btrim(coalesce(new.serial, ''))), '[\s-]', '', 'g');   -- one rule everywhere: the server's normSerial too
   if new.serial = '' then raise exception 'serial is required'; end if;
   return new;
 end $fn$;
@@ -281,7 +281,7 @@ language plpgsql stable security definer set search_path = public as $fn$
 begin
   if public.dispatch_role_in(p_company) is null then raise exception 'not allowed'; end if;
   return query select a.id, a.serial, a.container_type_id, a.fill_state, a.location_kind, a.location_id, a.owner_kind, a.owner_id
-    from public.dispatch_assets a where a.company = p_company and a.serial = upper(btrim(coalesce(p_serial, '')));
+    from public.dispatch_assets a where a.company = p_company and a.serial = regexp_replace(upper(btrim(coalesce(p_serial, ''))), '[\s-]', '', 'g');
 end $fn$;
 
 -- ---------- RPC: owner, condition and detail corrections (manage_assets), logged as a corrected event and by dispatch_audit ----------

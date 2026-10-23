@@ -206,7 +206,7 @@ function seedAssets(){ const t0='2026-10-01T00:00:00Z';
       A('as-ef9012','adchem','EF9012','ct-co2-20','adchem',null,'full','vendor','vend-airgas'),
       A('as-zz0001','north','ZZ0001','ct-north-co2-50','adchem',null,'full','hub','LA')],
     dispatch_asset_events:[], dispatch_stock_movements:[] }; }
-const normSerial=s=>String(s==null?'':s).trim().toUpperCase().replace(/\s+/g,'');
+const normSerial=s=>String(s==null?'':s).trim().toUpperCase().replace(/[\s-]+/g,'');
 const memberOf=(T,co,userId)=>T.dispatch_members.find(x=>x.user_id===(userId||'u1')&&x.company===co&&x.active)||null;
 const hasPerm=(m,perm)=>!!m&&(m.is_super_admin===true||(m.permissions&&typeof m.permissions==='object'&&m.permissions[perm]===true));
 const siteOnTodayOrder=(T,co,hub,siteKey)=>T.dispatch_orders.some(o=>o.company===co&&o.hub===hub&&o.date===todayOf(T)&&(o.site_key||(o.data&&o.data.siteKey))===siteKey);

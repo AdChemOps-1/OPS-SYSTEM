@@ -158,7 +158,7 @@ begin
     raise exception 'after delivery the asset is % % % seen % by % owned % %', a.location_kind, a.location_id, a.fill_state, a.last_seen_at, a.last_seen_by, a.owner_kind, a.owner_id; end if;
   if (select recorded_by from public.dispatch_asset_events where id = e_del) is distinct from dr then raise exception 'event not recorded as the driver'; end if;
   select * into a from public.dispatch_assets where id = a_dr;
-  if a.serial <> 'T7 DRV01' or a.condition <> 'in_service' or a.fill_state <> 'unknown' or a.created_by is distinct from dr then
+  if a.serial <> 'T7DRV01' or a.condition <> 'in_service' or a.fill_state <> 'unknown' or a.created_by is distinct from dr then
     raise exception 'driver-added asset stored as % % % by %', a.serial, a.condition, a.fill_state, a.created_by; end if;
   select * into a from public.dispatch_assets where id = a_w;
   if a.location_kind <> 'site' or a.location_id <> 'T007-P1' or a.last_seen_by is distinct from dr then
@@ -239,9 +239,9 @@ begin
   if a.location_kind <> 'hub' or a.location_id <> 'LA' or a.fill_state <> 'empty' or a.last_seen_at is distinct from now() - interval '1 hour' then
     raise exception 'a late delivery moved the asset: % % % %', a.location_kind, a.location_id, a.fill_state, a.last_seen_at; end if;
   if (select count(*) from public.dispatch_asset_events where asset_id = a_late and note = 't007-late') <> 1 then raise exception 'the late event was not kept'; end if;
-  -- serials: trimmed and uppercased; unique per company whatever the case. created_by is always the caller; a new row has no last-seen
+  -- serials: uppercased, spaces and hyphens removed (' ab-12 34 ' stores AB1234); unique per company whatever the case. created_by is always the caller; a new row has no last-seen
   insert into public.dispatch_assets (company, serial, container_type_id, location_kind, location_id, created_by, last_seen_at, last_seen_by)
-    values ('adchem', ' ab1234 ', t50, 'hub', 'EB', sa, now(), sa) returning id into a_ab;
+    values ('adchem', ' ab-12 34 ', t50, 'hub', 'EB', sa, now(), sa) returning id into a_ab;
   ok := false;
   begin insert into public.dispatch_assets (company, serial, location_kind, location_id) values ('adchem', 'AB1234', 'hub', 'EB');
   exception when unique_violation then ok := true; end;
@@ -278,7 +278,8 @@ begin
   if n_stock <> 1 then raise exception 'manager reads % stock rows (want 1)', n_stock; end if;
   if (select occurred_at from public.dispatch_asset_events where note = 't007-future') <> now() then raise exception 'a future phone time was kept'; end if;
   select * into a from public.dispatch_assets where id = a_ab;
-  if a.serial <> 'AB1234' then raise exception 'serial not normalised'; end if;
+  if a.serial <> 'AB1234' then raise exception 'serial not normalised: %', a.serial; end if;
+  if (select count(*) from public.dispatch_assets where id = a_ab and serial = 'AB1234') <> 1 then raise exception ''' ab-12 34 '' did not store AB1234'; end if;
   if a.created_by is distinct from mg or a.last_seen_at is not null or a.last_seen_by is not null then
     raise exception 'insert kept created_by % / last seen % %', a.created_by, a.last_seen_at, a.last_seen_by; end if;
   ok := false;

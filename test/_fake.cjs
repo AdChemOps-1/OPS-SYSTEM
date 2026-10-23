@@ -138,7 +138,7 @@ function upsertRows(T,t,arr,keys){ if(!T[t]) T[t]=[]; const rows=T[t];
   arr.forEach(r=>{ if(t==='dispatch_customers'){ const hit=rows.find(x=>keys.every(k=>r[k]!=null&&String(x[k])===String(r[k]))); if(!r.id&&!hit) r.id=uuid(); if(!r.customer_id) r.customer_id=nextCustomerId(T,r.company); }
     if(t==='dispatch_documents'){ if(!r.id) r.id=uuid(); const now=vDate().toISOString(); const hit=rows.find(x=>x.id===r.id);
       if(!hit) Object.entries({title:'',number:'',status:'',file_name:'',file_type:'',source:'',notes:'',review_status:'live',extra:{},created_at:now,updated_at:now}).forEach(([k,v])=>{ if(r[k]===undefined) r[k]=v; });
-      else r.updated_at=now; }
+      else if(r.updated_at===undefined) r.updated_at=now; }   // a row that names its updated_at keeps it (the table has no updated_at trigger)
     if(t==='dispatch_contacts'){ if(!r.id) r.id=uuid(); if(!r.created_at) r.created_at=vDate().toISOString(); }
     const i=rows.findIndex(x=>keys.every(k=>r[k]!=null&&String(x[k])===String(r[k]))); if(i>=0){ const was={...rows[i]}; rows[i]={...rows[i],...r}; audit(T,t,was,rows[i]); } else { rows.push(r); audit(T,t,null,r); } }); }
 
@@ -162,15 +162,14 @@ function fakeImport(T,b,IMP,calls){
   if(!sheetId) return {code:400,body:{error:{code:'config',message:'No import workbook is set. Paste its link on Setup first.'}}};
   calls.push(['import',{action:b.action,sheetId}]);
   const mine=t=>(T[t]||[]).filter(r=>r.company===co);
-  const existing={customers:mine('dispatch_customers'),sites:mine('dispatch_sites'),contacts:mine('dispatch_contacts'),hubNotes:mine('dispatch_site_hub_notes')};
-  const slices=!!T.__importSlices, names=()=>{ const m=new Map(); [...existing.customers.map(c=>[c.name,c.customer_id])].forEach(([n,id])=>m.set(String(n).trim().toLowerCase(),id)); return m; };
-  if(b.action==='read'){ const plan=IMP.planImport(WORKBOOK(),existing);
-    if(slices){ const wb=WORKBOOK(), nm=names(); plan.items.filter(i=>i.action==='customer').forEach(i=>{ if(!nm.has(String(i.name).trim().toLowerCase())) nm.set(String(i.name).trim().toLowerCase(),i.customer_id||''); });
-      plan.items=plan.items.filter(i=>!/^skip:(licensing|terms)$/.test(i.key)).concat(sliceItems(wb,nm,plan.problems=plan.problems||[])); }
-    return {code:200,body:{plan,sheetId}}; }
+  const existing={customers:mine('dispatch_customers'),sites:mine('dispatch_sites'),contacts:mine('dispatch_contacts'),hubNotes:mine('dispatch_site_hub_notes'),
+    documents:mine('dispatch_documents').filter(d=>d.source==='import'&&docVisible(T,d))};   // as the route reads them: source=eq.import under the read policy
+  if(b.action==='read') return {code:200,body:{plan:IMP.planImport(WORKBOOK(),existing,'u1'),sheetId}};
   if(b.action!=='commit'||!b.plan||!Array.isArray(b.plan.items)) return {code:400,body:{error:{code:'bad_request',message:'Read the workbook and review the plan first.'}}};
   if(permCheck(T,'u1',co,null,'manage_customers')) return {code:403,body:{error:{code:'forbidden',message:'Importing writes customers, so it also needs the manage customers permission.'}}};
-  const now=vDate().toISOString(), applied=IMP.applyPlan({...b.plan,items:b.plan.items.filter(i=>!(i&&(i.action==='license'||i.action==='psa')))},existing,'u1');
+  const docLines=b.plan.items.some(i=>i&&((i.action==='license'&&i.decision==='license')||(i.action==='psa'&&i.decision==='psa')));
+  if(docLines&&(permCheck(T,'u1',co,null,'manage_documents')||permCheck(T,'u1',co,null,'view_documents'))) return {code:403,body:{error:{code:'forbidden',message:'Importing licenses and PSAs also needs the view documents and manage documents permissions. Skip those lines, or ask a super admin for the permissions.'}}};
+  const now=vDate().toISOString(), applied=IMP.applyPlan(b.plan,existing,'u1');
   const src=r=>({...r,import_source:{...(r.import_source||{}),sheetId,at:(r.import_source&&r.import_source.at)||now}});
   upsertRows(T,'dispatch_customers',IMP.bindRows({customers:applied.customers},new Map(),co,now).customers.map(src),['company','customer_id']);
   const next=Math.max(Number(st.data.nextCustomerNumber)||1,applied.nextCustomerNumber); st.data={...st.data,nextCustomerNumber:next};   // right after the customers, as the route does
@@ -179,15 +178,13 @@ function fakeImport(T,b,IMP,calls){
   upsertRows(T,'dispatch_sites',rows.sites.map(src),['company','site_key']);
   upsertRows(T,'dispatch_site_hub_notes',rows.siteHubNotes,['company','site_key','hub']);
   upsertRows(T,'dispatch_contacts',rows.contacts.map(src),['id']);
-  // documents after the customers: one live dispatch_documents row per license / PSA item, matched on a re-run by import_source tab and row
-  const docItems=b.plan.items.filter(i=>i&&(i.action==='license'||i.action==='psa')&&i.decision===i.action&&i.doc);
-  docItems.forEach(i=>{ const c=T.dispatch_customers.find(x=>x.company===co&&String(x.name).trim().toLowerCase()===String(i.name).trim().toLowerCase()); if(!c) return;
-    const old=(T.dispatch_documents||[]).find(d=>d.company===co&&d.source==='import'&&d.import_source&&d.import_source.tab===i.source.tab&&d.import_source.row===i.source.row);
-    upsertRows(T,'dispatch_documents',[{...(old?{id:old.id}:{}),company:co,subject_type:'customer',subject_id:c.id,title:'',...i.doc,source:'import',review_status:'live',import_source:{tab:i.source.tab,row:i.source.row,at:now}}],['id']); });
-  const counts={documents:docItems.length,customers:rows.customers.length,sites:rows.sites.length,hubNotes:rows.siteHubNotes.length,contacts:rows.contacts.length,skipped:b.plan.items.filter(i=>i&&i.decision==='skip').length};
+  // documents after the customers, as the route: bindRows' dispatch_documents rows, the earlier import's (matched by import_source tab/row) updated by id
+  upsertRows(T,'dispatch_documents',rows.documents.map(src),['id']);
+  const counts={customers:rows.customers.length,sites:rows.sites.length,hubNotes:rows.siteHubNotes.length,contacts:rows.contacts.length,
+    licenses:rows.documents.filter(d=>d.doc_type==='cannabis_license').length,psas:rows.documents.filter(d=>d.doc_type==='psa').length,documentsKept:applied.documentsKept.length,skipped:b.plan.items.filter(i=>i&&i.decision==='skip').length};
   T.dispatch_log.push({id:T.dispatch_log.length+1,at:now,company:co,who:'u1',what:'import',detail:{counts,sheetId}});
   calls.push(['customers-out',{rebuild:true}]);
-  return {code:200,body:{ok:true,counts,nextCustomerNumber:next,problems:applied.problems,customersOut:st.data.customersOutSheetId?{ok:true,rebuilt:counts.customers}:{ok:false,skipped:'No Customers Out sheet is set on Setup.'}}}; }
+  return {code:200,body:{ok:true,counts,nextCustomerNumber:next,problems:applied.problems,documentsKept:applied.documentsKept,customersOut:st.data.customersOutSheetId?{ok:true,rebuilt:counts.customers}:{ok:false,skipped:'No Customers Out sheet is set on Setup.'}}}; }
 
 // a stored object is visible by the rule of its document row; an object with no row falls back to the company's view rule
 function docFileVisible(T,p){ if(p.split('/')[1]==='asset') return !!memberOf(T,p.split('/')[0]); const row=(T.dispatch_documents||[]).find(d=>d.file_path===p); return docVisible(T,row||{company:p.split('/')[0],subject_type:null,subject_id:null,review_status:null}); }
@@ -362,33 +359,6 @@ function fakeStock(T,b){
     if(!(hasPerm(m,'view_assets')||['admin','coordinator'].includes(m.role))) return deny('forbidden',"You don't have the view assets permission.");   // view_assets or an editor, as the server
     const rows=onhandOf(T,co); return {code:200,body:{rows:b.action==='below'?rows.filter(r=>r.below):rows}}; }
   return {code:400,body:{error:{code:'bad_request',message:'unknown action'}}}; }
-
-// ---- Stage 3B import slices: the Licensing & Entity and Account Terms tabs as license / psa items (on when T.__importSlices is set) ----
-const SERIAL_BASE=Date.UTC(1899,11,30);
-function sheetDate(v){ const t=String(v==null?'':v).trim(); if(!t) return {iso:''}; let m=t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if(m){ const d=new Date(Date.UTC(+m[3],+m[1]-1,+m[2])); return d.getUTCMonth()===+m[1]-1?{iso:d.toISOString().slice(0,10)}:{iso:'',bad:true}; }
-  if(/^\d{4,6}$/.test(t)) return {iso:new Date(SERIAL_BASE+Number(t)*86400000).toISOString().slice(0,10)};
-  return {iso:'',bad:true}; }
-function sliceItems(wb,names,problems){ const out=[], lc=v=>String(v||'').trim().toLowerCase();
-  const read=(rows,expected,anchor)=>{ if(!Array.isArray(rows)) return []; const hi=rows.findIndex(r=>r.includes(anchor)); if(hi<0) return []; const h=rows[hi];
-    return rows.slice(hi+1).map((r,i)=>{ const o={_row:hi+i+2}; expected.forEach(k=>{ const c=h.indexOf(k); o[k]=c<0?'':r[c]==null?'':r[c]; }); return o; }).filter(o=>String(o.Customer).trim()); };
-  const LIC=['Customer','Licensee Legal Name','License #','License Type','Status','Issued','Expires','County / Premises','Owners on the License','Entity Status (SOS)','Source','Checked','Notes'];   // Balance (auto) is never read
-  const TERMS=['Customer','Quote Sent','Quote Accepted','PSA Sent for Signature','PSA Signed (Customer)','Countersigned (AdChem)','Effective Date'];   // money columns are never read
-  const cell=(tab,row,col,v)=>{ const d=sheetDate(v); if(d.bad) problems.push(tab+' row '+row+', '+col+': "'+v+'" is not a date, so it was left empty.'); return d.iso; };
-  const base=(tab,pre,r)=>{ const hit=names.has(lc(r.Customer))?(names.get(lc(r.Customer))||'-'):''; if(!hit){ problems.push(tab+' row '+r._row+': customer "'+r.Customer+'" matches no customer.');
-      return {bad:{key:'problem:'+pre+r._row,source:{tab,row:r._row},action:'problem',decision:'skip',options:['skip'],customer_id:'',name:r.Customer,detail:tab+' row '+r._row+': customer matches no customer',fields:{},contacts:[],hubNotes:[],merged:[]}}; }
-    return {it:{key:pre+r._row,source:{tab,row:r._row},customer_id:hit==='-'?'':hit,name:r.Customer,fields:{},contacts:[],hubNotes:[],merged:[]}}; };
-  read(wb.licensing,LIC,'License #').forEach(r=>{ const b=base('Licensing & Entity','lic:',r); if(b.bad) return out.push(b.bad);
-    const exp=cell('Licensing & Entity',r._row,'Expires',r.Expires);
-    out.push({...b.it,action:'license',decision:'license',options:['license','skip'],detail:r['License #']+' · expires '+exp,
-      doc:{doc_type:'cannabis_license',number:String(r['License #']),status:String(r.Status),issued:cell('Licensing & Entity',r._row,'Issued',r.Issued),expires:exp,
-        extra:{licensee_legal_name:r['Licensee Legal Name'],license_type:r['License Type'],county_premises:r['County / Premises'],owners:r['Owners on the License'],entity_status_sos:r['Entity Status (SOS)'],source_note:String(r.Source)},
-        source:String(r.Source),checked_on:cell('Licensing & Entity',r._row,'Checked',r.Checked),notes:String(r.Notes)}}); });
-  read(wb.terms,TERMS,'Quote Sent').forEach(r=>{ const b=base('Account Terms','psa:',r); if(b.bad) return out.push(b.bad);
-    const x={quote_sent:cell('Account Terms',r._row,'Quote Sent',r['Quote Sent']),quote_accepted:cell('Account Terms',r._row,'Quote Accepted',r['Quote Accepted']),sent_for_signature:cell('Account Terms',r._row,'PSA Sent for Signature',r['PSA Sent for Signature']),
-      signed_customer:cell('Account Terms',r._row,'PSA Signed (Customer)',r['PSA Signed (Customer)']),countersigned:cell('Account Terms',r._row,'Countersigned (AdChem)',r['Countersigned (AdChem)']),effective_date:cell('Account Terms',r._row,'Effective Date',r['Effective Date'])};
-    out.push({...b.it,action:'psa',decision:'psa',options:['psa','skip'],detail:'PSA · '+(x.countersigned&&x.signed_customer?'signed':x.sent_for_signature?'sent for signature':x.quote_accepted?'quote accepted':x.quote_sent?'quote sent':'started'),doc:{doc_type:'psa',extra:x}}); });
-  return out; }
 
 function makeFake(seed){
   const T=seedTables(); if(seed) Object.keys(seed).forEach(k=>{ T[k]=seed[k]; });

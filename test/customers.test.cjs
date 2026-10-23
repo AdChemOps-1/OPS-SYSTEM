@@ -336,9 +336,18 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.equal(TI.dispatch_company_settings[0].data.importSheetId, '1ImportWorkbookXYZ_abc123', 'the ID, not the link, is saved');
   const planRows = () => pi.$$eval('#importPlan tbody tr', rs=>rs.map(r=>({text:r.textContent, decision:r.querySelector('select[data-decision]').value})));
   const pr = await planRows();
-  assert.equal(pr.length, 7, 'one row per Directory/Customers source row (5) + one skip per deferred tab (2)');
+  assert.equal(pr.length, 7, 'one row per Directory/Customers source row (5) + one per Licensing & Entity / Account Terms row (2)');
   assert.equal(pr.find(r=>/VKGL Manufacturing - LA/.test(r.text)).decision, 'site', 'VKGL - LA proposed as a site of VKGL LLC');
-  assert.deepEqual(pr.filter(r=>r.decision==='skip').map(r=>/later stage/.test(r.text)), [true, true]);
+  assert.deepEqual(pr.filter(r=>r.decision==='skip'), [], 'nothing proposed as skipped');
+  assert.match(pr.find(r=>r.decision==='license').text, /license · Costa Cannabis · C11-0000001-LIC · expires 3\/31\/2027/);
+  assert.match(pr.find(r=>r.decision==='psa').text, /PSA · Type 7 Manufacturing · signed/);
+  assert.equal(flat(await pi.textContent('#importDocCount')), '1 license, 1 PSA');
+  assert.ok(!/7,777|Balance|Net 30|5,000\.00/.test(await pi.textContent('#importPlan')), 'no money on the review screen');
+  // the same skip toggle as the other lines: skip the PSA and the count follows, then put it back
+  const psaSel = await pi.$$eval('#importPlan tbody tr', rs=>rs.find(r=>/PSA · Type 7/.test(r.textContent)).querySelector('select').getAttribute('data-decision'));
+  await pi.selectOption(`#importPlan select[data-decision="${psaSel}"]`, 'skip'); await pi.waitForTimeout(100);
+  assert.equal(flat(await pi.textContent('#importDocCount')), '1 license, 0 PSAs');
+  await pi.selectOption(`#importPlan select[data-decision="${psaSel}"]`, 'psa'); await pi.waitForTimeout(100);
   assert.equal(await pi.$eval('#btnImportCommit',e=>e.disabled), false);
   assert.equal(TI.dispatch_customers.length, 0, 'reading writes nothing');
   const laSel = await pi.$$eval('#importPlan tbody tr', rs=>rs.find(r=>/VKGL Manufacturing - LA/.test(r.textContent)).querySelector('select').getAttribute('data-decision'));
@@ -362,6 +371,20 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.match(flat(await pi.textContent('#importResult')), /Import done.*5 customers/);
   assert.equal(await pi.$eval('#btnImportCommit',e=>e.disabled), true, 'plan cleared after the import');
   assert.equal(await pi.evaluate(()=>state.settings.nextCustomerNumber), 9, 'settings reloaded, so a later Setup save keeps the number');
+  // the Licensing & Entity and Account Terms rows became live documents of their customers (after the customers were written)
+  const idocs = TI.dispatch_documents.filter(d=>d.source==='import');
+  assert.deepEqual(idocs.map(d=>[d.doc_type, TI.dispatch_customers.find(c=>c.id===d.subject_id).customer_id, d.subject_type, d.review_status]).sort(),
+    [['cannabis_license','ADC-0007','customer','live'], ['psa','ADC-0001','customer','live']]);
+  assert.match(flat(await pi.textContent('#importResult')), /1 licenses and 1 PSAs written/);
+  await pi.click('#tab-customers'); await pi.waitForTimeout(400);
+  await pi.$$eval('#custList .cust-row', rs=>rs.find(r=>/Costa Cannabis/.test(r.textContent)).click()); await pi.waitForTimeout(400);
+  assert.equal(flat(await pi.textContent('#custLicChip')), 'License expires 3/31/2027', 'the license chip on the customer');
+  await pi.click('#btnCloseCustomer'); await pi.waitForTimeout(200);
+  await pi.$$eval('#custList .cust-row', rs=>rs.find(r=>/Type 7 Manufacturing/.test(r.textContent)).click()); await pi.waitForTimeout(400);
+  assert.equal(flat(await pi.textContent('#custPsaChip')), 'PSA signed');
+  await pi.click('#ctab-documents'); await pi.waitForTimeout(500);
+  assert.match(flat(await pi.textContent('#docList')), /PSA.*PSA signed/, 'a PSA document on the customer');
+  await pi.click('#btnCloseCustomer'); await pi.waitForTimeout(200);
   // a feed site linked by the import: address, city, hub and label come from FEED_ORDERS and are read-only; Ops fields stay editable (I8)
   await pi.click('#tab-customers'); await pi.waitForTimeout(400);
   await pi.$$eval('#custList .cust-row', rs=>rs.find(r=>/Type 7 Manufacturing/.test(r.textContent)).click()); await pi.waitForTimeout(400);

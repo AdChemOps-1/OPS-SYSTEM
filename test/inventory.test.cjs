@@ -248,8 +248,7 @@ async function fakePart(b){
     assert.equal((await rpc({p_company:'adchem', p_recipients:[]})).status, 403, 'super admin only');
     T.dispatch_members[0].is_super_admin = true;
 
-    // import slices: license and psa items, the document rows, no money
-    T.__importSlices = true;
+    // import slices (the real planner, as the route): license and psa items, the document rows, no money
     T.dispatch_company_settings[0].data.importSheetId = '1ImportWorkbookXYZ_abc123';
     const rd = await api('/api/import', {company:'adchem', action:'read'});
     const items = rd.body.plan.items;

@@ -57,11 +57,11 @@
      "", "", "", "", "", "", "", "", ""]
   ],
   "licensing": [
-    ["Customer", "License #", "License Expires", "Entity Status"],
-    ["Costa Cannabis", "C11-0000001-LIC", "03/31/2027", "Active"]
+    ["Customer", "Licensee Legal Name", "License #", "License Type", "Status", "Issued", "Expires", "County / Premises", "Owners on the License", "Entity Status (SOS)", "Source", "Checked", "Notes", "Balance (auto)"],
+    ["Costa Cannabis", "Costa Cannabis Inc.", "C11-0000001-LIC", "Distributor", "Active", "04/01/2026", "03/31/2027", "Los Angeles", "Rita Costa", "Active", "DCC lookup", "10/01/2026", "Renewal due spring", "7,777.77"]
   ],
   "terms": [
-    ["Customer", "Terms", "Credit Limit", "Payment Method", "Credit Status"],
-    ["Type 7 Manufacturing", "Net 30", "5,000.00", "Check", "Good"]
+    ["Customer", "Terms", "Credit Limit", "Payment Method", "Card Fee Waived?", "Pricing Confirmed?", "Quote Sent", "Quote Accepted", "PSA Sent for Signature", "PSA Signed (Customer)", "Countersigned (AdChem)", "Effective Date", "Agreement Status (auto)", "Deposit", "Credit Status"],
+    ["Type 7 Manufacturing", "Net 30", "5,000.00", "Check", "Yes", "Yes", "09/01/2026", "09/05/2026", "09/10/2026", "09/12/2026", "09/15/2026", "10/01/2026", "Signed", "1,500.00", "Good"]
   ]
 }

@@ -303,7 +303,7 @@ async function signIn(page, base){
     TD.dispatch_customers.push({id:CID,company:'adchem',customer_id:'ADC-0001',name:'Type 7 Manufacturing',account_status:'active',primary_hub:'EB'});
     TD.dispatch_sites.push({company:'adchem',site_key:SK,customer_id:CID,customer:'Type 7 Manufacturing',addr:'100 Main St, Oakland CA 94607',city:'Oakland',hub:'EB',site_label:'Primary',code_raw:'D - Deliver; no holds',code:'D',synced_at:'2026-10-20T08:00:00Z'});
     const od = {id:ORD,hub:'EB',date:'2026-10-20',status:'Scheduled',customer:'Type 7 Manufacturing',siteKey:SK,siteLabel:'Primary',code:'D',effCode:'D',window:'7:00a – 11:00a',truck:'T1',
-      shipTo:'100 Main St, Oakland CA 94607',bolNo:9450,lines:[{category:'Gases',product:'Carbon Dioxide',container:'50lb Cylinder',qty:2,unitLb:50,unitDef:false,note:''}]};
+      shipTo:'100 Main St, Oakland CA 94607',bolNo:9450,lines:[{category:'Gases',product:'Carbon Dioxide',container:'50lb Cylinder',qty:3,unitLb:50,unitDef:false,note:''}]};
     TD.dispatch_orders.push({company:'adchem',id:ORD,bol_no:9450,hub:'EB',date:'2026-10-20',status:'Scheduled',customer:'Type 7 Manufacturing',data:od,created_at:'2026-10-19T12:00:00Z',updated_at:'2026-10-19T12:00:00Z'});
     const dv = await newPage(b, baseD, {viewport:{width:390,height:844}, members:[{user_id:'u1',company:'adchem',role:'driver',hub:'EB',active:true,is_super_admin:false,permissions:{}}]});
     const posts = []; dv.on('request', r => { if (r.url().endsWith('/api/assets') && r.method() === 'POST') { const j = JSON.parse(r.postData() || '{}'); if (j.action === 'events') posts.push(j.events); } });
@@ -311,11 +311,11 @@ async function signIn(page, base){
     assert.equal(await dv.evaluate(() => state.role), 'driver');
     assert.equal(await dv.$eval('#tab-assets', e => e.hidden), true, 'a driver cannot see the register');
     assert.equal(await dv.$eval('#truckCard', e => e.hidden), false, 'Load / My truck on Today for a driver');
-    // the stop shows Cylinders; the sheet: two deliver slots and CD5678 (at the site) under Collecting
+    // the stop shows Cylinders; the sheet: three deliver slots and CD5678 (at the site) under Collecting
     assert.equal(await dv.$$eval('#todayList [data-cyl]', e => e.map(x => x.getAttribute('data-cyl'))).then(x => x.join()), ORD, 'Cylinders on the stop');
     await dv.click('#todayList [data-cyl="' + ORD + '"]'); await dv.waitForTimeout(400);
     assert.equal(await dv.$eval('#cylSheet', e => e.hidden), false, 'Cylinders sheet open');
-    assert.equal(await dv.$$eval('#cylSlots [data-slot]', e => e.length), 2, 'two deliver slots');
+    assert.equal(await dv.$$eval('#cylSlots [data-slot]', e => e.length), 3, 'one deliver slot per cylinder on the order');
     assert.match(flat(await dv.textContent('#cylSlots')), /50lb Cylinder.*50lb Cylinder/);
     assert.match(flat(await dv.textContent('#cylCollect')), /CD5678/, 'CD5678 under Collecting');
     assert.equal(await dv.evaluate(() => document.documentElement.scrollWidth), 390, 'no horizontal overflow with the Cylinders sheet open');
@@ -368,22 +368,89 @@ async function signIn(page, base){
     await dv.click('#cylClose'); await dv.waitForTimeout(900);
     assert.equal(await dv.$eval('#cylSheet', e => e.hidden), true);
 
-    // offline: collect AB1234 back from the site; Done keeps the batch on the phone (IndexedDB store a)
-    await dv.click('#todayList [data-cyl="' + ORD + '"]'); await dv.waitForTimeout(400);
-    assert.match(flat(await dv.textContent('#cylCollect')), /AB1234.*NEW9|NEW9.*AB1234/, 'the site now has AB1234 and NEW9');
+    // reopened: what this stop already has is marked — the two delivered slots as sent (not scannable again), the third open, and
+    // nothing delivered here offered under Collecting
+    const reopen = async () => { await dv.click('#todayList [data-cyl="' + ORD + '"]'); await dv.waitForFunction(() => state.cyl && state.cyl.prior, null, {timeout:3000});
+      await dv.evaluate(() => state.cyl.prior); await dv.waitForTimeout(100); };
+    const slotTxt = i => dv.textContent('#cylSlots [data-slot="' + i + '"]').then(flat);
+    await reopen();
+    assert.match(await slotTxt(0), /AB1234.*sent earlier/); assert.match(await slotTxt(1), /NEW9.*sent earlier/);
+    assert.equal(await dv.$('#cylSlots [data-open="s:0"]'), null, 'a sent slot is not re-scannable'); assert.equal(await dv.$('#cylSlots [data-clear="s:0"]'), null);
+    assert.ok(await dv.$('#cylSlots [data-open="s:2"]'), 'the third slot is open');
+    assert.doesNotMatch(flat(await dv.textContent('#cylCollect')), /AB1234|NEW9/, 'what was delivered here is not offered for pick-up');
+    assert.match(flat(await dv.textContent('#cylWaiting')), /3 sent earlier today/, 'two delivered and one collected');
+
+    // offline: slot 3 with a serial that can't be checked (the slot's type goes with it); Done keeps the batch in store a
     await dv.context().setOffline(true);
-    await dv.click('#cylCollect [data-collect="as-ab1234"]'); await dv.click('#cylDone'); await dv.waitForFunction(() => state.cyl && !state.cyl.sending, null, {timeout:8000}); await dv.waitForTimeout(150);
+    await dv.click('#cylSlots [data-open="s:2"]'); await dv.fill('#cyl_typed', 'NEW10'); await dv.click('#cyl_use'); await dv.waitForTimeout(200);
+    assert.match(await slotTxt(2), /NEW10.*not checked/);
+    await dv.click('#cylDone'); await dv.waitForFunction(() => state.cyl && !state.cyl.sending, null, {timeout:8000}); await dv.waitForTimeout(150);
     assert.match(flat(await dv.textContent('#cylStatus')), /Not sent yet — no signal\. The photos are kept on this phone; press Send waiting photos on the Today list when you have signal\./);
-    const qa = await dv.evaluate(() => cylQueueAll().then(q => q.map(x => [x.company, x.events.length, x.events[0].type, x.events[0].serial])));
-    assert.deepEqual(qa, [['adchem', 1, 'collected', 'AB1234']], 'one batch in store a');
-    assert.deepEqual(at('AB1234'), ['site', SK, 'full'], 'nothing reached the server');
+    const qa = await dv.evaluate(() => cylQueueAll().then(q => q.map(x => [x.company, x.events.length, x.events[0].type, x.events[0].serial, x.events[0].containerTypeId])));
+    assert.deepEqual(qa, [['adchem', 1, 'delivered', 'NEW10', 'ct-co2-50']], 'one batch in store a');
+    assert.equal(TD.dispatch_assets.some(a => a.serial === 'NEW10'), false, 'nothing reached the server');
     await dv.click('#cylClose'); await dv.waitForTimeout(500);
-    assert.match(flat(await dv.textContent('#podQueueNote')), /1 photo waiting to send.*Cylinders/, 'the queue note counts the batch');
+    // reopened with no signal: the delivered slot shows waiting, the count line says 1, the serial can't be used again
+    await reopen();
+    assert.match(await slotTxt(2), /NEW10.*waiting to send/, 'the queued delivery is marked');
+    assert.match(await slotTxt(0), /AB1234.*sent earlier/, 'sent this session, known with no signal');
+    assert.match(flat(await dv.textContent('#cylWaiting')), /^1 waiting to send for this stop/);
+    assert.equal(await dv.$('#cylSlots [data-open="s:2"]'), null);
+    await dv.click('#cylAddCollect'); await dv.fill('#cyl_typed', 'new-10'); await dv.click('#cyl_use'); await dv.waitForTimeout(150);
+    assert.match(flat(await dv.textContent('#cylPickMsg')), /NEW10 is already waiting to send for this stop/);
+    await dv.click('#cyl_cancel'); await dv.click('#cylClose'); await dv.waitForTimeout(400);
+    // offline Load of a serial that can't be checked: its type is asked for first, and travels on the event
+    await dv.click('#btnLoad'); await dv.click('#cylAddSlot'); await dv.fill('#cyl_typed', 'LD7'); await dv.click('#cyl_use'); await dv.waitForTimeout(200);
+    assert.equal(await dv.$eval('#cylNew', e => e.hidden), false, 'type asked for');
+    assert.match(flat(await dv.textContent('#cylNewHead')), /LD7: no signal to check it/);
+    await dv.selectOption('#cyln_type', 'ct-co2-20'); await dv.click('#cyln_ok');
+    assert.match(await slotTxt(0), /LD7.*not checked/);
+    await dv.click('#cylDone'); await dv.waitForFunction(() => state.cyl && !state.cyl.sending, null, {timeout:8000}); await dv.waitForTimeout(150);
+    await dv.click('#cylClose'); await dv.waitForTimeout(400);
+    assert.match(flat(await dv.textContent('#podQueueNote')), /2 photos waiting to send.*Cylinders.*Cylinders/, 'the queue note counts the batches');
     await dv.context().setOffline(false);
     await dv.click('#podFlush'); await dv.waitForTimeout(1500);
-    assert.deepEqual(at('AB1234'), ['hub', 'EB', 'empty'], 'flushed: AB1234 back at EB');
+    assert.deepEqual(at('NEW10'), ['site', SK, 'full'], 'flushed: NEW10 delivered');
+    assert.equal(TD.dispatch_assets.find(a => a.serial === 'NEW10').container_type_id, 'ct-co2-50');
+    const ld7 = TD.dispatch_assets.find(a => a.serial === 'LD7');
+    assert.ok(ld7 && ld7.container_type_id === 'ct-co2-20' && ld7.location_id === 'EB', 'LD7 added with the chosen type');
     assert.deepEqual(await dv.evaluate(() => cylQueueAll().then(q => q.length)), 0, 'store a empty');
     assert.equal(await dv.$eval('#podQueueNote', e => e.hidden), true);
+
+    // write-ahead: the batch is in store a before it is sent; a send that never answers leaves it there, and a flush applies the same ids
+    const loadOne = async serial => { await dv.click('#btnLoad'); await dv.click('#cylAddSlot'); await dv.fill('#cyl_typed', serial); await dv.click('#cyl_use'); await dv.waitForTimeout(300); };
+    const doneWait = async () => { await dv.click('#cylDone'); await dv.waitForFunction(() => state.cyl && !state.cyl.sending, null, {timeout:8000}); await dv.waitForTimeout(150); };
+    let ahead = null;
+    await dv.route('**/api/assets', async r => { const j = JSON.parse(r.request().postData() || '{}');
+      if (j.action === 'events' && ahead === null) { ahead = {sent:j.events.map(e => e.id), stored:await dv.evaluate(() => cylQueueAll().then(q => q.map(x => x.events.map(e => e.id))))}; return r.abort(); }
+      return r.continue(); });
+    await loadOne('CD5678'); await doneWait();
+    await dv.unroute('**/api/assets');
+    assert.ok(ahead, 'the send was attempted'); assert.deepEqual(ahead.stored, [ahead.sent], 'in store a before the send');
+    assert.match(flat(await dv.textContent('#cylStatus')), /Not sent yet — no answer from the server/);
+    assert.deepEqual(await dv.evaluate(() => cylQueueAll().then(q => q.map(x => x.events.map(e => e.id)))), [ahead.sent], 'still kept after the failed send');
+    assert.equal(TD.dispatch_asset_events.some(e => e.id === ahead.sent[0]), false);
+    await dv.click('#cylClose'); await dv.waitForTimeout(400);
+    await dv.click('#podFlush'); await dv.waitForTimeout(1200);
+    assert.ok(TD.dispatch_asset_events.some(e => e.id === ahead.sent[0] && e.event_type === 'loaded'), 'the flush applied it with the same id');
+    assert.deepEqual(await dv.evaluate(() => cylQueueAll().then(q => q.length)), 0);
+    // a 403 is not a refusal: kept, with "Not sent yet"; only the server's bad_event 400 marks the cylinders rejected
+    await dv.route('**/api/assets', r => JSON.parse(r.request().postData() || '{}').action === 'events'
+      ? r.fulfill({status:403, contentType:'application/json', body:JSON.stringify({error:{code:'forbidden', message:'Your role can\'t do that.'}})}) : r.continue());
+    await loadOne('CD5678'); await doneWait();
+    await dv.unroute('**/api/assets'); dropExpected(dv, '403 (Forbidden)');
+    assert.match(flat(await dv.textContent('#cylStatus')), /Not sent yet — the server didn't take it just now \(Your role can't do that\.\)/);
+    assert.match(await slotTxt(0), /waiting to send/);
+    assert.equal(await dv.evaluate(() => cylQueueAll().then(q => q.length)), 1, 'kept after a 403');
+    await dv.click('#cylClose'); await dv.waitForTimeout(400); await dv.click('#podFlush'); await dv.waitForTimeout(1200);
+    assert.equal(await dv.evaluate(() => cylQueueAll().then(q => q.length)), 0, 'sent on the flush');
+    await dv.route('**/api/assets', r => JSON.parse(r.request().postData() || '{}').action === 'events'
+      ? r.fulfill({status:400, contentType:'application/json', body:JSON.stringify({error:{code:'bad_event', message:'event 0: occurredAt must be an ISO time'}})}) : r.continue());
+    await loadOne('CD5678'); await doneWait();
+    await dv.unroute('**/api/assets'); dropExpected(dv, '400 (Bad Request)');
+    assert.match(await slotTxt(0), /rejected: event 0: occurredAt must be an ISO time/);
+    assert.equal(await dv.evaluate(() => cylQueueAll().then(q => q.length)), 0, 'a bad_event refusal is not kept');
+    await dv.click('#cylClose'); await dv.waitForTimeout(400);
     // a batch whose photo did not upload: the flush uploads it first, then sends (an object already there counts as uploaded)
     const qid = await dv.evaluate(async () => { const id = newUuid(), path = state.company + '/asset/' + id + '.jpg';
       await cylQueuePut({id:newUuid(), company:state.company, label:'test', at:Date.now(), blobs:{[id]:new Blob(['x'], {type:'image/jpeg'})},

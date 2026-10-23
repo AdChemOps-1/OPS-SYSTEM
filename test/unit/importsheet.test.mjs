@@ -289,6 +289,7 @@ test('/api/import commit: customers first, then sites, hub notes, contacts; log;
     ['psa', 'customer', 'uuid-ADC-0001', 'live', 'import', 'Account Terms', 2, '1IMPORTworkbookAAAAAAAAAA', 'u1']]);
   assert.equal(new Set(docs.body.map(d => Object.keys(d).sort().join())).size, 1, 'document rows share one key set');
   assert.ok(docs.body.every(d => !('id' in d)), 'new documents are inserted, not upserted on an id');
+  for (const money of ['Net 30', '5,000.00', '7,777.77', '1,500.00', 'Check', 'Good']) assert.ok(!JSON.stringify(docs.body).includes(money), 'no money value in the documents: ' + money);
   assert.ok(cust.body.every(c => c.company === 'adchem' && c.updated_by === 'u1' && c.import_source.sheetId === '1IMPORTworkbookAAAAAAAAAA' && !('id' in c) && !('parent_ref' in c)));
   // parent links: one batched upsert of the linked rows (I9), not a PATCH per row
   assert.equal(r.writes.filter(w => w.method === 'PATCH').length, 0, 'no per-row PATCH');
@@ -486,12 +487,15 @@ test('applyPlan + bindRows: documents for the bound customers; skipping drops th
   assert.ok(!JSON.stringify(fo.documents).includes('credit_limit') && !JSON.stringify(fo.documents).includes('balance') && fo.documents[1].doc.number === '');
 });
 
+// a customer the first import wrote (its uuid is what the documents point at)
+const CUST = (cid, name) => ({ id: 'uuid-' + cid, company: 'adchem', customer_id: cid, name, updated_by: 'u1', import_source: { tab: 'Customer Directory', row: 1, at: '2026-10-20T00:00:00Z' }, updated_at: '2026-10-20T00:00:00Z' });
+
 test('re-run: the document the import created is updated in place; one edited in the app since is kept', () => {
   const at = '2026-10-20T00:00:00Z';
   const docs = [
     { id: 'd-lic', company: 'adchem', doc_type: 'cannabis_license', subject_id: 'uuid-ADC-0007', source: 'import', import_source: { tab: 'Licensing & Entity', row: 2, at }, updated_by: 'u1', updated_at: at },
     { id: 'd-psa', company: 'adchem', doc_type: 'psa', subject_id: 'uuid-ADC-0001', source: 'import', import_source: { tab: 'Account Terms', row: 2, at }, updated_by: 'u9', updated_at: '2026-10-21T00:00:00Z' }];
-  const existing = { ...NONE, documents: docs };
+  const existing = { ...NONE, customers: [CUST('ADC-0007', 'Costa Cannabis'), CUST('ADC-0001', 'Type 7 Manufacturing')], documents: docs };
   const plan = planImport(WB, existing, 'u1');
   assert.deepEqual([lic(plan).kept, psa(plan).kept], [undefined, true]);
   assert.match(psa(plan).detail, /kept: edited in the app/);
@@ -501,7 +505,7 @@ test('re-run: the document the import created is updated in place; one edited in
   const b = bindRows(out, new Map([['ADC-0007', 'uuid-ADC-0007']]), 'adchem', '2026-10-22T00:00:00Z');
   assert.deepEqual([b.documents[0].id, b.documents[0].import_source.at], ['d-lic', '2026-10-22T00:00:00Z']);
   // the importer's own app edit after the import counts too (updated_at after import_source.at)
-  const mineEdited = { ...NONE, documents: [{ ...docs[0], updated_at: '2026-10-21T00:00:00Z' }] };
+  const mineEdited = { ...existing, documents: [{ ...docs[0], updated_at: '2026-10-21T00:00:00Z' }] };
   assert.deepEqual(applyPlan(planImport(WB, mineEdited, 'u1'), mineEdited, 'u1').documentsKept.map(k => k.id), ['d-lic']);
 });
 
@@ -515,12 +519,52 @@ test('/api/import commit: documents need manage_documents; a re-run upserts on i
   assert.equal(ok.status, 200, 'with the documents skipped, no documents permission is needed');
   assert.ok(!ok.writes.some(w => w.t === 'dispatch_documents'));
   const at = '2026-10-20T00:00:00Z';
-  const seed = { dispatch_documents: [
-    { id: 'd-lic', doc_type: 'cannabis_license', import_source: { tab: 'Licensing & Entity', row: 2, at }, updated_by: 'u1', updated_at: at },
-    { id: 'd-psa', doc_type: 'psa', import_source: { tab: 'Account Terms', row: 2, at }, updated_by: 'u9', updated_at: at }] };
+  const seed = { dispatch_customers: [CUST('ADC-0007', 'Costa Cannabis'), CUST('ADC-0001', 'Type 7 Manufacturing')], dispatch_documents: [
+    { id: 'd-lic', doc_type: 'cannabis_license', subject_id: 'uuid-ADC-0007', import_source: { tab: 'Licensing & Entity', row: 2, at }, updated_by: 'u1', updated_at: at },
+    { id: 'd-psa', doc_type: 'psa', subject_id: 'uuid-ADC-0001', import_source: { tab: 'Account Terms', row: 2, at }, updated_by: 'u9', updated_at: at }] };
   const again = await route({ company: 'adchem', action: 'commit', plan }, { ...COORD, is_super_admin: true, permissions: {} }, seed);
   assert.equal(again.status, 200, JSON.stringify(again.json));
   const dw = again.writes.filter(w => w.t === 'dispatch_documents');
   assert.deepEqual(dw.map(w => [w.q, w.body.map(d => d.id)]), [['?on_conflict=id', ['d-lic']]]);
   assert.deepEqual([again.json.counts.licenses, again.json.counts.psas, again.json.counts.documentsKept], [1, 0, 1]);
+});
+
+test('re-run: a row inserted above moves no document to another customer; each follows its customer and type', () => {
+  const at = '2026-10-20T00:00:00Z';
+  const existing = { ...NONE, customers: [CUST('ADC-0007', 'Costa Cannabis'), CUST('ADC-0001', 'Type 7 Manufacturing')],
+    documents: [{ id: 'd-psa', doc_type: 'psa', subject_id: 'uuid-ADC-0001', source: 'import', import_source: { tab: 'Account Terms', row: 2, at }, updated_by: 'u1', updated_at: at }] };
+  const wb = clone(WB); wb.terms.splice(1, 0, ['Costa Cannabis', '', '', '', '', '', '09/01/2026', '', '', '', '', '', '', '', '']);
+  const plan = planImport(wb, existing, 'u1');
+  assert.deepEqual(plan.items.filter(i => i.action === 'psa').map(i => [i.source.row, i.name, /updates the imported document/.test(i.detail)]), [[2, 'Costa Cannabis', false], [3, 'Type 7 Manufacturing', true]]);
+  const out = applyPlan(plan, existing, 'u1');
+  const b = bindRows(out, new Map([['ADC-0007', 'uuid-ADC-0007'], ['ADC-0001', 'uuid-ADC-0001']]), 'adchem', '2026-10-22T00:00:00Z');
+  assert.deepEqual(b.documents.filter(d => d.doc_type === 'psa').map(d => [d.id || '(new)', d.doc_type, d.subject_id, d.import_source.row]), [['(new)', 'psa', 'uuid-ADC-0007', 2], ['d-psa', 'psa', 'uuid-ADC-0001', 3]]);
+  // a document from the same row but of another type is never reused either
+  const lic = { ...existing, documents: [{ ...existing.documents[0], doc_type: 'cannabis_license', import_source: { tab: 'Account Terms', row: 2, at } }] };
+  assert.ok(!applyPlan(planImport(WB, lic, 'u1'), lic, 'u1').documents.some(d => d.id), 'a license id is not reused for a PSA');
+  // bindRows reuses an id only for the customer it already belongs to
+  const forgedBind = bindRows({ documents: [{ id: 'd-psa', subject_id: 'uuid-ADC-0001', customer_key: 'ADC-0007', doc: { doc_type: 'psa', extra: {} }, import_source: { tab: 'Account Terms', row: 2 } }] }, new Map([['ADC-0007', 'uuid-ADC-0007']]), 'adchem', at);
+  assert.equal(forgedBind.documents[0].id, undefined);
+});
+
+test('a forged source tab is ignored server-side; one document id is never written twice in a commit', async () => {
+  const at = '2026-10-20T00:00:00Z';
+  const existing = { ...NONE, customers: [CUST('ADC-0007', 'Costa Cannabis'), CUST('ADC-0001', 'Type 7 Manufacturing')],
+    documents: [{ id: 'd-psa', doc_type: 'psa', subject_id: 'uuid-ADC-0001', source: 'import', import_source: { tab: 'Account Terms', row: 2, at }, updated_by: 'u1', updated_at: at }] };
+  const plan = planImport(WB, existing, 'u1');
+  lic(plan).source = { tab: 'Account Terms', row: 2 };   // a license line posing as the PSA's row
+  const out = applyPlan(plan, existing, 'u1');
+  assert.deepEqual(out.documents.map(d => [d.id, d.doc.doc_type]), [['d-psa', 'psa']], 'the forged license is dropped; the PSA keeps its document');
+  assert.ok(out.problems.some(p => /license line must come from the Licensing & Entity tab/.test(p)), out.problems.join(' | '));
+  // two PSA lines for the same customer and row: the document is updated once, the second line is a new one
+  const twice = planImport(WB, existing, 'u1'); twice.items.push({ ...clone(psa(twice)), key: 'psa:2b' });
+  const o2 = applyPlan(twice, existing, 'u1');
+  assert.deepEqual(o2.documents.filter(d => d.doc.doc_type === 'psa').map(d => d.id || '(new)'), ['d-psa', '(new)']);
+  // the route: the forged plan writes only the PSA, upserted once on its id
+  const seed = { dispatch_customers: existing.customers, dispatch_documents: existing.documents };
+  const r = await route({ company: 'adchem', action: 'commit', plan }, { ...COORD, is_super_admin: true, permissions: {} }, seed);
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  const dw = r.writes.filter(w => w.t === 'dispatch_documents');
+  assert.deepEqual(dw.map(w => [w.q, w.body.map(d => [d.id, d.doc_type])]), [['?on_conflict=id', [['d-psa', 'psa']]]]);
+  const ids = dw.flatMap(w => w.body.map(d => d.id).filter(Boolean)); assert.equal(new Set(ids).size, ids.length);
 });

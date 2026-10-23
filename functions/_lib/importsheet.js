@@ -285,12 +285,10 @@ export function planImport(workbook, existing, importUserId) {
       const { doc, detail } = build(r, (col) => dateCell(TABS[tab], r._row, col, r[col]));
       const it = { key: pre + r._row, source: src, action, decision: action, options: [action, "skip"], customer_id: t.customer_id, name: t.name, customerKey: t.customerKey, detail, doc,
         fields: {}, contacts: [], hubNotes: [], merged: [] };
-      const e = docFor(exDocs, src);
-      if (e && appEdited(e, importUserId || null)) { it.kept = true; it.detail += " · kept: edited in the app since the last import"; }
-      else if (e) it.detail += " · updates the imported document";
-      items.push(it);
+      items.push(it); docLines.push(it);
     }
   };
+  const docLines = [];
   slice("licensing", "lic:", "license", (r, date) => {
     const doc = { doc_type: "cannabis_license", number: r["License #"], status: r["Status"], issued: date("Issued"), expires: date("Expires"),
       extra: { licensee_legal_name: r["Licensee Legal Name"], license_type: r["License Type"], county_premises: r["County / Premises"], owners: r["Owners on the License"],
@@ -301,6 +299,13 @@ export function planImport(workbook, existing, importUserId) {
   slice("terms", "psa:", "psa", (r, date) => {
     const extra = {}; for (const [k, col] of PSA_COLS) extra[k] = date(col);
     return { doc: { doc_type: "psa", extra }, detail: "PSA · " + psaStage(extra) };
+  });
+  // the document an earlier import wrote for the same customer and type (matchDocs); kept when edited in the app since
+  const subj = (cid) => { const e = exById.get(s(cid)); return e && e.id != null ? String(e.id) : null; };
+  matchDocs(docLines.map(it => ({ tab: it.source.tab, row: it.source.row, type: it.doc.doc_type, subject: subj(it.customer_id) })), exDocs).forEach((e, i) => {
+    const it = docLines[i]; if (!e) return;
+    if (appEdited(e, importUserId || null)) { it.kept = true; it.detail += " · kept: edited in the app since the last import"; }
+    else { it.updates = true; it.detail += " · updates the imported document"; }
   });
   // feed sites (FEED_ORDERS) no customer will claim: no Ops link and a customer name matching no row and no existing customer.
   // Listed in the review; they stay unlinked until a later stage links them by hand (spec §8).
@@ -324,8 +329,19 @@ const PSA_COLS = [["quote_sent", "Quote Sent"], ["quote_accepted", "Quote Accept
   ["signed_customer", "PSA Signed (Customer)"], ["countersigned", "Countersigned (AdChem)"], ["effective_date", "Effective Date"]];
 const LIC_EXTRA = ["licensee_legal_name", "license_type", "county_premises", "owners", "entity_status_sos", "source_note"];
 export function psaStage(x) { const v = x || {}; return v.signed_customer && v.countersigned ? "signed" : PSA_COLS.some(([k]) => v[k]) ? "in progress" : "none"; }
-// the document an earlier import wrote for this sheet row
-const docFor = (docs, src) => (docs || []).find(d => d && d.import_source && s(d.import_source.tab) === src.tab && Number(d.import_source.row) === src.row) || null;
+// The documents earlier imports wrote, matched to this run's lines = [{tab, row, type, subject}] (subject: the customer's uuid, null for a
+// customer not yet in the database). A document is reused only for the same doc type and the same customer: first the one from the
+// same sheet row, then (rows moved in the sheet) another of the same tab, type and customer. Each document is claimed by one line.
+function matchDocs(lines, docs) {
+  const pool = (docs || []).filter(d => d && d.id != null && d.import_source), claimed = new Set(), out = lines.map(() => null);
+  const ok = (d, l) => !claimed.has(d.id) && l.subject != null && d.doc_type === l.type && String(d.subject_id) === l.subject && s(d.import_source.tab) === l.tab;
+  for (const exact of [true, false]) lines.forEach((l, i) => {
+    if (out[i]) return;
+    const d = pool.find(x => ok(x, l) && (!exact || Number(x.import_source.row) === l.row));
+    if (d) { out[i] = d; claimed.add(d.id); }
+  });
+  return out;
+}
 // an app-edited row keeps the stamp of the import that last wrote it, so its edit still counts on the next run
 const stamp = (srcObj, e, edited) => edited && e && e.import_source && e.import_source.at ? { ...srcObj, at: e.import_source.at } : srcObj;
 function merge(e, v, edited) {
@@ -447,17 +463,26 @@ export function applyPlan(plan, existing, importUserId) {
   }
   // documents: one per license / PSA line whose customer is imported or already exists; the one an earlier import wrote for the same
   // sheet row is updated in place (by its id), unless it was edited in the app since — then it is kept as it is
-  const documents = [], documentsKept = [];
+  const documents = [], documentsKept = [], lines = [];
   const dateOrNull = (v) => isoDate(v) || null;
   for (const it of ((plan && plan.items) || [])) {
     if (!it || !it.doc || !((it.action === "license" && it.decision === "license") || (it.action === "psa" && it.decision === "psa"))) continue;
-    const srcObj = src(it);
+    const srcObj = src(it), what = it.action === "psa" ? "PSA" : "license", tab = it.action === "psa" ? TABS.terms : TABS.licensing;
+    // a line's tab follows its kind: a license comes from Licensing & Entity, a PSA from Account Terms, whatever the plan says
+    if (srcObj.tab !== tab) { problems.push(`${s(it.name)}: a ${what} line must come from the ${tab} tab, not “${srcObj.tab}”; it is not imported.`); continue; }
     let cid = "";
     if (it.customerKey && byKey.has(it.customerKey)) { const c = byKey.get(it.customerKey), d = decided(c); cid = d === "site" ? cidOf.get(c.siteOf) : cidOf.get(c.key); }
     else if (!it.customerKey) cid = normId(it.customer_id);
-    if (!cid || !known.has(cid)) { problems.push(`${srcObj.tab} row ${srcObj.row}: its customer “${s(it.name)}” is skipped, so the ${it.action === "psa" ? "PSA" : "license"} is not imported.`); continue; }
-    const e = docFor(ex.documents, srcObj);
-    if (e && appEdited(e, uid)) { documentsKept.push({ id: e.id, tab: srcObj.tab, row: srcObj.row, name: s(it.name) }); continue; }
+    if (!cid || !known.has(cid)) { problems.push(`${srcObj.tab} row ${srcObj.row}: its customer “${s(it.name)}” is skipped, so the ${what} is not imported.`); continue; }
+    const e = byId.get(cid);
+    lines.push({ it, srcObj, cid, tab, row: srcObj.row, type: it.action === "psa" ? "psa" : "cannabis_license", subject: e && e.id != null ? String(e.id) : null });
+  }
+  const matched = matchDocs(lines, ex.documents), usedIds = new Set();
+  lines.forEach((l, i) => {
+    const { it, srcObj, cid } = l; let e = matched[i];
+    if (e && usedIds.has(e.id)) { problems.push(`${srcObj.tab} row ${srcObj.row}: its document is already updated by another line; a new one is added.`); e = null; }
+    if (e) usedIds.add(e.id);
+    if (e && appEdited(e, uid)) { documentsKept.push({ id: e.id, tab: srcObj.tab, row: srcObj.row, name: s(it.name) }); return; }
     const x = it.doc.extra || {}, extra = {};
     let doc;
     if (it.action === "license") {
@@ -468,8 +493,8 @@ export function applyPlan(plan, existing, importUserId) {
       for (const [k] of PSA_COLS) extra[k] = isoDate(x[k]) || "";
       doc = { doc_type: "psa", title: "", number: "", status: "", issued: null, expires: null, checked_on: null, notes: "", extra };
     }
-    documents.push({ ...(e ? { id: e.id } : {}), customer_key: cid, doc, import_source: srcObj, updated_by: uid });
-  }
+    documents.push({ ...(e ? { id: e.id, subject_id: String(e.subject_id) } : {}), customer_key: cid, doc, import_source: srcObj, updated_by: uid });
+  });
   const nextCustomerNumber = Math.max(0, ...exC.map(c => num(c.customer_id)), ...customers.map(c => num(c.customer_id))) + 1;
   return { customers, sites: [...sites.values()], siteHubNotes: notes, contacts, documents, documentsKept, nextCustomerNumber, problems };
 }
@@ -484,7 +509,13 @@ export function bindRows(applied, idMap, company, now) {
   const sites = (a.sites || []).filter(x => get(x.customer_ref)).map(({ customer_ref, ...x }) => ({ ...x, company, customer_id: get(customer_ref), synced_at: now, updated_at: now }));
   const siteHubNotes = (a.siteHubNotes || []).map(n => ({ ...n, company, updated_at: now }));
   const contacts = (a.contacts || []).filter(x => get(x.customer_ref)).map(({ customer_ref, ...x }) => ({ ...x, company, customer_id: get(customer_ref) }));
-  const documents = (a.documents || []).filter(x => get(x.customer_key)).map(x => ({ ...(x.id ? { id: x.id } : {}), company, subject_type: "customer", subject_id: String(get(x.customer_key)),
-    ...x.doc, source: "import", review_status: "live", import_source: { ...x.import_source, at: now }, updated_by: x.updated_by, updated_at: now }));
+  // a document id is reused only for the customer it already belongs to, and once per call
+  const seenDoc = new Set();
+  const documents = (a.documents || []).filter(x => get(x.customer_key)).map(x => {
+    const subject = String(get(x.customer_key)), reuse = x.id != null && String(x.subject_id) === subject && !seenDoc.has(x.id);
+    if (reuse) seenDoc.add(x.id);
+    return { ...(reuse ? { id: x.id } : {}), company, subject_type: "customer", subject_id: subject,
+      ...x.doc, source: "import", review_status: "live", import_source: { ...x.import_source, at: now }, updated_by: x.updated_by, updated_at: now };
+  });
   return { customers, parents, sites, siteHubNotes, contacts, documents };
 }

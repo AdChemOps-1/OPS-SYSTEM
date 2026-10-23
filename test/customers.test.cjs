@@ -375,7 +375,7 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   const idocs = TI.dispatch_documents.filter(d=>d.source==='import');
   assert.deepEqual(idocs.map(d=>[d.doc_type, TI.dispatch_customers.find(c=>c.id===d.subject_id).customer_id, d.subject_type, d.review_status]).sort(),
     [['cannabis_license','ADC-0007','customer','live'], ['psa','ADC-0001','customer','live']]);
-  assert.match(flat(await pi.textContent('#importResult')), /1 licenses and 1 PSAs written/);
+  assert.match(flat(await pi.textContent('#importResult')), /1 license and 1 PSA written/);
   await pi.click('#tab-customers'); await pi.waitForTimeout(400);
   await pi.$$eval('#custList .cust-row', rs=>rs.find(r=>/Costa Cannabis/.test(r.textContent)).click()); await pi.waitForTimeout(400);
   assert.equal(flat(await pi.textContent('#custLicChip')), 'License expires 3/31/2027', 'the license chip on the customer');

@@ -9,7 +9,7 @@ function canRunImports(){ var me=state.me||{}; return !!(state.canEdit&&(me.isSu
 const IMPORT_LABELS={customer:"Customer",site:"Site of the customer above",related:"Related customer",license:"Import license",psa:"Import PSA",skip:"Skip"};
 // the review line of a Licensing & Entity row (license) or an Account Terms row (PSA); null for the other kinds
 function importDocLine(it){
-  var d=it.doc||{}, x=d.extra||{}, day=function(v){ return v?(typeof fmtDay==="function"?fmtDay(v):v):"—"; }, kept=it.kept?" · kept: edited in the app since the last import":"";
+  var d=it.doc||{}, x=d.extra||{}, day=function(v){ return v?(typeof fmtDay==="function"?fmtDay(v):v):"—"; }, kept=it.kept?" · kept: edited in the app since the last import":it.updates?" · updates the imported document":"";
   if(it.action==="license") return "license · "+(it.name||"")+" · "+(d.number||"no number")+" · expires "+day(d.expires)+kept;
   if(it.action==="psa") return "PSA · "+(it.name||"")+" · "+(x.signed_customer&&x.countersigned?"signed":["quote_sent","quote_accepted","sent_for_signature","signed_customer","countersigned","effective_date"].some(function(k){ return !!x[k]; })?"in progress":"none")+kept;
   return null;
@@ -65,7 +65,7 @@ async function commitImport(){
   try{
     var r=await API.post("/api/import",{action:"commit",plan:ip.plan}), c=r.counts||{};
     state.importPlan=null;
-    $("importResult").innerHTML='<div class="banner good" style="margin:9px 0 0"><div><b>Import done.</b><div>'+esc(c.customers)+" customers, "+esc(c.sites)+" sites, "+esc(c.hubNotes)+" route notes, "+esc(c.contacts)+" new contacts, "+esc(c.licenses||0)+" licenses and "+esc(c.psas||0)+" PSAs written"+(c.documentsKept?"; "+esc(c.documentsKept)+" documents kept as edited in the app":"")+"; "+esc(c.skipped)+" rows skipped. The next new customer is ADC-"+esc(String(r.nextCustomerNumber).padStart(4,"0"))+".</div></div></div>"+
+    $("importResult").innerHTML='<div class="banner good" style="margin:9px 0 0"><div><b>Import done.</b><div>'+esc(c.customers)+" customers, "+esc(c.sites)+" sites, "+esc(c.hubNotes)+" route notes, "+esc(c.contacts)+" new contacts, "+esc(c.licenses||0)+" license"+(c.licenses===1?"":"s")+" and "+esc(c.psas||0)+" PSA"+(c.psas===1?"":"s")+" written"+(c.documentsKept?"; "+esc(c.documentsKept)+" documents kept as edited in the app":"")+"; "+esc(c.skipped)+" rows skipped. The next new customer is ADC-"+esc(String(r.nextCustomerNumber).padStart(4,"0"))+".</div></div></div>"+
       ((r.problems||[]).length?'<div class="banner warn" style="margin:9px 0 0"><div><b>Not imported</b><ul style="margin:4px 0 0 18px;padding:0">'+r.problems.map(function(x){return "<li>"+esc(x)+"</li>";}).join("")+"</ul></div></div>":"");
     if(r.customersOut&&!r.customersOut.ok&&!r.customersOut.skipped) banner("warn","Customers Out not rebuilt","<div>"+esc(r.customersOut.error||"")+" The import is saved; press <b>Rebuild Customers Out</b> when the sheet is reachable.</div>",{autoclose:12000});
     // the server moved nextCustomerNumber: reload settings so a later Setup save does not write the old number back

@@ -478,7 +478,7 @@ async function renderMyDocs(){
    only through dispatch_set_warnings. Every type is off until a super admin switches it on. A warning never blocks an order
    and never touches its payment code; what the person saw is stamped on the order as warningsShown. */
 const WARN_TYPES=[["cannabis_license","Cannabis license"],["psa","PSA"],["entity_status","Entity status (SOS)"]];
-const WARN_KEYS=["warnDays","warnings","expiryEmailRecipients"];
+const WARN_KEYS=["warnDays","warnings","expiryEmailRecipients","stockAlertRecipients"];   // stockAlertRecipients: dispatch_set_stock_alerts (008)
 const WARN_EMAIL=/^[^@\s]+@[^@\s]+\.[^@\s]+$/;   // dispatch_set_warnings' rule for a recipient
 const WARN_CLS={red:"st stop",amber:"warn",green:"k-D"};
 function warnDay(iso){ if(!iso) return ""; var s=String(iso); return s.slice(5,7)+"/"+s.slice(8,10)+"/"+s.slice(0,4); }   // MM/DD/YYYY
@@ -534,12 +534,15 @@ function renderWarnings(){
       '<input data-warnnote="'+esc(t[0])+'" value="'+esc(w.note||"")+'" placeholder="Note shown with the warning (optional)" aria-label="'+esc(t[1])+' note"></div>'; }).join("");
   $("sWarnDays").value=docWarnDays();
   var r=state.settings.expiryEmailRecipients; $("sExpiryTo").value=Array.isArray(r)?r.join("\n"):"";
+  var sr=state.settings.stockAlertRecipients, sn=Array.isArray(sr)?sr.length:0; $("warnStockTo").value=sn?sr.join("\n"):"";
+  $("warnStockSum").textContent="Stock alerts go to "+sn+" address"+(sn===1?"":"es")+" (the daily email when something is below its minimum).";
 }
+function warnLines(id){ return $(id).value.split(/\r?\n/).map(function(l){ return l.trim(); }).filter(Boolean); }
 async function saveWarnings(){
   var raw=$("sWarnDays").value.trim(), days=Number(raw);
   if(!/^\d+$/.test(raw)||days<1||days>365){ banner("warn","Warnings not saved","<div>The expiring window is a whole number of days, 1 to 365.</div>",{autoclose:9000,key:"warnings"}); return; }
-  var to=$("sExpiryTo").value.split(/\r?\n/).map(function(l){ return l.trim(); }).filter(Boolean);
-  var bad=to.filter(function(l){ return !WARN_EMAIL.test(l); });
+  var to=warnLines("sExpiryTo"), stock=warnLines("warnStockTo");
+  var bad=to.concat(stock).filter(function(l){ return !WARN_EMAIL.test(l); });
   if(bad.length){ banner("warn","Warnings not saved","<div>Not an email address: <b>"+esc(bad.join(", "))+"</b>. Put one address on each line.</div>",{autoclose:12000,key:"warnings"}); return; }
   var warnings={}, card=$("warnCard");
   WARN_TYPES.forEach(function(t){ var cb=card.querySelector('[data-warn="'+t[0]+'"]'), n=card.querySelector('[data-warnnote="'+t[0]+'"]');
@@ -547,11 +550,15 @@ async function saveWarnings(){
   var btn=$("btnSaveWarnings"); btn.disabled=true;
   try{ await DB.setWarnings(days,warnings,to); }
   catch(e){ btn.disabled=false; banner("bad","Warnings not saved","<div>"+esc(e.message)+"</div>",{key:"warnings"}); return; }
+  // the stock alert recipients have their own RPC (super admin, as dispatch_set_warnings); the warnings above are already saved
+  var stockErr=null;
+  try{ sbErr(await supa.rpc("dispatch_set_stock_alerts",{p_company:state.company,p_recipients:stock})); }catch(e){ stockErr=e; }
   try{ takeWarnSettings(await DB.settings()); }
-  catch(e){ state.settings.warnDays=days; state.settings.warnings=warnings; state.settings.expiryEmailRecipients=to; }
+  catch(e){ state.settings.warnDays=days; state.settings.warnings=warnings; state.settings.expiryEmailRecipients=to; if(!stockErr) state.settings.stockAlertRecipients=stock; }
+  if(stockErr){ btn.disabled=false; renderWarnings(); banner("bad","Stock alert recipients not saved","<div>"+esc(stockErr.message)+" The warnings and expiry recipients were saved.</div>",{key:"warnings"}); return; }
   btn.disabled=false; renderWarnings();
   banner("good","Warnings saved","<div>"+(WARN_TYPES.filter(function(t){ return warnings[t[0]].orderTime; }).map(function(t){ return esc(t[1]); }).join(", ")||"Every warning is off")+
-    " · expiring window "+days+" days · "+to.length+" expiry email recipient"+(to.length===1?"":"s")+".</div>",{autoclose:8000,key:"warnings"});
+    " · expiring window "+days+" days · "+to.length+" expiry email recipient"+(to.length===1?"":"s")+" · stock alerts go to "+stock.length+" address"+(stock.length===1?"":"es")+".</div>",{autoclose:8000,key:"warnings"});
 }
 
 // Send expiry email now: the same email the daily job sends, for this company only (super admin; the server checks)

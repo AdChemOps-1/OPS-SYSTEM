@@ -811,7 +811,7 @@ function fillStatic(){
 }
 function setTab(t){
   state.tab=t;
-  ["new","bol","open","today","setup","customers","documents","assets","mydocs","users"].forEach(function(k){
+  ["new","bol","open","today","setup","customers","documents","assets","inventory","mydocs","users"].forEach(function(k){
     $("tab-"+k).setAttribute("aria-selected",k===t?"true":"false");
     $("panel-"+k).hidden=(k!==t);
   });
@@ -824,6 +824,7 @@ function setTab(t){
   if(t==="customers") renderCustomers();
   if(t==="documents") renderDocsHub();
   if(t==="assets") renderAssets();
+  if(t==="inventory") renderInventory();
   if(t==="mydocs") renderMyDocs();
 }
 function codeChip(o){
@@ -1488,7 +1489,7 @@ async function downloadBol(){
 function clearBanner(k){var el=document.querySelector('[data-bkey="'+k+'"]'); if(el) el.remove();}
 function setConn(kind,text){$("connDot").className="dot"+(kind?" "+kind:"");$("connTxt").textContent=text;}
 function wire(){
-  ["new","bol","open","today","setup","assets","mydocs"].forEach(function(k){ $("tab-"+k).onclick=function(){ if(k==="bol") state.bolOrder=null; setTab(k); }; });
+  ["new","bol","open","today","setup","assets","inventory","mydocs"].forEach(function(k){ $("tab-"+k).onclick=function(){ if(k==="bol") state.bolOrder=null; setTab(k); }; });
   wireCustomers(); wireImport(); wireDocuments();
   $("fHub").onchange=function(){refreshId();renderLines();scheduleLive();};
   $("fDate").onchange=function(){refreshId();scheduleLive();};
@@ -2015,7 +2016,7 @@ async function saveOrder(o){
 }
 async function saveHubs(){ try{ await DB.saveHubs(); }catch(e){ banner("bad","Hubs not saved","<div>"+esc(e.message)+"</div>"); } }
 // plus the document warning keys: written only through dispatch_set_warnings (super admin), so a save carries the database's values
-const SERVER_COUNTERS=["nextCustomerNumber","nextBol","warnDays","warnings","expiryEmailRecipients"];
+const SERVER_COUNTERS=["nextCustomerNumber","nextBol","warnDays","warnings","expiryEmailRecipients","stockAlertRecipients"];
 async function saveSettings(own){ try{ await DB.saveSettings(own); }catch(e){ banner("bad","Settings not saved","<div>"+esc(e.message)+"</div>"); } }
 
 const API={
@@ -2237,6 +2238,7 @@ function applyAccess(){
   ["tab-new","tab-bol","tab-setup","tab-customers"].forEach(function(k){ $(k).hidden=ro; });
   $("tab-documents").hidden=!canViewDocs(); if(state.tab==="documents"&&!canViewDocs()) state.tab=ro?"today":"new";
   $("tab-assets").hidden=ro||!canViewAssets(); if(state.tab==="assets"&&$("tab-assets").hidden) state.tab=ro?"today":"new";
+  $("tab-inventory").hidden=ro||!canViewAssets(); if(state.tab==="inventory"&&$("tab-inventory").hidden) state.tab=ro?"today":"new";   // drivers see nothing of Inventory
   var drv=state.role==="driver"; $("tab-mydocs").hidden=!drv; if(state.tab==="mydocs"&&!drv) state.tab=ro?"today":"new";   // a driver's own CDL and medical card
   if(ro){ $("btnSubmit").textContent="Drivers cannot create orders"; if(state.tab!=="today"&&state.tab!=="open"&&state.tab!=="mydocs") setTab("today"); }
 }
@@ -2325,7 +2327,7 @@ async function loadCompanyData(){
   if(state.me.role==="driver"&&state.me.hub) lsSet("adchem_myhub",state.me.hub);
   await loadSitesFromDb();   // drivers too: the policy limits them to their hub's sites, which Today's site notes read
   if(state.canEdit) await loadCalendars();
-  closeCustomer(); state.customers=[]; resetDocs(); resetAssets();
+  closeCustomer(); state.customers=[]; resetDocs(); resetAssets(); resetInventory();
   if(state.canEdit){ try{ state.customers=await CDB.customers(); }catch(e){ banner("bad","Couldn't load customers","<div>"+esc(e.message)+"</div>"); } }
   fillAccounts();
   setConn("ok","Connected");

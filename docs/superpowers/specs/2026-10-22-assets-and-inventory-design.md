@@ -26,7 +26,7 @@ Out of scope for both: any price, rental charge, deposit or cylinder fee (AR kee
 | Dry ice | Mostly made, sometimes bought: a production entry and a vendor receipt both add bins at the hub. |
 | Loading | Drivers take what they need. The delivery scan is the record (hub → site); collecting is site → hub. An optional Load scan exists for drivers who want a truck list. A `truck` place kind can be added later without restructuring. |
 | Reading serials | Google Cloud Vision text detection on the existing service account; the driver always confirms; nothing is written on Vision alone. Rules tuned on real photos (indented serials, stickers, bin/tote cards). |
-| Photos | Stored in the existing private `dispatch-docs` bucket under `company/asset/`; served by 5-minute signed URLs through `/api/docs` as today. |
+| Photos | Stored in the existing private `dispatch-docs` bucket under `company/asset/`; served by 5-minute signed URLs the browser mints with the Supabase client; the storage select policy (`view_assets`, or the uploader) is the permission check. Unlike documents, photo views are not logged. |
 
 ## 3. Data model
 

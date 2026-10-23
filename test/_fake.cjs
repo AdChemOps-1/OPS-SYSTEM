@@ -121,6 +121,10 @@ function fakeRpc(name,b,T){
     a.updated_at=now; a.updated_by='u1';
     T.dispatch_asset_events.push({id:uuid(),company:a.company,asset_id:a.id,event_type:'corrected',from_kind:null,from_id:null,to_kind:null,to_id:null,fill_after:null,occurred_at:now,recorded_by:'u1',order_id:null,bol_number:null,site_key:null,photo_path:null,gps:null,ocr:null,note:'corrected: '+Object.keys(f).join(', '),created_at:now});
     return {code:200,body:a}; }
+  // migration 007: any member of the company, place / fill / owner / type only, the serial normalised as stored
+  if(name==='dispatch_asset_by_serial'){ if(!memberOf(T,b.p_company)) return {code:400,body:{code:'P0001',message:'not allowed'}};
+    const s=normSerial(b.p_serial); return {code:200,body:(T.dispatch_assets||[]).filter(a=>a.company===b.p_company&&a.serial===s)
+      .map(a=>({id:a.id,serial:a.serial,container_type_id:a.container_type_id,fill_state:a.fill_state,location_kind:a.location_kind,location_id:a.location_id,owner_kind:a.owner_kind,owner_id:a.owner_id}))}; }
   return {code:404,body:{message:'no fn '+name}}; }
 
 // insert-or-merge on the conflict keys, audited, the way PostgREST's resolution=merge-duplicates does

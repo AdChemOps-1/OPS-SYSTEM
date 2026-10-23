@@ -1,5 +1,5 @@
 // Headless UI test for the asset register (Stage 3A): the Assets tab and its permission switches, Setup -> Vendors and Container types,
-// the register with detail and history, counts, and the hub actions. Uses the shared fake (test/_fake.cjs).
+// the register with detail and history, counts, the hub actions, and the driver's Cylinders sheet, offline queue, Load and My truck. Uses the shared fake (test/_fake.cjs).
 const assert = require('assert/strict');
 const { chromium } = require('playwright');
 const { makeFake, newPage } = require('./_fake.cjs');
@@ -295,5 +295,122 @@ async function signIn(page, base){
   await signIn(cz, base);
   assert.equal(await cz.$eval('#tab-assets', e => e.hidden), false, 'the coordinator now sees the tab');
   assert.deepEqual(adm.errs, [], 'page errors on People');
+
+  // ---- Task 7: the driver's Cylinders sheet on Today, the offline queue, Load and My truck (a fresh fake, signed in as an EB driver) ----
+  const fd = makeFake(); const TD = fd.T; const baseD = await fd.start();
+  try {
+    const CID = '11111111-1111-4111-8111-111111111111', SK = 'ADC-0001 — Primary', ORD = 'EB-261020-01';
+    TD.dispatch_customers.push({id:CID,company:'adchem',customer_id:'ADC-0001',name:'Type 7 Manufacturing',account_status:'active',primary_hub:'EB'});
+    TD.dispatch_sites.push({company:'adchem',site_key:SK,customer_id:CID,customer:'Type 7 Manufacturing',addr:'100 Main St, Oakland CA 94607',city:'Oakland',hub:'EB',site_label:'Primary',code_raw:'D - Deliver; no holds',code:'D',synced_at:'2026-10-20T08:00:00Z'});
+    const od = {id:ORD,hub:'EB',date:'2026-10-20',status:'Scheduled',customer:'Type 7 Manufacturing',siteKey:SK,siteLabel:'Primary',code:'D',effCode:'D',window:'7:00a – 11:00a',truck:'T1',
+      shipTo:'100 Main St, Oakland CA 94607',bolNo:9450,lines:[{category:'Gases',product:'Carbon Dioxide',container:'50lb Cylinder',qty:2,unitLb:50,unitDef:false,note:''}]};
+    TD.dispatch_orders.push({company:'adchem',id:ORD,bol_no:9450,hub:'EB',date:'2026-10-20',status:'Scheduled',customer:'Type 7 Manufacturing',data:od,created_at:'2026-10-19T12:00:00Z',updated_at:'2026-10-19T12:00:00Z'});
+    const dv = await newPage(b, baseD, {viewport:{width:390,height:844}, members:[{user_id:'u1',company:'adchem',role:'driver',hub:'EB',active:true,is_super_admin:false,permissions:{}}]});
+    const posts = []; dv.on('request', r => { if (r.url().endsWith('/api/assets') && r.method() === 'POST') { const j = JSON.parse(r.postData() || '{}'); if (j.action === 'events') posts.push(j.events); } });
+    await signIn(dv, baseD); await dv.waitForTimeout(600);
+    assert.equal(await dv.evaluate(() => state.role), 'driver');
+    assert.equal(await dv.$eval('#tab-assets', e => e.hidden), true, 'a driver cannot see the register');
+    assert.equal(await dv.$eval('#truckCard', e => e.hidden), false, 'Load / My truck on Today for a driver');
+    // the stop shows Cylinders; the sheet: two deliver slots and CD5678 (at the site) under Collecting
+    assert.equal(await dv.$$eval('#todayList [data-cyl]', e => e.map(x => x.getAttribute('data-cyl'))).then(x => x.join()), ORD, 'Cylinders on the stop');
+    await dv.click('#todayList [data-cyl="' + ORD + '"]'); await dv.waitForTimeout(400);
+    assert.equal(await dv.$eval('#cylSheet', e => e.hidden), false, 'Cylinders sheet open');
+    assert.equal(await dv.$$eval('#cylSlots [data-slot]', e => e.length), 2, 'two deliver slots');
+    assert.match(flat(await dv.textContent('#cylSlots')), /50lb Cylinder.*50lb Cylinder/);
+    assert.match(flat(await dv.textContent('#cylCollect')), /CD5678/, 'CD5678 under Collecting');
+    assert.equal(await dv.evaluate(() => document.documentElement.scrollWidth), 390, 'no horizontal overflow with the Cylinders sheet open');
+    // slot 1: scan -> upload -> read -> Yes
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    await dv.click('#cylSlots [data-open="s:0"]'); await dv.waitForTimeout(100);
+    assert.equal(await dv.$eval('#cylPick', e => e.hidden), false, 'slot picker open');
+    await dv.setInputFiles('#cyl_photo', {name:'tag.png', mimeType:'image/png', buffer:png}); await dv.waitForTimeout(900);
+    const upD = fd.calls.filter(c => c[0] === 'upload' && /^adchem\/asset\/[0-9a-f-]{36}\.jpg$/.test(c[1]));
+    assert.equal(upD.length, 1, 'the tag photo uploaded under asset/<event id>.jpg');
+    assert.match(flat(await dv.textContent('#cylCands')), /AB1234.*Yes.*DOT3AA2015/, 'top candidate, Yes, and an alternate');
+    await dv.click('#cylYes'); await dv.waitForTimeout(500);
+    const slot1 = flat(await dv.textContent('#cylSlots [data-slot="0"]'));
+    assert.match(slot1, /AB1234/); assert.doesNotMatch(slot1, /was at/, 'AB1234 is at the hub, where a delivery starts');
+    // slot 2: the same serial typed is refused, then an unknown serial opens the new form with the slot's type
+    await dv.click('#cylSlots [data-open="s:1"]'); await dv.waitForTimeout(100);
+    await dv.fill('#cyl_typed', 'ab 1234'); await dv.click('#cyl_use'); await dv.waitForTimeout(300);
+    assert.match(flat(await dv.textContent('#cylPickMsg')), /already used/);
+    assert.doesNotMatch(flat(await dv.textContent('#cylSlots [data-slot="1"]')), /AB1234/);
+    await dv.fill('#cyl_typed', 'NEW9'); await dv.click('#cyl_use'); await dv.waitForTimeout(500);
+    assert.equal(await dv.$eval('#cylNew', e => e.hidden), false, 'new container form');
+    assert.equal(await dv.$eval('#cyln_type', e => e.value), 'ct-co2-50', 'type preselected from the slot');
+    assert.equal(await dv.$eval('#cyln_fill', e => e.value), 'full');
+    assert.equal(await dv.evaluate(() => document.documentElement.scrollWidth), 390, 'no horizontal overflow with the new form open');
+    await dv.click('#cyln_ok'); await dv.waitForTimeout(200);
+    assert.match(flat(await dv.textContent('#cylSlots [data-slot="1"]')), /NEW9.*new/);
+    // collect CD5678, then Done
+    await dv.click('#cylCollect [data-collect="as-cd5678"]'); await dv.waitForTimeout(100);
+    await dv.click('#cylDone'); await dv.waitForFunction(() => state.cyl && !state.cyl.sending, null, {timeout:8000}); await dv.waitForTimeout(150);
+    const at = s => { const a = TD.dispatch_assets.find(x => x.serial === s); return a && [a.location_kind, a.location_id, a.fill_state]; };
+    assert.deepEqual(at('NEW9'), ['site', SK, 'full'], 'NEW9 delivered to the site');
+    assert.deepEqual(at('AB1234'), ['site', SK, 'full'], 'AB1234 delivered to the site');
+    assert.deepEqual(at('CD5678'), ['hub', 'EB', 'empty'], 'CD5678 collected to EB');
+    const new9 = TD.dispatch_assets.find(a => a.serial === 'NEW9');
+    assert.deepEqual(TD.dispatch_asset_events.filter(e => e.asset_id === new9.id).map(e => e.event_type).sort(), ['created', 'delivered'], 'created + delivered for NEW9');
+    assert.equal(new9.container_type_id, 'ct-co2-50'); assert.equal(new9.owner_kind, 'adchem');
+    const dAB = TD.dispatch_asset_events.find(e => e.event_type === 'delivered' && e.asset_id === 'as-ab1234');
+    assert.deepEqual([dAB.from_kind, dAB.from_id, dAB.to_kind, dAB.to_id, dAB.order_id, dAB.bol_number, dAB.site_key, dAB.fill_after], ['hub', 'EB', 'site', SK, ORD, 9450, SK, 'full']);
+    assert.equal(dAB.photo_path, upD[0][1], 'the delivery carries its tag photo'); assert.equal(dAB.id, upD[0][1].split('/')[2].replace('.jpg', ''), 'same id as the photo');
+    assert.equal(dAB.ocr && dAB.ocr.picked, 'AB1234');
+    assert.equal(TD.dispatch_asset_events.some(e => e.event_type === 'sighted'), false, 'no correction: everything was where the register had it');
+    assert.equal(posts.length, 1); assert.equal(posts[0].length, 3, 'one batch of three events');
+    assert.equal((flat(await dv.textContent('#cylSheet')).match(/recorded/g) || []).length, 3, 'three slots ticked');
+    // the same batch again: duplicates, still one event per id
+    const nEv = TD.dispatch_asset_events.length;
+    const again = await dv.evaluate(ev => ADB.sendEvents(ev).then(r => r.results.map(x => x.status)), posts[0]);
+    assert.deepEqual(again, ['duplicate', 'duplicate', 'duplicate']);
+    assert.equal(TD.dispatch_asset_events.length, nEv, 'no second write');
+    posts[0].forEach(e => assert.equal(TD.dispatch_asset_events.filter(x => x.id === e.id).length, 1));
+    await dv.click('#cylClose'); await dv.waitForTimeout(900);
+    assert.equal(await dv.$eval('#cylSheet', e => e.hidden), true);
+
+    // offline: collect AB1234 back from the site; Done keeps the batch on the phone (IndexedDB store a)
+    await dv.click('#todayList [data-cyl="' + ORD + '"]'); await dv.waitForTimeout(400);
+    assert.match(flat(await dv.textContent('#cylCollect')), /AB1234.*NEW9|NEW9.*AB1234/, 'the site now has AB1234 and NEW9');
+    await dv.context().setOffline(true);
+    await dv.click('#cylCollect [data-collect="as-ab1234"]'); await dv.click('#cylDone'); await dv.waitForFunction(() => state.cyl && !state.cyl.sending, null, {timeout:8000}); await dv.waitForTimeout(150);
+    assert.match(flat(await dv.textContent('#cylStatus')), /Not sent yet — no signal\. The photos are kept on this phone; press Send waiting photos on the Today list when you have signal\./);
+    const qa = await dv.evaluate(() => cylQueueAll().then(q => q.map(x => [x.company, x.events.length, x.events[0].type, x.events[0].serial])));
+    assert.deepEqual(qa, [['adchem', 1, 'collected', 'AB1234']], 'one batch in store a');
+    assert.deepEqual(at('AB1234'), ['site', SK, 'full'], 'nothing reached the server');
+    await dv.click('#cylClose'); await dv.waitForTimeout(500);
+    assert.match(flat(await dv.textContent('#podQueueNote')), /1 photo waiting to send.*Cylinders/, 'the queue note counts the batch');
+    await dv.context().setOffline(false);
+    await dv.click('#podFlush'); await dv.waitForTimeout(1500);
+    assert.deepEqual(at('AB1234'), ['hub', 'EB', 'empty'], 'flushed: AB1234 back at EB');
+    assert.deepEqual(await dv.evaluate(() => cylQueueAll().then(q => q.length)), 0, 'store a empty');
+    assert.equal(await dv.$eval('#podQueueNote', e => e.hidden), true);
+    // a batch whose photo did not upload: the flush uploads it first, then sends (an object already there counts as uploaded)
+    const qid = await dv.evaluate(async () => { const id = newUuid(), path = state.company + '/asset/' + id + '.jpg';
+      await cylQueuePut({id:newUuid(), company:state.company, label:'test', at:Date.now(), blobs:{[id]:new Blob(['x'], {type:'image/jpeg'})},
+        events:[{id, type:'loaded', serial:'CD5678', from:{kind:'hub', id:'EB'}, to:{kind:'hub', id:'EB'}, photoPath:path, occurredAt:new Date().toISOString()}]}); return id; });
+    await dv.evaluate(() => updatePodQueueNote()); await dv.waitForTimeout(200);
+    await dv.click('#podFlush'); await dv.waitForTimeout(1200);
+    assert.ok((TD.__objects || []).includes('adchem/asset/' + qid + '.jpg'), 'the kept photo uploaded on flush');
+    assert.ok(TD.dispatch_asset_events.some(e => e.id === qid && e.event_type === 'loaded' && e.photo_path === 'adchem/asset/' + qid + '.jpg'), 'then the event went');
+
+    // Load: free-form slots, loaded to the hub; My truck: today's loaded minus delivered
+    await dv.click('#btnLoad'); await dv.waitForTimeout(300);
+    assert.equal(await dv.$eval('#cylSheet', e => e.hidden), false, 'Load opens the sheet');
+    assert.equal(await dv.$eval('#cylCollectWrap', e => e.hidden), true, 'no Collecting in load mode');
+    await dv.click('#cylAddSlot'); await dv.waitForTimeout(100);
+    await dv.fill('#cyl_typed', 'NEW9'); await dv.click('#cyl_use'); await dv.waitForTimeout(500);
+    assert.match(flat(await dv.textContent('#cylSlots [data-slot="0"]')), /NEW9.*was at/, 'NEW9 was at the customer');
+    await dv.click('#cylDone'); await dv.waitForFunction(() => state.cyl && !state.cyl.sending, null, {timeout:8000}); await dv.waitForTimeout(150);
+    const ld = TD.dispatch_asset_events.find(e => e.event_type === 'loaded' && e.asset_id === new9.id);
+    assert.ok(ld && ld.to_kind === 'hub' && ld.to_id === 'EB', 'loaded to EB');
+    assert.ok(TD.dispatch_asset_events.some(e => e.event_type === 'sighted' && e.asset_id === new9.id && e.from_kind === 'site' && e.to_id === 'EB'), 'the register is corrected');
+    await dv.click('#cylClose'); await dv.waitForTimeout(600);
+    await dv.click('#btnMyTruck'); await dv.waitForTimeout(800);
+    const truck = flat(await dv.textContent('#truckList'));
+    assert.match(truck, /CD5678/); assert.match(truck, /NEW9/); assert.doesNotMatch(truck, /AB1234/);
+    assert.equal(await dv.evaluate(() => document.documentElement.scrollWidth), 390, 'no horizontal overflow on Today with My truck open');
+    // the reads Today makes while the phone is offline (site notes, the register at the stop) are the only console errors
+    assert.deepEqual(dv.errs.filter(e => !/ERR_INTERNET_DISCONNECTED/.test(e)), [], 'driver page errors');
+  } finally { await fd.stop(); }
   } finally { await b.close(); await fake.stop(); }
 })().then(()=>{ console.log('assets.test.cjs: ok'); }, e=>{ console.error(e); process.exit(1); });

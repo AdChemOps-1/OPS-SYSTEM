@@ -1020,6 +1020,7 @@ function renderToday(){
     b.onclick=function(){ var o=state.orders.find(function(x){return x.id===b.getAttribute("data-capture");}); if(o) openCapture(o,siteOf(o)); }; });
   todayExtras(siteKeys);
   updatePodQueueNote();
+  if(typeof renderTruckCard==="function") renderTruckCard();
 }
 function updateCounts(){
   $("cntOpen").textContent=state.orders.filter(function(o){return ["Paid","Cancelled","Invoiced"].indexOf(o.status)<0;}).length;
@@ -1742,8 +1743,8 @@ function podIdb(){
   if(podDb) return Promise.resolve(podDb);
   return new Promise(function(resolve){
     try{
-      var r=indexedDB.open("adchem-pod",3);   // q: BOL photos, d: deposit slips, c: document captures (documents.js)
-      r.onupgradeneeded=function(){ var db=r.result; if(!db.objectStoreNames.contains("q")) db.createObjectStore("q",{keyPath:"orderId"}); if(!db.objectStoreNames.contains("d")) db.createObjectStore("d",{keyPath:"id"}); if(!db.objectStoreNames.contains("c")) db.createObjectStore("c",{keyPath:"id"}); };
+      var r=indexedDB.open("adchem-pod",4);   // q: BOL photos, d: deposit slips, c: document captures (documents.js), a: cylinder batches (assets.js)
+      r.onupgradeneeded=function(){ var db=r.result; if(!db.objectStoreNames.contains("q")) db.createObjectStore("q",{keyPath:"orderId"}); if(!db.objectStoreNames.contains("d")) db.createObjectStore("d",{keyPath:"id"}); if(!db.objectStoreNames.contains("c")) db.createObjectStore("c",{keyPath:"id"}); if(!db.objectStoreNames.contains("a")) db.createObjectStore("a",{keyPath:"id"}); };
       r.onsuccess=function(){ podDb=r.result; resolve(podDb); };
       r.onerror=function(){ resolve(null); };
     }catch(e){ resolve(null); }
@@ -1768,13 +1769,13 @@ function podQueueRemove(id){
 }
 async function updatePodQueueNote(){
   var host=$("podQueueNote"); if(!host) return;
-  var q=await podQueueAll(), dq=await depQueueAll(), cq=await capQueueAll(), n=q.length+dq.length+cq.length;
+  var q=await podQueueAll(), dq=await depQueueAll(), cq=await capQueueAll(), aq=typeof cylQueueAll==="function"?await cylQueueAll():[], n=q.length+dq.length+cq.length+aq.length;
   if(!n){ host.innerHTML=""; host.hidden=true; return; }
   host.hidden=false;
   host.innerHTML='<div class="banner warn" style="margin:0 0 12px"><div><b>'+n+' photo'+(n===1?"":"s")+' waiting to send</b>'+
-    q.map(function(x){return esc((x.order.bolNo?"BOL "+x.order.bolNo:x.order.id)+" · "+x.order.customer);}).concat(dq.map(function(x){return "Deposit slip"+(x.d&&x.d.amount?" · "+money(x.d.amount):"")+" · "+new Date(x.at).toLocaleDateString();})).concat(cq.map(function(x){return "Document photo · "+esc(x.label||x.orderId);})).join("<br>")+
+    q.map(function(x){return esc((x.order.bolNo?"BOL "+x.order.bolNo:x.order.id)+" · "+x.order.customer);}).concat(dq.map(function(x){return "Deposit slip"+(x.d&&x.d.amount?" · "+money(x.d.amount):"")+" · "+new Date(x.at).toLocaleDateString();})).concat(cq.map(function(x){return "Document photo · "+esc(x.label||x.orderId);})).concat(aq.map(function(x){var k=(x.events||[]).length; return esc("Cylinders · "+(x.label||"")+" · "+k+" cylinder"+(k===1?"":"s"));})).join("<br>")+
     '<div style="margin-top:6px"><button class="btn sm primary" id="podFlush">Send waiting photos</button></div></div></div>';
-  $("podFlush").onclick=async function(){ await podFlush(); await depFlush(); if(typeof capFlush==="function") await capFlush(); };
+  $("podFlush").onclick=async function(){ await podFlush(); await depFlush(); if(typeof capFlush==="function") await capFlush(); if(typeof cylFlush==="function") await cylFlush(); };
 }
 async function podFlush(){
   var q=await podQueueAll();

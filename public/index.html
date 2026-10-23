@@ -254,6 +254,12 @@
       </div>
     </div>
     <div id="podQueueNote" hidden></div>
+    <div class="card pad" id="truckCard" hidden style="margin-bottom:12px">
+      <div class="sec-h" style="margin-bottom:4px">Cylinders on the truck / Cilindros en el camión</div>
+      <p class="hint" style="margin:0 0 9px">Scan or type each cylinder you load at the hub. At a stop, press <b>Cylinders</b> to record what you deliver and pick up.</p>
+      <div class="a-btns"><button class="btn primary" id="btnLoad" type="button">Load / Cargar</button><button class="btn" id="btnMyTruck" type="button" aria-expanded="false">My truck / Mi camión</button></div>
+      <div id="truckList" hidden></div>
+    </div>
     <details class="banner info" style="margin-bottom:12px;display:block"><summary style="cursor:pointer;font-weight:700">Money at a stop that is not coded COD / Dinero en una parada que no es COD</summary><div style="margin-top:6px">You never ask. If the customer offers payment anyway, take it: count it in front of them, tick <b>Payment on Account</b>, write the amount, both initial, photograph as usual. The money goes against their account; what they owe is settled by the invoice, not by the BOL.</div></details>
     <div id="todayList"></div>
     <div class="card pad" style="margin-top:12px" id="depositCard">
@@ -757,6 +763,44 @@
     <div id="act_list" class="act-list"></div>
     <button class="bigbtn primary" id="act_confirm" style="margin-top:12px" disabled>Confirm</button>
     <div id="actResults" class="act-results"></div>
+  </div>
+</div>
+
+<div id="cylSheet" hidden role="dialog" aria-modal="true" aria-labelledby="cylTitle">
+  <div class="sheet">
+    <div style="display:flex;align-items:flex-start;gap:8px">
+      <div style="flex:1"><h2 id="cylTitle">Cylinders</h2><div class="sub" id="cylSub"></div></div>
+      <button class="btn sm" id="cylClose" aria-label="Close">✕</button>
+    </div>
+    <h3 class="sec-h cyl-h" id="cylSlotsH">Delivering / Entregando</h3>
+    <div id="cylSlots" class="cyl-list"></div>
+    <button class="btn" type="button" id="cylAddSlot" hidden>+ Add a cylinder / Agregar</button>
+    <div id="cylCollectWrap">
+      <h3 class="sec-h cyl-h">Collecting / Recogiendo</h3>
+      <div id="cylCollect" class="cyl-list"></div>
+      <button class="btn sm" type="button" id="cylAddCollect">+ Another cylinder to pick up / Otro</button>
+    </div>
+    <div id="cylPick" class="act-pick" hidden>
+      <div id="cylPickHead" class="cyl-pick-h"></div>
+      <label class="bigbtn" id="cylScanLbl" tabindex="0">📷 Scan the tag / Foto de la etiqueta<input type="file" id="cyl_photo" accept="image/*" capture="environment" hidden></label>
+      <div id="cylCands"></div>
+      <div class="act-entry" style="margin-top:0">
+        <input id="cyl_typed" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Or type the serial / O escriba el número" aria-label="Serial on the tag">
+        <button class="btn" type="button" id="cyl_use">Use</button><button class="btn" type="button" id="cyl_cancel">Cancel</button>
+      </div>
+      <div id="cylPickMsg" class="hint"></div>
+    </div>
+    <div id="cylNew" class="cyl-new" hidden>
+      <div class="cyl-pick-h" id="cylNewHead">Not in the register yet — add it</div>
+      <div class="grid two">
+        <label class="f">Type<select id="cyln_type"></select></label>
+        <label class="f">Owner<select id="cyln_owner"></select></label>
+        <label class="f">Fill<select id="cyln_fill"><option value="full">full</option><option value="empty">empty</option><option value="unknown">unknown</option></select></label>
+      </div>
+      <div class="a-btns"><button class="btn primary" type="button" id="cyln_ok">Add it</button><button class="btn" type="button" id="cyln_cancel">Cancel</button></div>
+    </div>
+    <button class="bigbtn primary" id="cylDone" style="margin-top:12px">Done / Listo</button>
+    <div id="cylStatus"></div>
   </div>
 </div>
 

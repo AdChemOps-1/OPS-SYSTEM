@@ -177,11 +177,11 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,va
 @media(min-width:900px){.bolgrid{grid-template-columns:minmax(260px,320px) 1fr}}
 .held{padding:9px 13px;border-top:1px solid var(--line);font-size:12.5px;color:var(--ink-2);background:var(--surface-2)}
 /* ---- proof-of-delivery sheet ---- */
-#podSheet,#depSheet,#capSheet,#actSheet{position:fixed;inset:0;z-index:60;background:rgba(14,21,25,.55);display:flex;align-items:flex-end;justify-content:center}
-#podSheet .sheet,#depSheet .sheet,#capSheet .sheet,#actSheet .sheet{background:var(--surface);color:var(--ink);width:100%;max-width:560px;max-height:96vh;overflow-y:auto;border-radius:14px 14px 0 0;padding:14px 16px calc(16px + env(safe-area-inset-bottom,0px));box-shadow:0 -6px 30px rgba(0,0,0,.3)}
-@media(min-width:600px){#podSheet,#depSheet,#capSheet,#actSheet{align-items:center}#podSheet .sheet,#depSheet .sheet,#capSheet .sheet,#actSheet .sheet{border-radius:var(--radius);max-height:92vh}}
-#podSheet h2,#depSheet h2,#capSheet h2,#actSheet h2{margin:0 0 2px;font-size:17px}
-#podSheet .sub,#depSheet .sub,#capSheet .sub,#actSheet .sub{font-size:12.5px;color:var(--ink-3);margin-bottom:10px}
+#podSheet,#depSheet,#capSheet,#actSheet,#cylSheet{position:fixed;inset:0;z-index:60;background:rgba(14,21,25,.55);display:flex;align-items:flex-end;justify-content:center}
+#podSheet .sheet,#depSheet .sheet,#capSheet .sheet,#actSheet .sheet,#cylSheet .sheet{background:var(--surface);color:var(--ink);width:100%;max-width:560px;max-height:96vh;overflow-y:auto;border-radius:14px 14px 0 0;padding:14px 16px calc(16px + env(safe-area-inset-bottom,0px));box-shadow:0 -6px 30px rgba(0,0,0,.3)}
+@media(min-width:600px){#podSheet,#depSheet,#capSheet,#actSheet,#cylSheet{align-items:center}#podSheet .sheet,#depSheet .sheet,#capSheet .sheet,#actSheet .sheet,#cylSheet .sheet{border-radius:var(--radius);max-height:92vh}}
+#podSheet h2,#depSheet h2,#capSheet h2,#actSheet h2,#cylSheet h2{margin:0 0 2px;font-size:17px}
+#podSheet .sub,#depSheet .sub,#capSheet .sub,#actSheet .sub,#cylSheet .sub{font-size:12.5px;color:var(--ink-3);margin-bottom:10px}
 .bigbtn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;min-height:58px;font-size:17px;font-weight:700;border-radius:10px;cursor:pointer;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
 .bigbtn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .bigbtn:disabled{opacity:.45;cursor:not-allowed}
@@ -384,3 +384,15 @@ body.role-driver #foot,body.role-driver #todayHint{display:none}
 .act-item .x{appearance:none;border:0;background:none;font-size:16px;cursor:pointer;color:var(--ink-3);padding:0 4px}
 .act-results{margin-top:10px;display:grid;gap:4px;font-size:13px}
 .act-results div{word-break:break-word}
+/* the driver's Cylinders sheet (assets.js) */
+#cylSheet .cyl-h{margin:12px 0 6px;font-size:13px}
+.cyl-list{display:grid;gap:6px;margin-bottom:8px}
+.cyl-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;border:1px solid var(--line);border-radius:8px;padding:7px 9px;min-width:0}
+.cyl-row.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.cyl-row .cyl-what{flex:1 1 140px;min-width:0;font-size:13px}
+.cyl-row .cyl-ser{font-size:15px;font-weight:700;word-break:break-all}
+.cyl-row .cyl-note{flex:1 1 100%;font-size:12px}
+.cyl-pick-h{font-weight:700;font-size:13px}
+#cylNew{border:1px solid var(--line);border-radius:var(--radius);padding:10px;margin-top:10px;display:grid;gap:8px;min-width:0}
+#cylPick .cyl-top{font-size:24px;font-weight:700;text-align:center;word-break:break-all}
+#truckList{margin-top:10px}

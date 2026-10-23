@@ -3,7 +3,8 @@
    (state, $, esc, banner, supa, sbErr, API, newUuid, PRODUCTS). Every query is scoped by state.company.
    Reading needs view_assets, writing needs manage_assets (super admins have both); the database and /api/assets enforce the same
    rules and the screens follow canViewAssets() / canManageAssets(). Part 2: the register (detail, history, manage actions), counts
-   and the hub action sheet. Also uses hubBy, coShort, fmtWhen, whoName and shrinkPhoto. Task 7 adds the driver's Cylinders sheet. */
+   and the hub action sheet. Also uses hubBy, coShort, fmtWhen, whoName and shrinkPhoto. Part 3: the driver's Cylinders sheet on Today, its
+   offline queue (app.js's podIdb store "a"), Load and My truck; also uses ymd, podIdb, updatePodQueueNote, renderToday and capError. */
 
 state.vendors=[]; state.ctypes=[]; state.vendorEdit=null; state.typeEdit=null;   // vendorEdit / typeEdit: the row a form is editing ({} = new)
 // aRows: the register; aSites: site_key -> name for sites the feed hasn't loaded; aDetail: the open asset's id; aShell: the company
@@ -478,6 +479,399 @@ function actPick(text){
     else if(b.getAttribute("data-pick-typed")) actPick($("actPickTyped").value);
     else if(b.getAttribute("data-pick-cancel")&&state.act){ state.act.scan=null; actDrawPick(); } };
   pick.onkeydown=function(ev){ if(ev.key==="Enter"&&ev.target.id==="actPickTyped"){ ev.preventDefault(); actPick(ev.target.value); } };
+})();
+
+/* ---------- Today (drivers): the Cylinders sheet at a stop, Load at the hub, My truck ----------
+   A stop's sheet has one Deliver slot per unit of each Gases line on the order (its type matched by product and size) and, under
+   Collecting, the containers the register has at the site (state.todayAssets, loaded by todayExtras). A slot is filled by a photo
+   of the tag (uploaded to <company>/asset/<event id>.jpg, read by /api/assets, the top candidate confirmed with Yes) or by typing.
+   The serial is looked up at the site, then with dispatch_asset_by_serial: a known one ticks the slot ("was at X" when the register
+   had it elsewhere: the event's from is the driver's hub or stop, so the server writes the sighted correction); an unknown one opens
+   the new-container form. Done sends one batch, each event with the id made on this phone. With no signal, or no answer, the batch
+   (with any photo not yet uploaded) is kept in IndexedDB store "a" and sent by Send waiting photos; the same ids make a resend
+   harmless. Load is the same sheet with free-form slots (loaded, to the hub); My truck lists today's loaded minus delivered. */
+state.cyl=null; state.truckOpen=false;
+function cylHub(){ return (state.me&&state.me.hub)||""; }
+function cylOrder(id){ return (state.orders||[]).find(function(o){ return o.id===id; })||null; }
+function cylSite(k){ return (state.feed.rows||[]).find(function(r){ return r.siteKey===k; })||null; }
+function cylGasLines(o){ return ((o&&o.lines)||[]).filter(function(l){ return l.category==="Gases"&&l.product; }); }
+// the register's containers at a site, as todayExtras loaded them for this company
+function cylSiteAssets(k){ return (state.todayX&&state.todayX.company===state.company&&(state.todayAssets||{})[k])||[]; }
+function cylTypeFor(product,container){
+  var c=String(container||"").trim().toLowerCase();
+  return (state.ctypes||[]).find(function(t){ return t.active!==false&&t.product===product&&String(t.size_label).trim().toLowerCase()===c; })||null;
+}
+function cylindersButtonHtml(orderId,site){
+  if(state.role!=="driver"||!site||!site.siteKey) return "";
+  if(!cylGasLines(cylOrder(orderId)).length&&!cylSiteAssets(site.siteKey).length) return "";
+  return '<button class="btn sm" type="button" data-cyl="'+esc(orderId)+'" data-cyl-site="'+esc(site.siteKey)+'">Cylinders / Cilindros</button>';
+}
+// kind: deliver | collect | load. status: open (no serial) · here (at the site, not picked up) · ok · new · done · rejected · queued
+function cylItem(kind,extra){
+  return Object.assign({kind:kind,product:"",container:"",typeId:null,lineTypeId:null,assetId:null,serial:null,eventId:null,photoPath:null,ocr:null,at:null,
+    status:"open",wasAt:"",unchecked:false,isNew:false,newType:null,newOwner:"adchem",newFill:null,reason:"",warning:""},extra||{});
+}
+function cylBase(mode){
+  return {mode:mode,company:state.company,orderId:null,bolNo:null,siteKey:null,customerId:null,customer:"",label:"",slots:[],collecting:[],extra:[],
+    active:null,scan:null,newFor:null,blobs:{},uploaded:{},sending:false,looking:false};
+}
+function openCylinders(orderId,siteKey){
+  if(state.role!=="driver") return;
+  var o=cylOrder(orderId), site=cylSite(siteKey); if(!o||!site) return;
+  var C=cylBase("stop");
+  C.orderId=o.id; C.bolNo=o.bolNo; C.siteKey=siteKey; C.customerId=site.customerId||null;
+  C.customer=o.customer+(o.siteLabel&&o.siteLabel!=="Primary"?" — "+o.siteLabel:"");
+  C.label=(o.bolNo?"BOL "+o.bolNo:o.id)+" · "+o.customer;
+  cylGasLines(o).forEach(function(l){ var t=cylTypeFor(l.product,l.container), n=Math.min(Math.max(parseInt(l.qty,10)||0,0),50);
+    for(var i=0;i<n;i++) C.slots.push(cylItem("deliver",{product:l.product,container:l.container,typeId:t?t.id:null,lineTypeId:t?t.id:null})); });
+  C.collecting=cylSiteAssets(siteKey).map(function(a){ return cylItem("collect",{assetId:a.id,serial:normSerial(a.serial),typeId:a.container_type_id,status:"here"}); });
+  state.cyl=C;
+  cylShow("Cylinders / Cilindros",C.customer+" · "+(o.bolNo?"BOL "+o.bolNo:"Order "+o.id)+". Scan each cylinder you leave, tick each one you pick up, then Done.");
+}
+function openLoad(){
+  if(state.role!=="driver"||!cylHub()) return;
+  var C=cylBase("load"); C.label="Load at "+cylHub()+" · "+ymd(new Date());
+  state.cyl=C;
+  cylShow("Load the truck / Cargar","At "+cylHub()+". Add each cylinder you put on the truck, then Done.");
+}
+function cylShow(title,sub){
+  var C=state.cyl;
+  $("cylTitle").textContent=title; $("cylSub").textContent=sub;
+  $("cylSlotsH").textContent=C.mode==="load"?"On the truck / En el camión":"Delivering / Entregando";
+  $("cylCollectWrap").hidden=C.mode!=="stop"; $("cylAddSlot").hidden=C.mode!=="load";
+  $("cylNew").hidden=true; $("cyl_typed").value=""; cylMsg(""); cylSay("","");
+  cylDraw(); $("cylSheet").hidden=false; document.body.style.overflow="hidden";
+  if(!(state.ctypes||[]).length) cylLoadTypes(C);
+}
+// the types usually come with Today's extras; when they haven't yet, read them now and fill the slots' types
+async function cylLoadTypes(C){
+  try{ var t=await ADB.types(); if(C.company!==state.company) return; state.ctypes=t; }catch(e){ return; }
+  if(state.cyl!==C) return;
+  C.slots.forEach(function(it){ if(it.kind==="deliver"&&!it.typeId){ var x=cylTypeFor(it.product,it.container); if(x) it.typeId=it.lineTypeId=x.id; } });
+  cylDraw();
+}
+function closeCylinders(){
+  var C=state.cyl; if(C&&C.sending) return;
+  $("cylSheet").hidden=true; document.body.style.overflow=""; state.cyl=null;
+  $("cylPick").hidden=true; $("cylNew").hidden=true;
+  if(state.tab==="today") renderToday();
+}
+function cylSay(kind,html){ var el=$("cylStatus"); if(!html){ el.innerHTML=""; el.className=""; return; }
+  el.className="banner "+kind; el.style.margin="10px 0 0"; el.innerHTML="<div>"+html+"</div>"; }
+function cylMsg(text){ $("cylPickMsg").textContent=text||""; }
+function cylAll(){ var C=state.cyl; if(!C) return [];
+  return C.slots.map(function(it,i){ return {ref:"s:"+i,item:it}; }).concat(C.collecting.map(function(it,i){ return {ref:"c:"+i,item:it}; }),C.extra.map(function(it,i){ return {ref:"x:"+i,item:it}; })); }
+function cylRef(ref){ var C=state.cyl; if(!C||!ref) return null; var p=String(ref).split(":"), l=p[0]==="s"?C.slots:p[0]==="c"?C.collecting:p[0]==="x"?C.extra:null; return (l&&l[+p[1]])||null; }
+function cylWhat(it){
+  if(it.kind==="deliver") return (it.container||"Cylinder")+" · "+(it.product||"");
+  if(it.typeId) return aTypeLabel(it.typeId,true);
+  return it.kind==="load"?"Cylinder for the truck":"Cylinder to pick up";
+}
+function cylStatusText(it){
+  if(it.status==="open") return "not scanned yet";
+  if(it.status==="here") return "at the site — tick it if you pick it up";
+  if(it.status==="new") return "✓ new to the register · "+aTypeLabel(it.newType,true)+" · "+(it.newOwner==="customer"?"customer's":coShort()+"'s");
+  if(it.status==="ok") return "✓"+(it.kind==="collect"&&it.assetId?" picking up":"")+(it.wasAt?" — was at "+it.wasAt:"")+(it.unchecked?" — not checked, no signal":"");
+  if(it.status==="done") return "✓ recorded"+(it.warning?" — "+it.warning:"");
+  if(it.status==="rejected") return "rejected: "+(it.reason||"refused");
+  if(it.status==="queued") return "waiting to send";
+  return it.status;
+}
+function cylRowHtml(it,ref,attr){
+  var C=state.cyl, locked=C.sending||it.status==="done"||it.status==="queued", btn="";
+  if(!locked){
+    if(it.kind==="collect"&&it.assetId&&(it.status==="here"||it.status==="ok"))
+      btn='<button class="btn sm'+(it.status==="ok"?" primary":"")+'" type="button" data-collect="'+esc(it.assetId)+'" aria-pressed="'+(it.status==="ok")+'">'+(it.status==="ok"?"✓ Picking up":"Pick up / Recoger")+"</button>";
+    else if(it.serial&&it.status!=="open") btn='<button class="btn sm" type="button" data-clear="'+esc(ref)+'">Change</button>';
+    else btn='<button class="btn sm primary" type="button" data-open="'+esc(ref)+'">Scan or type</button>';
+  }
+  var cls=it.status==="done"?"good":it.status==="rejected"?"bad":it.status==="queued"||it.wasAt||it.unchecked?"warn":"hint";
+  return '<div class="cyl-row'+(C.active===ref?" on":"")+'" '+attr+'><div class="cyl-what">'+(it.serial?'<span class="cyl-ser mono">'+esc(it.serial)+"</span> ":"")+
+    '<span class="hint">'+esc(cylWhat(it))+"</span>"+(it.photoPath?' <span title="from a photo">📷</span>':"")+"</div>"+btn+
+    '<div class="cyl-note '+cls+'">'+esc(cylStatusText(it))+"</div></div>";
+}
+function cylDraw(){
+  var C=state.cyl; if(!C) return;
+  $("cylSlots").innerHTML=C.slots.map(function(it,i){ return cylRowHtml(it,"s:"+i,'data-slot="'+esc(i)+'"'); }).join("")||
+    '<p class="hint">'+(C.mode==="load"?"Press Add a cylinder for each one you put on the truck.":"No gas on this order to deliver.")+"</p>";
+  $("cylCollect").innerHTML=C.collecting.map(function(it,i){ return cylRowHtml(it,"c:"+i,'data-coll="'+esc(it.assetId)+'"'); })
+    .concat(C.extra.map(function(it,i){ return cylRowHtml(it,"x:"+i,'data-extra="'+esc(i)+'"'); })).join("")||'<p class="hint">The register has nothing at this site.</p>';
+  var n=cylAll().filter(function(x){ return x.item.status==="ok"||x.item.status==="new"; }).length, d=$("cylDone");
+  d.disabled=C.sending; d.textContent=C.sending?"Sending… / Enviando…":n?"Done — send "+n+" / Listo":"Done / Listo";
+  $("cylAddSlot").disabled=$("cylAddCollect").disabled=C.sending;
+  cylDrawPick();
+}
+function cylDrawPick(){
+  var C=state.cyl, pick=$("cylPick"), it=C&&cylRef(C.active);
+  if(!it||C.newFor||C.sending){ pick.hidden=true; return; }
+  pick.hidden=false;
+  var n=C.active.split(":"), head=n[0]==="s"?(C.mode==="load"?"Cylinder "+(+n[1]+1)+" for the truck":"Slot "+(+n[1]+1)+" — "+cylWhat(it)):"Another cylinder to pick up";
+  $("cylPickHead").textContent=head;
+  var s=C.scan&&C.scan.ref===C.active?C.scan:null, h="";
+  if(s&&s.busy) h='<p class="hint" style="margin:0">Reading the serial… / Leyendo…</p>';
+  else if(s){ var c=s.candidates.filter(function(x){ return normSerial(x.text); });
+    h=c.length?'<div class="cyl-top mono">'+esc(c[0].text)+'</div><button class="bigbtn primary" type="button" id="cylYes" data-cpick="'+esc(normSerial(c[0].text))+'">Yes, that is the serial / Sí</button>'+
+        (c.length>1?'<div class="act-alts"><span class="hint">or</span>'+c.slice(1).map(function(x){ return '<button class="btn sm mono" type="button" data-cpick="'+esc(normSerial(x.text))+'">'+esc(x.text)+"</button>"; }).join("")+"</div>":"")
+      :'<p class="hint" style="margin:0">'+esc(!s.uploaded?(s.error?"The photo didn't upload ("+s.error+").":"No signal to read the photo — it is kept and sent with the cylinders."):s.error?"Couldn't read the photo ("+s.error+").":"No serial found in the photo.")+" Type it below.</p>"; }
+  $("cylCands").innerHTML=h;
+}
+function cylOpen(ref){
+  var C=state.cyl; if(!C||C.sending||C.looking||C.newFor) return;
+  C.active=ref; C.scan=null; $("cyl_typed").value=""; cylMsg(""); cylDraw();
+  setTimeout(function(){ try{ $("cylPick").scrollIntoView({block:"nearest"}); $("cyl_typed").focus(); }catch(e){} },30);
+}
+function cylAdd(which){
+  var C=state.cyl; if(!C||C.sending||C.looking||C.newFor) return;
+  if(which==="slot"){ C.slots.push(cylItem("load")); cylOpen("s:"+(C.slots.length-1)); }
+  else { C.extra.push(cylItem("collect")); cylOpen("x:"+(C.extra.length-1)); }
+}
+// an added row left without a serial goes away again
+function cylDropEmpty(){
+  var C=state.cyl; if(!C) return;
+  C.extra=C.extra.filter(function(it){ return it.serial; });
+  if(C.mode==="load") C.slots=C.slots.filter(function(it){ return it.serial; });
+}
+function cylCancel(){ var C=state.cyl; if(!C||C.looking||(C.scan&&C.scan.busy)) return; C.active=null; C.scan=null; cylMsg(""); cylDropEmpty(); cylDraw(); }
+function cylClear(it){
+  it.serial=null; it.eventId=null; it.photoPath=null; it.ocr=null; it.at=null; it.status="open"; it.wasAt=""; it.unchecked=false;
+  it.isNew=false; it.newType=null; it.newOwner="adchem"; it.newFill=null; it.reason=""; it.warning="";
+  if(it.kind==="deliver") it.typeId=it.lineTypeId; else if(!it.assetId) it.typeId=null;
+}
+function cylToggle(assetId){
+  var C=state.cyl; if(!C||C.sending) return;
+  var it=C.collecting.find(function(x){ return x.assetId===assetId; }); if(!it) return;
+  if(it.status==="here"){ it.status="ok"; it.eventId=newUuid(); it.at=new Date().toISOString(); }
+  else if(it.status==="ok"){ it.status="here"; it.eventId=null; it.at=null; it.photoPath=null; it.ocr=null; }
+  cylDraw();
+}
+// the photo to its fixed path; an object already there is this event's own, from an upload whose answer was lost
+async function cylUpload(path,blob){
+  var up; try{ up=await supa.storage.from("dispatch-docs").upload(path,blob,{contentType:"image/jpeg",upsert:false}); }catch(e){ throw capError(e); }
+  if(!up.error) return;
+  var code=String(up.error.statusCode||up.error.status||"");
+  if(code==="409"||/already exists|duplicate/i.test(String(up.error.message||up.error.error||""))) return;
+  throw capError(up.error);
+}
+async function cylScan(ev){
+  var f=ev.target.files&&ev.target.files[0]; ev.target.value="";
+  var C=state.cyl; if(!f||!C||!C.active||C.sending||C.looking) return;
+  if(!/^image\//.test(f.type||"image/")){ cylMsg("That isn't a photo. Take a picture of the serial on the tag."); return; }
+  var ref=C.active, it=cylRef(ref), id=newUuid(), path=C.company+"/asset/"+id+".jpg";
+  C.scan={ref:ref,id:id,path:path,busy:true,candidates:[],raw:"",error:"",uploaded:false}; cylMsg(""); cylDrawPick();
+  var blob=await shrinkPhoto(f), s=C.scan;
+  if(state.cyl!==C||!s||s.id!==id) return;
+  C.blobs[id]=blob;
+  if(navigator.onLine!==false){ try{ await cylUpload(path,blob); C.uploaded[id]=true; s.uploaded=true; }catch(e){ if(!e.net) s.error=e.message; } }
+  if(state.cyl!==C||C.scan!==s) return;
+  if(s.uploaded){ var t=aTypeOf(it&&it.typeId), r;
+    try{ r=(await ADB.read(id,t?t.kind:"cylinder",path))||{}; }catch(e){ r={candidates:[],raw:"",error:e.message}; }
+    if(state.cyl!==C||C.scan!==s) return;
+    s.raw=String(r.raw||"").slice(0,2000); s.candidates=(r.candidates||[]).slice(0,3); s.error=r.error||""; }
+  s.busy=false; cylDrawPick();
+  try{ (s.candidates.length?$("cylYes"):$("cyl_typed")).focus(); }catch(e){}
+}
+// the register's row for a serial: the site's containers first, then dispatch_asset_by_serial (any place in the company)
+async function cylLookup(s){
+  var C=state.cyl, here=C.siteKey?cylSiteAssets(C.siteKey).find(function(a){ return normSerial(a.serial)===s; }):null;
+  if(here) return {asset:here};
+  if(navigator.onLine===false) return {failed:true};
+  try{ var r=sbErr(await supa.rpc("dispatch_asset_by_serial",{p_company:C.company,p_serial:s})); return {asset:(r&&r[0])||null}; }
+  catch(e){ return {failed:true}; }
+}
+async function cylUse(text){
+  var C=state.cyl, ref=C&&C.active, it=cylRef(ref); if(!it||C.sending||C.looking||(C.scan&&C.scan.busy)) return;
+  var s=normSerial(text); if(!s){ cylMsg("Type the serial on the tag."); return; }
+  if(cylAll().some(function(x){ return x.item!==it&&x.item.serial===s&&!(x.item.kind==="collect"&&x.item.assetId&&x.item.status==="here"); })){
+    cylMsg(s+" is already used on this sheet. / Ya está en la lista."); return; }
+  // typed under "another to pick up" but it is one the register has here: tick that one instead
+  var listed=it.kind==="collect"&&!it.assetId?C.collecting.find(function(x){ return x.serial===s&&x.status==="here"; }):null;
+  if(listed){ C.active=null; C.scan=null; cylDropEmpty(); cylToggle(listed.assetId); cylMsg(""); return; }
+  C.looking=true; cylMsg("Checking "+s+"… / Revisando…");
+  var found=await cylLookup(s);
+  C.looking=false;
+  if(state.cyl!==C||C.active!==ref) return;
+  var sc=C.scan&&C.scan.ref===ref&&!C.scan.busy?C.scan:null;
+  cylClear(it); it.serial=s; it.at=new Date().toISOString();
+  if(sc){ it.eventId=sc.id; it.photoPath=sc.path; it.ocr={raw:sc.raw,candidates:sc.candidates,picked:s}; } else it.eventId=newUuid();
+  cylMsg("");
+  if(found.failed){ it.status="ok"; it.unchecked=true; }
+  else if(found.asset){ var a=found.asset, exp=it.kind==="collect"?{kind:"site",id:C.siteKey}:{kind:"hub",id:cylHub()};
+    it.status="ok"; if(it.kind!=="deliver"&&a.container_type_id) it.typeId=a.container_type_id;
+    if(!(a.location_kind===exp.kind&&String(a.location_id)===String(exp.id))) it.wasAt=aPlaceName(a.location_kind,a.location_id)||"somewhere else"; }
+  else { it.status="open"; C.newFor=ref; }
+  C.active=C.newFor?ref:null; C.scan=null; $("cyl_typed").value="";
+  if(C.newFor) cylOpenNew(it); cylDraw();
+}
+function cylOpenNew(it){
+  var C=state.cyl, owners=[["adchem",coShort()]];
+  if(C.customerId&&it.kind!=="load") owners.push(["customer",(C.customer||"The customer")+" (customer)"]);
+  $("cylNewHead").textContent=it.serial+" is not in the register yet — add it / No está registrado";
+  $("cyln_type").innerHTML=aTypeOpts(it.typeId||"","Choose the type");
+  $("cyln_owner").innerHTML=aOpts(owners,"adchem");
+  $("cyln_fill").value=it.kind==="collect"?"empty":"full";
+  $("cylNew").hidden=false; $("cylPick").hidden=true;
+  setTimeout(function(){ try{ $("cylNew").scrollIntoView({block:"nearest"}); $("cyln_type").focus(); }catch(e){} },30);
+}
+function cylNewDone(ok){
+  var C=state.cyl, it=C&&cylRef(C.newFor); if(!it) return;
+  if(ok){ var t=$("cyln_type").value;
+    if(!t){ banner("warn","Choose the type","<div>A new container needs its type.</div>",{autoclose:6000,key:"cyl"}); return; }
+    it.isNew=true; it.newType=t; it.typeId=t; it.newOwner=$("cyln_owner").value==="customer"?"customer":"adchem"; it.newFill=$("cyln_fill").value; it.status="new"; }
+  else cylClear(it);
+  C.newFor=null; C.active=null; $("cylNew").hidden=true; cylDropEmpty(); cylDraw();
+}
+// GPS when the phone gives it within 3 s; never holds the batch up
+function cylGps(){
+  return new Promise(function(res){ var done=false, fin=function(v){ if(!done){ done=true; res(v); } };
+    try{ if(!navigator.geolocation) return fin(null);
+      navigator.geolocation.getCurrentPosition(function(p){ var c=p.coords; fin({lat:c.latitude,lng:c.longitude,accuracy:c.accuracy}); },function(){ fin(null); },{timeout:3000,maximumAge:60000});
+      setTimeout(function(){ fin(null); },3500); }
+    catch(e){ fin(null); } });
+}
+function cylEvent(C,it,gps){
+  var hub={kind:"hub",id:cylHub()}, site=C.siteKey?{kind:"site",id:C.siteKey}:null, e={id:it.eventId,serial:it.serial,occurredAt:it.at||new Date().toISOString()};
+  if(it.kind==="deliver"){ e.type="delivered"; e.from=hub; e.to=site; e.fillAfter="full"; }
+  else if(it.kind==="collect"){ e.type="collected"; e.from=site; e.to=hub; e.fillAfter="empty"; }
+  else { e.type="loaded"; e.from=hub; e.to=hub; }
+  if(it.isNew){ e.containerTypeId=it.newType; e.ownerKind=it.newOwner; if(it.newOwner==="customer") e.ownerId=String(C.customerId); if(it.newFill) e.fillAfter=it.newFill; }
+  else if(it.unchecked&&it.typeId) e.containerTypeId=it.typeId;   // not checked (no signal): if the register lacks it, the server adds it with the slot's type
+  if(C.mode==="stop"){ e.orderId=C.orderId; e.siteKey=C.siteKey; var bn=Number(C.bolNo); if(C.bolNo!=null&&C.bolNo!==""&&Number.isInteger(bn)&&bn>=0) e.bolNumber=bn; }
+  if(it.photoPath){ e.photoPath=it.photoPath; if(it.ocr) e.ocr=it.ocr; }
+  if(gps) e.gps=gps;
+  return e;
+}
+// uploads every kept photo of a batch (an object already there counts as uploaded); a photo refused outright is left off its event.
+// Throws (err.net) when there is no signal. onDone(id) runs after each one.
+async function cylUploadAll(x,onDone){
+  var ids=Object.keys(x.blobs||{});
+  for(var i=0;i<ids.length;i++){
+    var id=ids[i], ev=x.events.find(function(e){ return e.id===id; });
+    if(ev&&ev.photoPath){ try{ await cylUpload(ev.photoPath,x.blobs[id]); }catch(e){ if(e.net) throw e; delete ev.photoPath; x.photoLost=(x.photoLost||0)+1; } }
+    delete x.blobs[id]; if(onDone) await onDone(id);
+  }
+}
+async function cylDone(){
+  var C=state.cyl; if(!C||C.sending||C.looking) return;
+  if(C.newFor){ banner("warn","Finish the new container first","<div>Press Add it, or Cancel.</div>",{autoclose:6000,key:"cyl"}); return; }
+  var items=cylAll().map(function(x){ return x.item; }).filter(function(it){ return (it.status==="ok"||it.status==="new")&&it.serial&&it.eventId; });
+  if(!items.length){ cylSay("warn","Nothing to send yet. Scan or type each cylinder"+(C.mode==="stop"?", or tick what you pick up.":".")); return; }
+  C.sending=true; C.active=null; C.scan=null; cylMsg(""); cylDraw(); cylSay("info","Sending… / <i>Enviando…</i>");
+  var gps=await cylGps();
+  var events=items.map(function(it){ return cylEvent(C,it,gps); }), blobs={};
+  items.forEach(function(it){ if(it.photoPath&&!C.uploaded[it.eventId]&&C.blobs[it.eventId]) blobs[it.eventId]=C.blobs[it.eventId]; });
+  var batch={id:newUuid(),company:C.company,label:C.label,at:Date.now(),events:events,blobs:blobs};
+  if(navigator.onLine===false||C.company!==state.company) return cylKeep(C,items,batch,"offline");
+  try{ await cylUploadAll(batch,function(id){ C.uploaded[id]=true; }); }
+  catch(e){ return cylKeep(C,items,batch,"network"); }
+  var r;
+  try{ r=await ADB.sendEvents(batch.events); }
+  catch(e){
+    if(!(e.status>=400&&e.status<500)) return cylKeep(C,items,batch,"network");
+    items.forEach(function(it){ it.status="rejected"; it.reason=e.message; });
+    C.sending=false; cylDraw(); cylSay("bad","<b>Not recorded.</b> "+esc(e.message)); return;
+  }
+  var res=(r&&r.results)||[], left=[], keepItems=[], applied=0, refused=0;
+  items.forEach(function(it,n){ var x=res[n]||{status:"error",reason:"no answer for this serial"};
+    if(x.status==="applied"||x.status==="duplicate"){ it.status="done"; it.warning=x.warning||""; applied++; }
+    else if(x.status==="rejected"){ it.status="rejected"; it.reason=x.reason||"refused"; refused++; }
+    else { left.push(batch.events[n]); keepItems.push(it); } });
+  if(left.length){ batch.events=left; await cylKeep(C,keepItems,batch,"error"); }
+  C.sending=false; cylDraw();
+  if(left.length) return;
+  if(refused) cylSay("bad","<b>"+esc(refused+" not recorded")+"</b> — the reason is on each one. Change the serial and press Done again, or tell the office."+(applied?" "+esc(applied+" sent."):""));
+  else cylSay("good","<b>Sent.</b> "+esc(applied+" cylinder"+(applied===1?"":"s"))+" in the register. / <i>Enviado.</i>"+(batch.photoLost?" "+esc(batch.photoLost+" photo(s) could not be stored."):"")+' <button class="lnk" id="cylDoneLnk" type="button">Close</button>');
+  var dn=$("cylDoneLnk"); if(dn) dn.onclick=closeCylinders;
+}
+// keep the batch on this phone for Send waiting photos (same event ids, so a resend is harmless)
+async function cylKeep(C,items,batch,why){
+  var saved=await cylQueuePut(batch);
+  if(saved) items.forEach(function(it){ it.status="queued"; });
+  C.sending=false; if(state.cyl===C) cylDraw();
+  updatePodQueueNote();
+  cylSay("warn","<b>Not sent yet</b> — "+(why==="offline"?"no signal.":why==="error"?"the server couldn't record "+esc(items.length+" of them")+" just now.":"no answer from the server, so it may or may not have gone.")+
+    (saved?" The photos are kept on this phone; press <b>Send waiting photos</b> on the Today list when you have signal.":" Keep this open and press <b>Done</b> again when you have signal.")+
+    " / <i>No se envió todavía."+(saved?" Queda guardado en el teléfono.":"")+"</i>");
+}
+function cylStore(mode,fn){
+  return podIdb().then(function(db){
+    if(!db||!db.objectStoreNames.contains("a")) return null;
+    return new Promise(function(res){ try{ var t=db.transaction("a",mode), out=fn(t.objectStore("a")); t.oncomplete=function(){ res(out&&"result" in out?out.result:true); };
+      t.onerror=function(){ res(null); }; t.onabort=function(){ res(null); }; }catch(e){ res(null); } });
+  });
+}
+function cylQueueAll(){ return cylStore("readonly",function(s){ return s.getAll(); }).then(function(r){ return Array.isArray(r)?r:[]; }); }
+function cylQueuePut(x){ return cylStore("readwrite",function(s){ s.put(x); }).then(function(r){ return !!r; }); }
+function cylQueueRemove(id){ return cylStore("readwrite",function(s){ s.delete(id); }); }
+// Send waiting photos (Today): each kept batch, oldest first — its photos, then its events; stops at the first one without signal
+async function cylFlush(){
+  var q=(await cylQueueAll()).sort(function(a,b){ return (a.at||0)-(b.at||0); }), sent=0;
+  for(var i=0;i<q.length;i++){
+    var x=q[i]; if(x.company!==state.company) continue;   // sent with its own company, once that company is picked
+    try{ await cylUploadAll(x,function(){ return cylQueuePut(x); }); }
+    catch(e){ banner("bad","Cylinders not sent","<div>"+esc("Still no signal or no answer. "+e.message+" They stay on this phone; press Send waiting photos again later.")+"</div>",{key:"cylflush"}); break; }
+    var r;
+    try{ r=await ADB.sendEvents(x.events); }
+    catch(e){ var refused=e.status>=400&&e.status<500;
+      banner("bad",refused?"Cylinders not recorded":"Cylinders not sent","<div>"+esc((x.label?x.label+": ":"")+e.message+(refused?" They stay on this phone; tell the office.":" They stay on this phone; press Send waiting photos again later."))+"</div>",{key:"cylflush"});
+      if(refused) continue; break; }
+    var res=(r&&r.results)||[], left=[], rej=[], before=x.events.length;
+    x.events.forEach(function(ev,n){ var s=res[n]||{status:"error"}; if(s.status==="rejected") rej.push(ev.serial+": "+(s.reason||"refused")); else if(s.status!=="applied"&&s.status!=="duplicate") left.push(ev); });
+    if(left.length){ x.events=left; await cylQueuePut(x); } else await cylQueueRemove(x.id);
+    if(rej.length) banner("bad",rej.length+" cylinder"+(rej.length===1?"":"s")+" not recorded","<div>"+esc(rej.join("; "))+"</div>",{key:"cylrej"+i});
+    if(left.length<before) sent++;
+  }
+  await updatePodQueueNote();
+  if(sent&&state.tab==="today") renderToday();
+}
+
+/* Load / My truck: the card on Today for a driver with a hub */
+function renderTruckCard(){
+  var card=$("truckCard"); if(!card) return;
+  var on=state.role==="driver"&&!!cylHub(); card.hidden=!on;
+  if(!on){ state.truckOpen=false; $("truckList").hidden=true; $("truckList").innerHTML=""; }
+}
+async function drawMyTruck(){
+  var host=$("truckList"), co=state.company, uid=state.session&&state.session.user.id; if(!uid) return;
+  host.hidden=false; host.innerHTML='<p class="hint" style="margin:0">Loading… / Cargando…</p>';
+  var since=new Date(); since.setHours(0,0,0,0);
+  var evs, rows=[];
+  try{ evs=sbErr(await supa.from("dispatch_asset_events").select("asset_id,event_type,occurred_at,created_at").eq("company",co).eq("recorded_by",uid)
+      .in("event_type",["loaded","delivered"]).gte("occurred_at",since.toISOString()).order("occurred_at"))||[];
+    var last={}; evs.forEach(function(e){ last[e.asset_id]=e.event_type; });
+    var ids=Object.keys(last).filter(function(k){ return last[k]==="loaded"; });
+    if(ids.length) rows=sbErr(await supa.from("dispatch_assets").select("id,serial,container_type_id,fill_state").eq("company",co).in("id",ids).order("serial"))||[]; }
+  catch(e){ if(co===state.company&&state.truckOpen) host.innerHTML='<p class="hint" style="margin:0">'+esc("Couldn't load your truck: "+e.message)+"</p>"; return; }
+  if(co!==state.company||!state.truckOpen) return;
+  host.innerHTML=rows.length?'<div class="hint">'+esc(rows.length+" on the truck from today's loads / en el camión")+"</div>"+rows.map(function(a){
+      return '<div class="cyl-row"><div class="cyl-what"><span class="cyl-ser mono">'+esc(a.serial)+'</span> <span class="hint">'+esc(aTypeLabel(a.container_type_id,true))+"</span></div>"+
+        '<span class="chip '+(A_FILL_CHIP[a.fill_state]||"hint")+'">'+esc(a.fill_state)+"</span></div>"; }).join("")
+    :'<p class="hint" style="margin:0">Nothing loaded today that hasn\'t been delivered. / Nada en el camión.</p>';
+}
+
+(function wireCyl(){
+  if(!$("cylSheet")) return;
+  $("todayList").addEventListener("click",function(ev){ var b=ev.target.closest&&ev.target.closest("[data-cyl]"); if(b) openCylinders(b.getAttribute("data-cyl"),b.getAttribute("data-cyl-site")); });
+  $("cylClose").onclick=closeCylinders;
+  $("cylSheet").addEventListener("keydown",function(e){ if(e.key==="Escape") closeCylinders(); });
+  var rows=function(ev){ var b=ev.target.closest("button"); var C=state.cyl; if(!b||!C) return;
+    if(b.getAttribute("data-open")) cylOpen(b.getAttribute("data-open"));
+    else if(b.getAttribute("data-clear")){ var r=b.getAttribute("data-clear"), it=cylRef(r); if(it&&!C.sending&&!C.looking&&!C.newFor){ cylClear(it); cylOpen(r); } }
+    else if(b.getAttribute("data-collect")) cylToggle(b.getAttribute("data-collect")); };
+  $("cylSlots").onclick=rows; $("cylCollect").onclick=rows;
+  $("cylAddSlot").onclick=function(){ cylAdd("slot"); };
+  $("cylAddCollect").onclick=function(){ cylAdd("collect"); };
+  $("cyl_photo").onchange=cylScan;
+  $("cylScanLbl").onkeydown=function(e){ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); $("cyl_photo").click(); } };
+  $("cylCands").onclick=function(ev){ var b=ev.target.closest("[data-cpick]"); if(b) cylUse(b.getAttribute("data-cpick")); };
+  $("cyl_use").onclick=function(){ cylUse($("cyl_typed").value); };
+  $("cyl_typed").onkeydown=function(e){ if(e.key==="Enter"){ e.preventDefault(); cylUse($("cyl_typed").value); } };
+  $("cyl_cancel").onclick=cylCancel;
+  $("cyln_ok").onclick=function(){ cylNewDone(true); };
+  $("cyln_cancel").onclick=function(){ cylNewDone(false); };
+  $("cylDone").onclick=cylDone;
+  $("btnLoad").onclick=openLoad;
+  $("btnMyTruck").onclick=function(){ state.truckOpen=!state.truckOpen; $("btnMyTruck").setAttribute("aria-expanded",String(state.truckOpen));
+    if(state.truckOpen) drawMyTruck(); else { $("truckList").hidden=true; $("truckList").innerHTML=""; } };
 })();
 
 /* ---------- Setup → Vendors ---------- */

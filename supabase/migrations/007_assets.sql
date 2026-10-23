@@ -463,6 +463,9 @@ do $$ begin
      and not exists (select 1 from public.dispatch_container_types t where t.company = 'adchem' and t.product = v.product and t.size_label = v.label);
 end $$;
 
--- Applied: pending — verified 10/23/26 on project adchem-hours as one rolled-back batch through the Supabase MCP (begin; 007; 007;
--- supabase/tests/007_policies.sql; rollback), which ended with "VERIFY-OK 007: types=17 driver_sees=4 events=16 stock_rows=1
--- coordinator_count_rows=9" (final fix wave: applied, created fill, driver to, corrections not a sighting); nothing persisted. apply_migration only on the user's word.
+-- Applied: 10/23/26 (migration 007_assets on project adchem-hours) through the Supabase MCP after the rolled-back double run with
+-- supabase/tests/007_policies.sql (last run: "VERIFY-OK 007: types=17 driver_sees=4 events=16 stock_rows=1 coordinator_count_rows=9").
+-- Checked after the apply: 6 tables with RLS on, 14 table policies, 3 asset storage policies, the two 006 document policies excluding
+-- asset/, 10 functions, 16 triggers, 17 seeded container types. Security advisor afterwards: no new finding class; the four new RPCs
+-- join the existing "signed-in users can execute a security definer function" list (each checks the caller's company role itself);
+-- the eight anon-executable functions listed belong to AdChem Time, not Ops.

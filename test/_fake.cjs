@@ -3,6 +3,9 @@
 // permCheck(T, userId, company, roles, perm) is requireUser's role/permission rule, used by the fake /api/import.
 const http = require('http'); const fs = require('fs'); const path = require('path');
 const ROOT = path.join(__dirname, '..', 'public');
+// One virtual clock for the fake server and every page: 2026-10-20 10:00 Pacific at load, then real elapsed time, so tests do not depend on the machine date
+const CLOCK_OFFSET = Date.parse('2026-10-20T10:00:00-07:00') - Date.now();
+const vNow = () => Date.now() + CLOCK_OFFSET, vDate = () => new Date(vNow());
 
 function seedTables(){ return {
   dispatch_users: [{user_id:'u1',email:'jamie@adchem.pro',name:'Jamie',active:true}],
@@ -11,7 +14,7 @@ function seedTables(){ return {
   dispatch_company_settings: [{company:'adchem',data:{tz:'America/Los_Angeles',sheetId:'1AGd',calendarId:'cal1',calendarConfirmed:true,nextBol:9450,ordersOutSheetId:'1OUT',nextCustomerNumber:1}},{company:'north',data:{tz:'America/Los_Angeles'}}],
   dispatch_hubs: [{company:'adchem',code:'EB',name:'East Bay — Richmond',street:'525 De Carlo Ave',city:'Richmond',state:'CA',zip:'94801',phone:'(510) 725-7841',emerg:'(800) 633-8253 — PERS',settled:true,sort:1},{company:'adchem',code:'LA',name:'Southern California — Los Angeles',street:'',city:'',state:'CA',zip:'',phone:'',emerg:'(800) 633-8253 — PERS',settled:false,sort:2},{company:'adchem',code:'CO',name:'Colorado — Denver',street:'',city:'',state:'CO',zip:'',phone:'',emerg:'(800) 633-8253 — PERS',settled:false,tz:'America/Denver',products:null,sort:3}],
   dispatch_sites: [], dispatch_orders: [], dispatch_pods: [], dispatch_invites: [], dispatch_log: [],
-  dispatch_customers: [], dispatch_contacts: [], dispatch_site_hub_notes: [], dispatch_customer_activity: [], dispatch_documents: [] }; }
+  dispatch_customers: [], dispatch_contacts: [], dispatch_site_hub_notes: [], dispatch_customer_activity: [], dispatch_documents: [], ...seedAssets() }; }
 
 const SITES=[['Type 7 Manufacturing','D - Deliver; no holds','100 Main St, Oakland CA 94607','Oakland','EB','Sam','(510) 555-0101','4321','7–11am','','','Dock B','Primary','Type 7 — Primary'],
  ['Bio-Rad','COD - Collect before unloading','2000 Alfred Nobel Dr, Hercules CA 94547   (billing address - confirm the delivery site)','Hercules','','','','','','','','','Primary','Bio-Rad — Primary'],
@@ -87,7 +90,7 @@ function audit(T,t,before,after){ if(!AUDITED.includes(t)) return; const r=after
     if(JSON.stringify(from)!==JSON.stringify(to)) ch[k]={from,to}; });
   if(before&&after&&!Object.keys(ch).length) return;
   const row_id=t==='dispatch_sites'?r.site_key:t==='dispatch_site_hub_notes'?r.site_key+'/'+r.hub:r.id;
-  T.dispatch_log.push({id:T.dispatch_log.length+1,at:new Date().toISOString(),company:r.company,who:'u1',what:'change',detail:{op:!before?'insert':!after?'delete':'update'},table_name:t,row_id:row_id==null?null:String(row_id),changes:ch}); }
+  T.dispatch_log.push({id:T.dispatch_log.length+1,at:vDate().toISOString(),company:r.company,who:'u1',what:'change',detail:{op:!before?'insert':!after?'delete':'update'},table_name:t,row_id:row_id==null?null:String(row_id),changes:ch}); }
 
 function uuid(){ return require('crypto').randomUUID(); }
 // mirrors dispatch_assign_customer_id(): the counter, but never at or below the company's highest ADC-n (a stale counter heals)
@@ -101,7 +104,7 @@ function logVisible(T,row){ const m=T.dispatch_members.find(x=>x.user_id==='u1'&
 
 function fakeRpc(name,b,T){
   if(name==='dispatch_next_bol'){ const co=b.p_company||'adchem'; const s=T.dispatch_company_settings.find(x=>x.company===co).data; const o=T.dispatch_orders.find(x=>x.id===b.p_order_id&&x.company===co); if(o&&o.bol_no) return {code:200,body:o.bol_no}; if(!s.nextBol) return {code:200,body:null}; const n=s.nextBol; s.nextBol=n+1; if(o) o.bol_no=n; return {code:200,body:n}; }
-  if(name==='dispatch_grant'){ T.dispatch_invites.push({email:b.p_email,name:b.p_name,role:b.p_role,hub:b.p_hub,company:b.p_company,invited_at:new Date().toISOString()}); return {code:200,body:'invited'}; }
+  if(name==='dispatch_grant'){ T.dispatch_invites.push({email:b.p_email,name:b.p_name,role:b.p_role,hub:b.p_hub,company:b.p_company,invited_at:vDate().toISOString()}); return {code:200,body:'invited'}; }
   if(name==='dispatch_add_company'){ T.companies.push({id:b.p_id,name:b.p_name,short_name:b.p_short,active:true,data:{}}); T.dispatch_members.push({user_id:'u1',company:b.p_id,role:'admin',hub:'',active:true}); T.dispatch_company_settings.push({company:b.p_id,data:{}}); return {code:200,body:null}; }
   if(name==='dispatch_revoke'){ const u=T.dispatch_users.find(x=>x.email===b.p_email); if(u) T.dispatch_members.forEach(m=>{if(m.user_id===u.user_id&&m.company===b.p_company)m.active=false;}); return {code:200,body:null}; }
   if(name==='dispatch_set_permissions'||name==='dispatch_set_super_admin'){ const u=T.dispatch_users.find(x=>x.user_id===b.p_user||x.email===b.p_user); const m=T.dispatch_members.find(x=>x.company===b.p_company&&(x.user_id===b.p_user||(u&&x.user_id===u.user_id))); if(!m) return {code:404,body:{message:'no member'}};
@@ -111,17 +114,26 @@ function fakeRpc(name,b,T){
     if(!(b.p_warn_days>=1&&b.p_warn_days<=365)) return {code:400,body:{message:'warn days must be 1-365'}};
     const was=st.data||{}; st.data={...st.data,warnDays:b.p_warn_days,warnings:b.p_warnings,expiryEmailRecipients:b.p_recipients};
     // the log row dispatch_set_warnings writes (migration 006): from/to of the three keys
-    T.dispatch_log.push({id:T.dispatch_log.length+1,at:new Date().toISOString(),company:b.p_company,who:'u1',what:'warnings',detail:{},table_name:'dispatch_company_settings',row_id:b.p_company,
+    T.dispatch_log.push({id:T.dispatch_log.length+1,at:vDate().toISOString(),company:b.p_company,who:'u1',what:'warnings',detail:{},table_name:'dispatch_company_settings',row_id:b.p_company,
       changes:{warnDays:{from:was.warnDays??null,to:b.p_warn_days},warnings:{from:was.warnings??null,to:b.p_warnings},expiryEmailRecipients:{from:was.expiryEmailRecipients??null,to:b.p_recipients}}}); return {code:200,body:null}; }
+  if(name==='dispatch_asset_correct'){ const a=(T.dispatch_assets||[]).find(x=>x.id===b.p_id); if(!a||!hasPerm(memberOf(T,a.company),'manage_assets')) return {code:403,body:{message:'not allowed'}};
+    const f=b.p_fields||{}, now=vDate().toISOString(); ['owner_kind','owner_id','condition','notes'].forEach(k=>{ if(f[k]!==undefined) a[k]=f[k]; });
+    a.updated_at=now; a.updated_by='u1';
+    T.dispatch_asset_events.push({id:uuid(),company:a.company,asset_id:a.id,event_type:'corrected',from_kind:null,from_id:null,to_kind:null,to_id:null,fill_after:null,occurred_at:now,recorded_by:'u1',order_id:null,bol_number:null,site_key:null,photo_path:null,gps:null,ocr:null,note:'corrected: '+Object.keys(f).join(', '),applied:true,created_at:now});
+    return {code:200,body:a}; }   // as 007: a correction with no place and no fill leaves last-seen alone
+  // migration 007: any member of the company, place / fill / owner / type only, the serial normalised as stored
+  if(name==='dispatch_asset_by_serial'){ if(!memberOf(T,b.p_company)) return {code:400,body:{code:'P0001',message:'not allowed'}};
+    const s=normSerial(b.p_serial); return {code:200,body:(T.dispatch_assets||[]).filter(a=>a.company===b.p_company&&a.serial===s)
+      .map(a=>({id:a.id,serial:a.serial,container_type_id:a.container_type_id,fill_state:a.fill_state,location_kind:a.location_kind,location_id:a.location_id,owner_kind:a.owner_kind,owner_id:a.owner_id}))}; }
   return {code:404,body:{message:'no fn '+name}}; }
 
 // insert-or-merge on the conflict keys, audited, the way PostgREST's resolution=merge-duplicates does
 function upsertRows(T,t,arr,keys){ if(!T[t]) T[t]=[]; const rows=T[t];
   arr.forEach(r=>{ if(t==='dispatch_customers'){ const hit=rows.find(x=>keys.every(k=>r[k]!=null&&String(x[k])===String(r[k]))); if(!r.id&&!hit) r.id=uuid(); if(!r.customer_id) r.customer_id=nextCustomerId(T,r.company); }
-    if(t==='dispatch_documents'){ if(!r.id) r.id=uuid(); const now=new Date().toISOString(); const hit=rows.find(x=>x.id===r.id);
+    if(t==='dispatch_documents'){ if(!r.id) r.id=uuid(); const now=vDate().toISOString(); const hit=rows.find(x=>x.id===r.id);
       if(!hit) Object.entries({title:'',number:'',status:'',file_name:'',file_type:'',source:'',notes:'',review_status:'live',extra:{},created_at:now,updated_at:now}).forEach(([k,v])=>{ if(r[k]===undefined) r[k]=v; });
       else r.updated_at=now; }
-    if(t==='dispatch_contacts'){ if(!r.id) r.id=uuid(); if(!r.created_at) r.created_at=new Date().toISOString(); }
+    if(t==='dispatch_contacts'){ if(!r.id) r.id=uuid(); if(!r.created_at) r.created_at=vDate().toISOString(); }
     const i=rows.findIndex(x=>keys.every(k=>r[k]!=null&&String(x[k])===String(r[k]))); if(i>=0){ const was={...rows[i]}; rows[i]={...rows[i],...r}; audit(T,t,was,rows[i]); } else { rows.push(r); audit(T,t,null,r); } }); }
 
 // requireUser(request, env, roles, company, perm) from functions/_lib/auth.js, against the fake's tables: null when allowed, else {status, error}
@@ -148,7 +160,7 @@ function fakeImport(T,b,IMP,calls){
   if(b.action==='read') return {code:200,body:{plan:IMP.planImport(WORKBOOK(),existing),sheetId}};
   if(b.action!=='commit'||!b.plan||!Array.isArray(b.plan.items)) return {code:400,body:{error:{code:'bad_request',message:'Read the workbook and review the plan first.'}}};
   if(permCheck(T,'u1',co,null,'manage_customers')) return {code:403,body:{error:{code:'forbidden',message:'Importing writes customers, so it also needs the manage customers permission.'}}};
-  const now=new Date().toISOString(), applied=IMP.applyPlan(b.plan,existing,'u1');
+  const now=vDate().toISOString(), applied=IMP.applyPlan(b.plan,existing,'u1');
   const src=r=>({...r,import_source:{...(r.import_source||{}),sheetId,at:(r.import_source&&r.import_source.at)||now}});
   upsertRows(T,'dispatch_customers',IMP.bindRows({customers:applied.customers},new Map(),co,now).customers.map(src),['company','customer_id']);
   const next=Math.max(Number(st.data.nextCustomerNumber)||1,applied.nextCustomerNumber); st.data={...st.data,nextCustomerNumber:next};   // right after the customers, as the route does
@@ -163,24 +175,114 @@ function fakeImport(T,b,IMP,calls){
   return {code:200,body:{ok:true,counts,nextCustomerNumber:next,problems:applied.problems,customersOut:st.data.customersOutSheetId?{ok:true,rebuilt:counts.customers}:{ok:false,skipped:'No Customers Out sheet is set on Setup.'}}}; }
 
 // a stored object is visible by the rule of its document row; an object with no row falls back to the company's view rule
-function docFileVisible(T,p){ const row=(T.dispatch_documents||[]).find(d=>d.file_path===p); return docVisible(T,row||{company:p.split('/')[0],subject_type:null,subject_id:null,review_status:null}); }
+function docFileVisible(T,p){ if(p.split('/')[1]==='asset') return !!memberOf(T,p.split('/')[0]); const row=(T.dispatch_documents||[]).find(d=>d.file_path===p); return docVisible(T,row||{company:p.split('/')[0],subject_type:null,subject_id:null,review_status:null}); }
 // /api/docs (functions/api/docs.js): sign a read URL, or approve/reject a capture
 function fakeDocs(T,b,origin){
   const row=(T.dispatch_documents||[]).find(d=>d.id===b.id);
   if(b.action==='sign'){ if(!row||!docVisible(T,row)) return {code:404,body:{error:{code:'not_found',message:'Document not found.'}}};
     if(!row.file_path) return {code:400,body:{error:{code:'no_file',message:'This document has no file.'}}};
-    T.dispatch_log.push({id:T.dispatch_log.length+1,at:new Date().toISOString(),company:row.company,who:'u1',what:'file_view',detail:{documentId:row.id},table_name:null,row_id:null,changes:null});
+    T.dispatch_log.push({id:T.dispatch_log.length+1,at:vDate().toISOString(),company:row.company,who:'u1',what:'file_view',detail:{documentId:row.id},table_name:null,row_id:null,changes:null});
     return {code:200,body:{url:origin+'/storage/v1/object/sign/dispatch-docs/'+row.file_path+'?token=fake',expiresIn:300,fileName:row.file_name,fileType:row.file_type}}; }
   if(b.action==='review'){ if(!row) return {code:404,body:{error:{code:'not_found',message:'Document not found.'}}};
     const denied=permCheck(T,'u1',row.company,null,'manage_documents'); if(denied) return {code:denied.status,body:{error:denied.error}};
     if(b.decision!=='approve'&&b.decision!=='reject') return {code:400,body:{error:{code:'bad_decision',message:'decision must be approve or reject.'}}};
     if(row.review_status!=='pending_review') return {code:409,body:{error:{code:'not_pending',message:'That capture is no longer pending review.'}}};   // the RPCs raise 'not pending review'
-    if(b.decision==='reject'){ row.review_status='rejected'; row.notes=b.reason||''; row.updated_at=new Date().toISOString(); return {code:200,body:{ok:true,id:row.id}}; }
+    if(b.decision==='reject'){ row.review_status='rejected'; row.notes=b.reason||''; row.updated_at=vDate().toISOString(); return {code:200,body:{ok:true,id:row.id}}; }
     const f=b.fields||{}; ['doc_type','number','status','issued','expires','title','extra','notes'].forEach(k=>{ if(f[k]!==undefined) row[k]=f[k]; });
-    row.review_status='live'; row.checked_on=todayOf(T); row.checked_by='u1'; row.updated_at=new Date().toISOString();
+    row.review_status='live'; row.checked_on=todayOf(T); row.checked_by='u1'; row.updated_at=vDate().toISOString();
     const old=hasVal(row.number)?T.dispatch_documents.find(d=>d!==row&&d.company===row.company&&d.review_status==='live'&&d.subject_type===row.subject_type&&d.subject_id===row.subject_id&&d.doc_type===row.doc_type&&d.number===row.number):null;
     if(old){ old.review_status='rejected'; old.notes=(old.notes||'')+' superseded'; row.supersedes_id=old.id; }
     return {code:200,body:{ok:true,id:row.id}}; }
+  return {code:400,body:{error:{code:'bad_request',message:'unknown action'}}}; }
+
+// ---- Stage 3A assets: vendors, container types, serialized assets, the append-only event log, stock movements ----
+const SITE_ADC1='ADC-0001 — Primary';   // site_key of customer ADC-0001's first site (the fixture the customer tests use)
+function seedAssets(){ const t0='2026-10-01T00:00:00Z';
+  const A=(id,co,serial,ct,ok,oid,fill,loc,lid,seen)=>({id,company:co,serial,tag:'',container_type_id:ct,owner_kind:ok,owner_id:oid,fill_state:fill,condition:'good',location_kind:loc,location_id:lid,last_seen_at:seen||t0,last_seen_by:'u1',hydro_due:null,acquired_on:null,notes:'',created_at:t0,updated_at:t0,created_by:'u1',updated_by:'u1'});
+  return {
+    dispatch_vendors:[{id:'vend-airgas',company:'adchem',name:'Airgas',roles:['fill','rent'],contact_name:'',phone:'',email:'',addr:'',notes:'',active:true}],
+    dispatch_container_types:[{id:'ct-co2-50',company:'adchem',kind:'cylinder',size_label:'50lb Cylinder',product:'Carbon Dioxide',fill_lb:50,active:true},
+      {id:'ct-co2-20',company:'adchem',kind:'cylinder',size_label:'20lb Cylinder',product:'Carbon Dioxide',fill_lb:20,active:true},
+      {id:'ct-n2-260',company:'adchem',kind:'dewar',size_label:'260L Dewar',product:'Nitrogen',fill_lb:null,active:true},
+      {id:'ct-north-co2-50',company:'north',kind:'cylinder',size_label:'50lb Cylinder',product:'Carbon Dioxide',fill_lb:50,active:true}],
+    dispatch_assets:[A('as-ab1234','adchem','AB1234','ct-co2-50','adchem',null,'full','hub','EB'),
+      A('as-cd5678','adchem','CD5678','ct-co2-50','vendor','vend-airgas','empty','site',SITE_ADC1),
+      A('as-ef9012','adchem','EF9012','ct-co2-20','adchem',null,'full','vendor','vend-airgas'),
+      A('as-zz0001','north','ZZ0001','ct-north-co2-50','adchem',null,'full','hub','LA')],
+    dispatch_asset_events:[], dispatch_stock_movements:[] }; }
+const normSerial=s=>String(s==null?'':s).trim().toUpperCase().replace(/[\s-]+/g,'');
+const memberOf=(T,co,userId)=>T.dispatch_members.find(x=>x.user_id===(userId||'u1')&&x.company===co&&x.active)||null;
+const hasPerm=(m,perm)=>!!m&&(m.is_super_admin===true||(m.permissions&&typeof m.permissions==='object'&&m.permissions[perm]===true));
+const siteOnTodayOrder=(T,co,hub,siteKey)=>T.dispatch_orders.some(o=>o.company===co&&o.hub===hub&&o.date===todayOf(T)&&(o.site_key||(o.data&&o.data.siteKey))===siteKey);
+const driverTouched=(T,co,userId,assetId)=>(T.dispatch_asset_events||[]).some(e=>e.company===co&&e.asset_id===assetId&&e.recorded_by===userId&&String(e.occurred_at).slice(0,10)===todayOf(T));
+// the RLS-like rule for dispatch_assets (select policy); events and stock movements follow their asset / the same rule
+function assetVisible(T,row,userId){ userId=userId||'u1'; const m=memberOf(T,row.company,userId); if(!m) return false;
+  if(hasPerm(m,'view_assets')) return true;
+  if(m.role==='driver'){ if(row.location_kind==='hub'&&row.location_id===m.hub) return true;
+    if(row.location_kind==='site'&&siteOnTodayOrder(T,row.company,m.hub,row.location_id)) return true;
+    return driverTouched(T,row.company,userId,row.id); }
+  return false; }
+function assetEventVisible(T,ev,userId){ const a=(T.dispatch_assets||[]).find(x=>x.id===ev.asset_id&&x.company===ev.company); return !!a&&assetVisible(T,a,userId); }
+function stockVisible(T,row,userId){ return hasPerm(memberOf(T,row.company,userId),'view_assets'); }
+const assetPathOk=(T,p)=>{ const seg=p.split('/'); if(seg[1]!=='asset') return null; const m=memberOf(T,seg[0]); return !!m&&(m.role==='driver'||hasPerm(m,'manage_assets')); };
+const DRIVER_TYPES=['delivered','collected','sighted','loaded','created'];
+const sameLoc=(a,k,i)=>a.location_kind===k&&String(a.location_id)===String(i);
+// /api/assets: Vision read of a tag photo, the counts roll-up, and the events action (functions/api/assets.js rules)
+function fakeAssets(T,b){
+  const co=b.company||'adchem'; const m=memberOf(T,co);
+  if(b.action==='read'){ if(!m) return {code:403,body:{error:{code:'no_access',message:'You are not a member of that company.'}}};
+    if(!['cylinder','dewar','pig','tank','bin','tote'].includes(b.kind)) return {code:400,body:{error:{code:'bad_kind',message:'unknown container kind'}}};
+    if(T.__visionDown) return {code:200,body:{candidates:[],raw:'',error:'Vision is not enabled'}};
+    return {code:200,body:{candidates:[{text:'AB1234',score:0.9},{text:'DOT3AA2015',score:0.2}],raw:'AB1234 DOT3AA2015'}}; }
+  if(b.action==='counts'){ if(!hasPerm(m,'view_assets')) return {code:403,body:{error:{code:'forbidden',message:"You don't have the view assets permission."}}};
+    const g={}; (T.dispatch_assets||[]).filter(a=>a.company===co).forEach(a=>{ const ct=T.dispatch_container_types.find(c=>c.company===co&&c.id===a.container_type_id)||{};
+      const hub=a.location_kind==='hub'?a.location_id:null;   // as the dispatch_asset_counts view: hub when at a hub, else null
+      const k=[a.container_type_id,a.fill_state,a.location_kind,a.condition,hub].join('|'); (g[k]=g[k]||{container_type_id:a.container_type_id,product:ct.product||null,size_label:ct.size_label||null,fill_state:a.fill_state,location_kind:a.location_kind,condition:a.condition,hub,n:0}).n++; });
+    return {code:200,body:{rows:Object.values(g)}}; }
+  if(b.action==='events'){ if(!m) return {code:403,body:{error:{code:'no_access',message:'You are not a member of that company.'}}};
+    const driver=m.role==='driver'&&!hasPerm(m,'manage_assets'); const results=[];
+    const myStop=p=>!p||!p.kind||(p.kind==='hub'&&p.id===m.hub)||(p.kind==='site'&&siteOnTodayOrder(T,co,m.hub,p.id));
+    const bad=(b.events||[]).findIndex(e=>!e||e.id==null||e.id===''); if(bad>=0) return {code:400,body:{error:{code:'bad_event',message:'event '+bad+' has no id'}}};
+    for(const e of (b.events||[])){ const res={eventId:e.id,assetId:null,serial:normSerial(e.serial),status:'applied'};
+      const reject=r=>{ res.status='rejected'; res.reason=r; results.push(res); };
+      if((T.dispatch_asset_events||[]).some(x=>x.id===e.id)){ const old=T.dispatch_asset_events.find(x=>x.id===e.id); res.status='duplicate'; res.assetId=old.asset_id; results.push(res); continue; }
+      if(!driver&&!hasPerm(m,'manage_assets')){ reject('not allowed'); continue; }
+      if(driver){ if(!DRIVER_TYPES.includes(e.type)){ reject('not allowed'); continue; }
+        if(!e.to||!e.to.kind||!myStop(e.to)||!myStop(e.from)){ reject('not your stop'); continue; } }   // 007: every driver event names its to
+      const at=e.occurredAt||vDate().toISOString(); const now=vDate().toISOString();
+      const ev=(asset,type,from,to,extra)=>{ const row={id:(extra&&extra.id)||uuid(),company:co,asset_id:asset.id,event_type:type,from_kind:from?from.kind:null,from_id:from?from.id:null,to_kind:to?to.kind:null,to_id:to?to.id:null,fill_after:null,occurred_at:at,recorded_by:'u1',order_id:null,bol_number:null,site_key:null,photo_path:null,gps:null,ocr:null,note:'',applied:true,created_at:now,...extra}; T.dispatch_asset_events.push(row); return row; };
+      let a=(T.dispatch_assets||[]).find(x=>x.company===co&&x.serial===res.serial);
+      if(a&&e.type==='created'){ reject('serial '+res.serial+' is already in the register'); continue; }   // as functions/api/assets.js
+      if(!a){ if(!e.containerTypeId||!T.dispatch_container_types.some(c=>c.id===e.containerTypeId&&c.company===co)){ reject('container type required'); continue; }
+        const loc=e.from||e.to||null; const ok=e.ownerKind||'adchem';
+        a={id:uuid(),company:co,serial:res.serial,tag:'',container_type_id:e.containerTypeId,owner_kind:ok,owner_id:ok==='adchem'?null:(e.ownerId||null),fill_state:'unknown',condition:'good',location_kind:loc?loc.kind:null,location_id:loc?loc.id:null,last_seen_at:at,last_seen_by:'u1',hydro_due:null,acquired_on:null,notes:'',created_at:now,updated_at:now,created_by:'u1',updated_by:'u1'};
+        T.dispatch_assets.push(a); if(e.type!=='created') ev(a,'created',null,loc,{}); }
+      res.assetId=a.id;
+      // 007's apply trigger: an event older than the asset's last sighting (not a correction) stays as history, applied = false,
+      // and moves nothing (a late fill still draws the bulk down); the server reads applied back and warns
+      const late=e.type!=='corrected'&&!!a.last_seen_at&&Date.parse(at)<Date.parse(a.last_seen_at);
+      const keep=late?{kind:a.location_kind,id:a.location_id,fill:a.fill_state,seen:a.last_seen_at}:null;
+      if(e.from&&e.from.kind&&!sameLoc(a,e.from.kind,e.from.id)) ev(a,'sighted',{kind:a.location_kind,id:a.location_id},e.from,{note:'was at '+a.location_kind+' '+a.location_id,applied:!late});
+      if(e.from&&e.from.kind){ a.location_kind=e.from.kind; a.location_id=e.from.id; }
+      const row=ev(a,e.type,e.from,e.to,{applied:!late,id:e.id,fill_after:e.fillAfter||null,order_id:e.orderId||null,bol_number:e.bolNumber||null,site_key:e.siteKey||null,photo_path:e.photoPath||null,gps:e.gps||null,ocr:e.ocr||null,note:e.note||''});
+      const to=e.to&&e.to.kind?e.to:null; const mv=()=>{ if(to){ a.location_kind=to.kind; a.location_id=to.id; } };
+      if(e.type==='delivered'){ mv(); a.fill_state=e.fillAfter||'full'; }
+      else if(e.type==='collected'){ mv(); a.fill_state=e.fillAfter||'empty'; }
+      else if(e.type==='to_vendor') mv();
+      else if(e.type==='from_vendor'){ mv(); a.fill_state=e.fillAfter||'full'; }
+      else if(e.type==='filled'){ a.fill_state='full'; const ct=T.dispatch_container_types.find(c=>c.company===co&&c.id===a.container_type_id);
+        if(a.location_kind!=='hub') res.warning='asset is not at a hub';
+        else if(ct&&typeof ct.fill_lb==='number') T.dispatch_stock_movements.push({id:uuid(),company:co,hub:a.location_id,product:ct.product,container:'',item:'',qty:-ct.fill_lb,unit:'lb',reason:'filled',vendor_id:null,order_id:null,asset_event_id:row.id,note:'',occurred_at:at,recorded_by:'u1'});
+        else res.warning='no fill weight on this container type'; }
+      else if(e.type==='moved') mv();
+      else if(e.type==='sighted') mv();
+      else if(e.type==='corrected'){ mv(); if(e.fillAfter) a.fill_state=e.fillAfter; }
+      else if(e.type==='created'){ mv(); if(e.fillAfter) a.fill_state=e.fillAfter; }
+      if(late){ a.location_kind=keep.kind; a.location_id=keep.id; a.fill_state=keep.fill; res.warning=(res.warning?res.warning+'; ':'')+'recorded late — did not move the container'; }
+      else if(e.type!=='corrected'||e.to||e.fillAfter){ a.last_seen_at=at; a.last_seen_by='u1'; }
+      a.updated_at=now; a.updated_by='u1';
+      results.push(res); }
+    return {code:200,body:{ok:true,results}}; }
   return {code:400,body:{error:{code:'bad_request',message:'unknown action'}}}; }
 
 function makeFake(seed){
@@ -189,7 +291,7 @@ function makeFake(seed){
   server=http.createServer(async (req,res)=>{
     const u=new URL(req.url,'http://x'); let body=''; for await (const c of req) body+=c;
     const send=(code,obj,hdr={})=>{res.writeHead(code,{'content-type':'application/json',...hdr});res.end(JSON.stringify(obj));};
-    if(u.pathname.startsWith('/auth/v1/token')){ const b=JSON.parse(body); if(b.password==='bad') return send(400,{error:'invalid',error_description:'Invalid login credentials',msg:'Invalid login credentials'}); return send(200,{access_token:'tok',token_type:'bearer',expires_in:3600,expires_at:Math.floor(Date.now()/1000)+3600,refresh_token:'r',user:{id:'u1',email:b.email,aud:'authenticated',role:'authenticated'}}); }
+    if(u.pathname.startsWith('/auth/v1/token')){ const b=JSON.parse(body); if(b.password==='bad') return send(400,{error:'invalid',error_description:'Invalid login credentials',msg:'Invalid login credentials'}); return send(200,{access_token:'tok',token_type:'bearer',expires_in:3600,expires_at:Math.floor(vNow()/1000)+3600,refresh_token:'r',user:{id:'u1',email:b.email,aud:'authenticated',role:'authenticated'}}); }
     if(u.pathname==='/auth/v1/user') return send(200,{id:'u1',email:'jamie@adchem.pro',aud:'authenticated',role:'authenticated'});
     if(u.pathname==='/auth/v1/logout') return send(204,{});
     if(u.pathname.startsWith('/rest/v1/rpc/')){ const r=fakeRpc(u.pathname.split('/').pop(),JSON.parse(body||'{}'),T); return send(r.code,r.body); }
@@ -204,13 +306,13 @@ function makeFake(seed){
           if(req.method==='POST'&&m&&m.role==='driver'&&!mgr){
             if(r.subject_type!=='customer'||!String(r.file_path||'').startsWith(r.company+'/capture/')) return send(403,{message:'row-level security / capture guard'});
             // the capture guard: as the driver; the phone's captured_at kept when within the last 30 days, never later than now
-            const now=Date.now(), at=r.captured_at?Date.parse(r.captured_at):NaN;
+            const now=vNow(), at=r.captured_at?Date.parse(r.captured_at):NaN;
             r.review_status='pending_review'; r.captured_by='u1'; r.created_by='u1'; r.captured_at=at>=now-30*86400000?new Date(Math.min(at,now)).toISOString():new Date(now).toISOString(); }
           else if(!mgr) return send(403,{message:'row-level security'});
           if(req.method==='POST'){ const ok=r.subject_type==='customer'?T.dispatch_customers.some(c=>c.company===r.company&&String(c.id)===String(r.subject_id)):r.subject_type==='company'?r.subject_id===r.company:r.subject_type==='person'?T.dispatch_members.some(x=>x.company===r.company&&x.user_id===r.subject_id&&x.active):false;
             if(!ok) return send(400,{message:'subject not in company'}); } }
       }
-      if(req.method==='GET'){ let out=orderRows(rows.filter(r=>match(r,f)&&(t!=='dispatch_log'||logVisible(T,r))&&(t!=='dispatch_documents'||docVisible(T,r))),u.searchParams.get('order')); const lim=parseInt(u.searchParams.get('limit'),10); if(lim>0) out=out.slice(0,lim); if(req.headers.accept&&req.headers.accept.includes('vnd.pgrst.object')) return out.length?send(200,out[0]):send(406,{message:'none'}); return send(200,out); }
+      if(req.method==='GET'){ let out=orderRows(rows.filter(r=>match(r,f)&&(t!=='dispatch_log'||logVisible(T,r))&&(t!=='dispatch_documents'||docVisible(T,r))&&(t!=='dispatch_assets'||assetVisible(T,r))&&(t!=='dispatch_asset_events'||assetEventVisible(T,r))&&(t!=='dispatch_stock_movements'||stockVisible(T,r))),u.searchParams.get('order')); const lim=parseInt(u.searchParams.get('limit'),10); if(lim>0) out=out.slice(0,lim); if(req.headers.accept&&req.headers.accept.includes('vnd.pgrst.object')) return out.length?send(200,out[0]):send(406,{message:'none'}); return send(200,out); }
       if(req.method==='POST'){ const arr=req.docArr||[].concat(JSON.parse(body)); const keys=(u.searchParams.get('on_conflict')||'id').split(',');
         // a plain insert (no Prefer resolution) of an existing document id is the primary key's unique violation, as PostgREST answers it
         const dup=r=>rows.some(x=>keys.every(k=>r[k]!=null&&String(x[k])===String(r[k])));
@@ -222,12 +324,12 @@ function makeFake(seed){
     if(u.pathname.startsWith('/storage/v1/object/sign/dispatch-docs/')){ const p=decodeURIComponent(u.pathname.slice('/storage/v1/object/sign/dispatch-docs/'.length));
       if(!(T.__objects||[]).includes(p)||!docFileVisible(T,p)) return send(404,{error:'not_found',message:'Object not found'});
       return send(200,{signedURL:'/storage/v1/object/sign/dispatch-docs/'+p+'?token=fake'}); }
-    if(u.pathname.startsWith('/storage/v1/object/dispatch-docs/')){ const p=decodeURIComponent(u.pathname.slice('/storage/v1/object/dispatch-docs/'.length)); calls.push(['upload',p]);
+    if(u.pathname.startsWith('/storage/v1/object/dispatch-docs/')){ const p=decodeURIComponent(u.pathname.slice('/storage/v1/object/dispatch-docs/'.length)); calls.push(['upload',p]); if(assetPathOk(T,p)===false) return send(403,{statusCode:'403',error:'Unauthorized',message:'new row violates row-level security policy'});
       // no upsert: an object already at that path is refused the way Storage does (HTTP 400, statusCode 409 Duplicate)
       if((T.__objects=T.__objects||[]).includes(p)) return send(400,{statusCode:'409',error:'Duplicate',message:'The resource already exists'});
       T.__objects.push(p); return send(200,{Key:'dispatch-docs/'+p}); }
     if(u.pathname.startsWith('/storage/v1/object/dispatch-pods/')){ calls.push(['upload',u.pathname]); return send(200,{Key:u.pathname.replace('/storage/v1/object/','')}); }
-    if(u.pathname==='/api/feed'){ const co=JSON.parse(body||'{}').company||'adchem'; T.dispatch_sites=T.dispatch_sites.filter(s=>s.company!==co).concat(SITES.map(r=>({company:co,site_key:r[13],customer:r[0],code_raw:r[1],code:r[1].split(' - ')[0],addr:r[2].replace(/\s*\(billing address[^)]*\)\s*/,'').trim(),unconfirmed:/confirm the delivery/.test(r[2]),city:r[3],hub:r[4],contact:r[5],phone:r[6],gate:r[7],hours:r[8],instr:r[11],site_label:r[12],copy_to:'',synced_at:new Date().toISOString()}))); return send(200,{ok:true,sites:SITES.length,customers:5,unconfirmed:1}); }
+    if(u.pathname==='/api/feed'){ const co=JSON.parse(body||'{}').company||'adchem'; T.dispatch_sites=T.dispatch_sites.filter(s=>s.company!==co).concat(SITES.map(r=>({company:co,site_key:r[13],customer:r[0],code_raw:r[1],code:r[1].split(' - ')[0],addr:r[2].replace(/\s*\(billing address[^)]*\)\s*/,'').trim(),unconfirmed:/confirm the delivery/.test(r[2]),city:r[3],hub:r[4],contact:r[5],phone:r[6],gate:r[7],hours:r[8],instr:r[11],site_label:r[12],copy_to:'',synced_at:vDate().toISOString()}))); return send(200,{ok:true,sites:SITES.length,customers:5,unconfirmed:1}); }
     if(u.pathname==='/api/calendar'&&req.method==='GET') return send(200,{calendars:[{id:'cal1',summary:'Dispatch',timeZone:'America/Los_Angeles'},{id:'calEB',summary:'Deliveries — East Bay',timeZone:'America/Los_Angeles'}]});
     if(u.pathname==='/api/calendar'){ const b=JSON.parse(body);
       // mirrors functions/api/calendar.js, using its real calendar resolution
@@ -239,19 +341,20 @@ function makeFake(seed){
       else { id='ev'+(Object.keys(EVENTS).length+1); EVENTS[id]=to; }
       calls.push(['calendar',{hub:b.hub,cal:to,moved,update:!!b.eventId,tz:b.timeZone}]); return send(200,{ok:true,eventId:id,calendarId:to,moved}); }
     if(u.pathname==='/api/drive') return send(200,{ok:true,id:'f1',webViewLink:''});
-    if(u.pathname==='/api/pod'){ const b=JSON.parse(body); calls.push(['pod',b]); if(gmailFail) return send(502,{error:{code:gmailFail,message:'Gmail: boom'}}); const o=T.dispatch_orders.find(x=>x.id===b.orderId); if(!o||!b.photoPath.startsWith('adchem/'+o.hub+'/pod/'+o.id+'/')) return send(400,{error:{code:'bad_path',message:'path '+b.photoPath}}); o.status='Delivered'; o.data.pod={collected:b.collected,issue:b.issue,note:b.note}; return send(200,{ok:true,sentAt:new Date().toISOString(),to:'orders@adchem.pro',cc:b.cc,msgId:'m1',status:'Delivered'}); }
-    if(u.pathname==='/api/deposit'){ const b=JSON.parse(body); calls.push(['deposit',b]); if(!b.photoPath.startsWith('adchem/'+b.hub+'/deposits/')) return send(400,{error:{code:'bad_path',message:'path '+b.photoPath}}); return send(200,{ok:true,sentAt:new Date().toISOString(),to:'accounting@adchem.pro',msgId:'d1'}); }
+    if(u.pathname==='/api/pod'){ const b=JSON.parse(body); calls.push(['pod',b]); if(gmailFail) return send(502,{error:{code:gmailFail,message:'Gmail: boom'}}); const o=T.dispatch_orders.find(x=>x.id===b.orderId); if(!o||!b.photoPath.startsWith('adchem/'+o.hub+'/pod/'+o.id+'/')) return send(400,{error:{code:'bad_path',message:'path '+b.photoPath}}); o.status='Delivered'; o.data.pod={collected:b.collected,issue:b.issue,note:b.note}; return send(200,{ok:true,sentAt:vDate().toISOString(),to:'orders@adchem.pro',cc:b.cc,msgId:'m1',status:'Delivered'}); }
+    if(u.pathname==='/api/deposit'){ const b=JSON.parse(body); calls.push(['deposit',b]); if(!b.photoPath.startsWith('adchem/'+b.hub+'/deposits/')) return send(400,{error:{code:'bad_path',message:'path '+b.photoPath}}); return send(200,{ok:true,sentAt:vDate().toISOString(),to:'accounting@adchem.pro',msgId:'d1'}); }
     if(u.pathname==='/api/orderlog'){ const b=JSON.parse(body); calls.push(['orderlog',b]); return send(200,b.rebuild?{ok:true,rebuilt:T.dispatch_orders.length}:{ok:true,updated:0,appended:(b.orderIds||[]).length}); }
     if(u.pathname==='/api/customers-out'){ const {company,...b}=JSON.parse(body||'{}'); if(!company) return send(400,{error:{code:'no_company',message:'company required'}}); calls.push(['customers-out',b]);
       return send(200,b.rebuild?{ok:true,rebuilt:T.dispatch_customers.filter(c=>c.company===company).length}:{ok:true,updated:0,appended:(b.customerIds||[]).length}); }
     if(u.pathname==='/api/import'){ const r=fakeImport(T,JSON.parse(body||'{}'),IMP,calls); return send(r.code,r.body); }
+    if(u.pathname==='/api/assets'){ const b=JSON.parse(body||'{}'); if(b.action==='events') calls.push(['assets-events',(b.events||[]).map(e=>e&&e.serial)]); const r=fakeAssets(T,b); return send(r.code,r.body); }
     if(u.pathname==='/api/docs'){ const r=fakeDocs(T,JSON.parse(body||'{}'),'http://'+req.headers.host); return send(r.code,r.body); }
     if(u.pathname==='/api/expiry'){ const {company,...b}=JSON.parse(body||'{}'); calls.push(['expiry',b]); const sent=[], skipped=[];
       // Send now (the app always sends its company) mails that company only; without one (the cron shape) every company
       if(b.send){ T.companies.filter(c=>!company||c.id===company).forEach(c=>{ const st=T.dispatch_company_settings.find(x=>x.company===c.id), to=(st&&st.data.expiryEmailRecipients)||[], n=docsDue(T).filter(d=>d.company===c.id).length;
         if(to.length&&n) sent.push({company:c.id,to,count:n}); else skipped.push({company:c.id,reason:to.length?'nothing_due':'no_recipients'}); }); }
       return send(200,{ok:true,sent,skipped}); }
-    if(u.pathname==='/api/health') return send(200,{googleConfigured:!u.searchParams.has('nogoogle'),impersonate:'ops-system@adchem.pro',mailFrom:'orders@adchem.pro',ordersTo:'orders@adchem.pro',accountingTo:'accounting@adchem.pro',checks:{token:'ok',customersOut:'ok',importSheet:'ok',docsBucket:'ok',expiryCron:'ok'},lastExpiryEmail:null});
+    if(u.pathname==='/api/health') return send(200,{googleConfigured:!u.searchParams.has('nogoogle'),impersonate:'ops-system@adchem.pro',mailFrom:'orders@adchem.pro',ordersTo:'orders@adchem.pro',accountingTo:'accounting@adchem.pro',checks:{token:'ok',vision:'ok',customersOut:'ok',importSheet:'ok',docsBucket:'ok',expiryCron:'ok'},lastExpiryEmail:null});
     // static
     const p=path.join(ROOT,u.pathname==='/'?'index.html':u.pathname); if(!fs.existsSync(p)) return send(404,{});
     res.writeHead(200,{'content-type':{'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png','.webmanifest':'application/manifest+json'}[path.extname(p)]||'application/octet-stream'}); fs.createReadStream(p).pipe(res);
@@ -271,6 +374,10 @@ async function newPage(browser,base,opts){ opts=opts||{};
   const page=await browser.newPage({viewport:opts.viewport||{width:1100,height:1500}}); page.errs=[];
   page.on('pageerror',e=>page.errs.push(String(e)));
   page.on('console',m=>{ if(m.type()==='error'&&!/fonts|ERR_FAILED/.test(m.text())) page.errs.push(m.text()); });
+  // the app's clock is the fake's virtual clock (see CLOCK_OFFSET)
+  await page.addInitScript(off=>{ const R=Date;
+    class D extends R{ constructor(...a){ super(...(a.length?a:[R.now()+off])); } static now(){ return R.now()+off; } }
+    window.Date=D; },CLOCK_OFFSET);
   await page.route('**/fonts.*/**',r=>r.abort());
   await page.route('**/config.js',r=>r.fulfill({contentType:'application/javascript',body:`window.ADCHEM_CONFIG={supabaseUrl:"${base}",supabaseAnonKey:"anon",ordersTo:"orders@adchem.pro"};`}));
   return page; }

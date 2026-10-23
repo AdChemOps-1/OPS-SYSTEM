@@ -104,6 +104,16 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.deepEqual({hub:hn.hub,scale_on_route:hn.scale_on_route,route_notes:hn.route_notes,site_key:hn.site_key,company:hn.company},
     {hub:'EB',scale_on_route:true,route_notes:'Scale on 580',site_key:'ADC-0001 — Primary',company:'adchem'});
   assert.equal(await page.$eval('#siteNew',e=>e.hidden), true, 'new site form closes after saving');
+  assert.match(flat(await page.textContent('#siteList')), /1 containers? here since/, 'the site card hints at the containers there');
+  await page.click('#ctab-cylinders'); await page.waitForTimeout(500);
+  assert.match(flat(await page.textContent('#cpane-cylinders')), /Primary.*CD5678.*50lb Cylinder.*empty.*since/, 'the Cylinders tab lists CD5678 at the site');
+  // a failed asset read is an error, never an empty site
+  await page.route('**/rest/v1/dispatch_assets*', r=>r.fulfill({status:500,contentType:'application/json',body:'{"message":"boom"}'}));
+  await page.click('#ctab-profile'); await page.click('#ctab-cylinders'); await page.waitForTimeout(500);
+  assert.match(flat(await page.textContent('#banners')+await page.textContent('#cpane-cylinders')), /Couldn't load the containers/, 'failed read shows the banner and the line');
+  assert.doesNotMatch(flat(await page.textContent('#cpane-cylinders')), /No containers here/, 'a failed read is not an empty site');
+  await page.unroute('**/rest/v1/dispatch_assets*');
+  await page.click('#ctab-sites'); await page.waitForTimeout(300);
   const sf = '#siteList form[data-site="ADC-0001 — Primary"]';
   assert.match(await page.$eval(sf,e=>e.id), /^s_[a-z0-9]+$/, 'site form id is s_ + hash');
   assert.equal(await page.inputValue(sf+' [data-k=gate_code]'), '4321');
@@ -198,6 +208,7 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   assert.match(flat(await page.textContent('#customersOutState')), /Customers Out is set/);
   assert.match(flat(await page.textContent('#healthState')), /Customers Out: ok.*Import sheet: ok/, 'the health card lists both Customers Out and the import sheet');
   assert.match(flat(await page.textContent('#healthState')), /Documents bucket: ok.*Expiry email: ok.*Last expiry email: never/, 'the health card lists the documents bucket, the expiry email job and its last run');
+  assert.match(flat(await page.textContent('#healthState')), /Token: ok.*Vision: ok.*AR Command Center/, 'the health card lists Vision right after Token');
   assert.equal(await page.inputValue('#sCustomersOut'), '1COUTseedAAAAAAAAAAAAAA');
   // before Google is configured the card still shows the Supabase lines, so the migration can be seen landing
   await page.evaluate(()=>{ const g=API.get; API.get=p=>g(p+(p.indexOf('/api/health')===0?'?nogoogle=1':'')); return renderHealth().then(()=>{ API.get=g; }); });
@@ -231,19 +242,19 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
   await page.click('#tab-users'); await page.waitForTimeout(500);
   assert.match(flat(await page.textContent('#panel-users')), /Drivers: one account per person, with their hub\./);
   assert.doesNotMatch(flat(await page.textContent('#panel-users')), /one account per hub/);
-  assert.deepEqual(await page.$$eval('[data-perm^="u2:"]',e=>e.map(x=>x.getAttribute('data-perm'))), ['u2:manage_customers','u2:approve_driver_notes','u2:run_imports','u2:view_documents','u2:manage_documents'], 'no Manage people switch (it grants nothing yet)');
+  assert.deepEqual(await page.$$eval('[data-perm^="u2:"]',e=>e.map(x=>x.getAttribute('data-perm'))), ['u2:manage_customers','u2:approve_driver_notes','u2:run_imports','u2:view_documents','u2:manage_documents','u2:view_assets','u2:manage_assets'], 'no Manage people switch (it grants nothing yet)');
   assert.doesNotMatch(flat(await page.textContent('#userList')), /Manage people/);
   assert.equal(await page.$eval('[data-perm="u2:manage_customers"]',e=>e.checked), false);
   await page.check('[data-perm="u2:manage_customers"]'); await page.waitForTimeout(600);
   const u2 = () => T.dispatch_members.find(x=>x.user_id==='u2'&&x.company==='adchem');
-  assert.deepEqual(u2().permissions, {manage_customers:true,approve_driver_notes:false,run_imports:false,view_documents:false,manage_documents:false}, 'permissions written through dispatch_set_permissions');
+  assert.deepEqual(u2().permissions, {manage_customers:true,approve_driver_notes:false,run_imports:false,view_documents:false,manage_documents:false,view_assets:false,manage_assets:false}, 'permissions written through dispatch_set_permissions');
   assert.equal(await page.$eval('[data-perm="u2:manage_customers"]',e=>e.checked), true, 're-rendered from the database');
   // the two document switches, written through the same RPC
   assert.match(flat(await page.textContent('#userList')), /View documents.*Manage documents/);
   await page.check('[data-perm="u2:view_documents"]'); await page.waitForTimeout(600);
-  assert.deepEqual(u2().permissions, {manage_customers:true,approve_driver_notes:false,run_imports:false,view_documents:true,manage_documents:false}, 'view_documents written');
+  assert.deepEqual(u2().permissions, {manage_customers:true,approve_driver_notes:false,run_imports:false,view_documents:true,manage_documents:false,view_assets:false,manage_assets:false}, 'view_documents written');
   await page.check('[data-perm="u2:manage_documents"]'); await page.waitForTimeout(600);
-  assert.deepEqual(u2().permissions, {manage_customers:true,approve_driver_notes:false,run_imports:false,view_documents:true,manage_documents:true}, 'manage_documents written');
+  assert.deepEqual(u2().permissions, {manage_customers:true,approve_driver_notes:false,run_imports:false,view_documents:true,manage_documents:true,view_assets:false,manage_assets:false}, 'manage_documents written');
   assert.equal(await page.$eval('[data-perm="u2:manage_documents"]',e=>e.checked), true, 're-rendered from the database');
   await page.uncheck('[data-perm="u2:manage_documents"]'); await page.waitForTimeout(600);
   assert.equal(u2().permissions.manage_documents, false, 'and cleared again'); assert.equal(u2().permissions.view_documents, true);
@@ -467,7 +478,7 @@ const rows = page => page.$$eval('#custList .cust-row', e=>e.length);
     await pcw.close();
   }
   // no page errors except the deliberate Customers Out 502
-  assert.deepEqual(pages.flatMap(p=>p.errs).filter(e=>!/status of 502/.test(e)), [], 'unexpected page errors');
+  assert.deepEqual(pages.flatMap(p=>p.errs).filter(e=>!/status of (502|500)/.test(e)), [], 'unexpected page errors');
   assert.equal(page.errs.filter(e=>/status of 502/.test(e)).length, 1, 'the Customers Out failure case ran');
   } finally { await b.close(); await fake.stop(); for (const f of fakes) await f.stop(); }
 })().then(()=>{ console.log('customers.test.cjs: ok'); }, e=>{ console.error(e); process.exit(1); });

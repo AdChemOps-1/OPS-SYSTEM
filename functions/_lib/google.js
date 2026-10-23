@@ -27,11 +27,11 @@ function pemToDer(pem) {
 
 const tokenCache = new Map();
 
-export async function googleToken(env, scopes = SCOPES) {
+// sub defaults to the Workspace user the server acts as; pass "" for the service account itself (no sub claim), e.g. for Cloud Vision.
+export async function googleToken(env, scopes = SCOPES, sub = env.GOOGLE_IMPERSONATE || "") {
   const raw = env.GOOGLE_SA_JSON;
   if (!raw) throw new Error("GOOGLE_SA_JSON is not set");
   const sa = JSON.parse(raw);
-  const sub = env.GOOGLE_IMPERSONATE || "";
   const key = scopes.join(" ") + "|" + sub;
   const cached = tokenCache.get(key);
   if (cached && cached.exp > Date.now() + 60000) return cached.token;

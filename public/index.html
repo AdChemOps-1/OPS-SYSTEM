@@ -50,6 +50,7 @@
       <button class="tab" role="tab" id="tab-setup">Setup <span class="cnt warn" id="cntSetup">0</span></button>
       <button class="tab" role="tab" id="tab-customers" hidden>Customers</button>
       <button class="tab" role="tab" id="tab-documents" hidden>Documents</button>
+      <button class="tab" role="tab" id="tab-assets" hidden>Assets</button>
       <button class="tab" role="tab" id="tab-mydocs" hidden>My documents</button>
       <button class="tab" role="tab" id="tab-users" hidden>People</button>
     </div>
@@ -253,6 +254,12 @@
       </div>
     </div>
     <div id="podQueueNote" hidden></div>
+    <div class="card pad" id="truckCard" hidden style="margin-bottom:12px">
+      <div class="sec-h" style="margin-bottom:4px">Cylinders on the truck / Cilindros en el camión</div>
+      <p class="hint" style="margin:0 0 9px">Scan or type each cylinder you load at the hub. At a stop, press <b>Cylinders</b> to record what you deliver and pick up.</p>
+      <div class="a-btns"><button class="btn primary" id="btnLoad" type="button">Load / Cargar</button><button class="btn" id="btnMyTruck" type="button" aria-expanded="false">My truck / Mi camión</button></div>
+      <div id="truckList" hidden></div>
+    </div>
     <details class="banner info" style="margin-bottom:12px;display:block"><summary style="cursor:pointer;font-weight:700">Money at a stop that is not coded COD / Dinero en una parada que no es COD</summary><div style="margin-top:6px">You never ask. If the customer offers payment anyway, take it: count it in front of them, tick <b>Payment on Account</b>, write the amount, both initial, photograph as usual. The money goes against their account; what they owe is settled by the invoice, not by the BOL.</div></details>
     <div id="todayList"></div>
     <div class="card pad" style="margin-top:12px" id="depositCard">
@@ -291,6 +298,33 @@
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px"><button class="btn primary" id="btnSaveWarnings">Save warnings</button><button class="btn" id="btnSendExpiry" type="button">Send expiry email now</button></div>
       <p class="hint" style="margin-top:8px">The expiry email also goes out by itself every morning (06:00 Pacific) to the addresses above, once it is scheduled — see the README.</p>
+    </div>
+    <div class="card pad sec" id="vendorsCard" hidden>
+      <h2 class="sec-h">Vendors</h2>
+      <p class="hint">Who fills, rents or supplies containers. Needs View assets to see, Manage assets to change.</p>
+      <div id="vendorList"></div>
+      <div id="vendorForm" class="grid two" style="margin-top:11px" hidden>
+        <label class="f">Name<input id="vf_name" autocomplete="off"></label>
+        <div class="f">Roles<div id="vf_roles" class="perm-row"><label class="perm-chk"><input type="checkbox" value="fill"> fill</label><label class="perm-chk"><input type="checkbox" value="rent"> rent</label><label class="perm-chk"><input type="checkbox" value="supply"> supply</label></div></div>
+        <label class="f">Contact<input id="vf_contact" autocomplete="off"></label>
+        <label class="f">Phone<input id="vf_phone" type="tel" autocomplete="off"></label>
+        <label class="f">Email<input id="vf_email" type="email" autocomplete="off"></label>
+        <label class="f spanall">Notes<textarea id="vf_notes" rows="2"></textarea></label>
+        <div class="spanall" style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" id="btnSaveVendor" type="button">Save vendor</button><button class="btn" id="btnCancelVendor" type="button">Cancel</button></div>
+      </div>
+      <div style="margin-top:11px"><button class="btn" id="btnAddVendor" type="button">Add vendor</button></div>
+      <details id="typesDisc" style="margin-top:14px">
+        <summary><b>Container types</b></summary>
+        <div id="typeList" style="margin-top:8px"></div>
+        <div id="typeForm" class="grid two" style="margin-top:11px" hidden>
+          <label class="f">Kind<select id="tf_kind"><option value="cylinder">cylinder</option><option value="dewar">dewar</option><option value="pig">pig</option><option value="tank">tank</option></select></label>
+          <label class="f">Product<select id="tf_product"></select></label>
+          <label class="f">Size<input id="tf_size" autocomplete="off" placeholder="50lb Cylinder"><span class="hint">Exactly as on the order form.</span></label>
+          <label class="f">Fill (lb)<input id="tf_fill" type="number" min="0" step="any" inputmode="decimal"><span class="hint">Leave empty if unknown.</span></label>
+          <div class="spanall" style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" id="btnSaveType" type="button">Save type</button><button class="btn" id="btnCancelType" type="button">Cancel</button></div>
+        </div>
+        <div style="margin-top:11px"><button class="btn" id="btnAddType" type="button">Add container type</button></div>
+      </details>
     </div>
     <div class="card pad sec">
       <h2 class="sec-h">Customer feed — AR Command Center</h2>
@@ -466,6 +500,7 @@
         <button class="tab" role="tab" id="ctab-contacts" aria-selected="false">Contacts</button>
         <button class="tab" role="tab" id="ctab-activity" aria-selected="false">Activity</button>
         <button class="tab" role="tab" id="ctab-documents" aria-selected="false">Documents</button>
+        <button class="tab" role="tab" id="ctab-cylinders" aria-selected="false" hidden>Cylinders</button>
         <button class="tab" role="tab" id="ctab-history" aria-selected="false">History</button>
       </div>
       <div id="cpane-profile" class="card pad sec">
@@ -534,6 +569,10 @@
         </form>
         <div id="actList"></div>
       </div>
+      <div id="cpane-cylinders" class="card pad sec" hidden>
+        <p class="hint" style="margin-top:0">Containers at this customer's sites, as last seen.</p>
+        <div id="custCylList"></div>
+      </div>
       <div id="cpane-documents" class="card pad sec" hidden>
         <div class="cust-chips" id="docChips" style="margin-bottom:10px"></div>
         <p class="hint" id="docPermNote" hidden>Document details need the View documents permission.</p>
@@ -590,6 +629,13 @@
         <div id="histList"></div>
       </div>
     </div>
+  </section>
+
+  <!-- ================= ASSETS ================= -->
+  <section id="panel-assets" hidden>
+    <div id="aRegister"></div>
+    <div id="aCounts"></div>
+    <div id="aActions"></div>
   </section>
 
   <!-- ================= DOCUMENTS ================= -->
@@ -698,6 +744,72 @@
   </div>
 </div>
 
+<div id="actSheet" hidden role="dialog" aria-modal="true" aria-labelledby="actTitle">
+  <div class="sheet">
+    <div style="display:flex;align-items:flex-start;gap:8px">
+      <div style="flex:1"><h2 id="actTitle">Fill</h2><div class="sub" id="actSub"></div></div>
+      <button class="btn sm" id="actClose" aria-label="Close">✕</button>
+    </div>
+    <div class="grid two">
+      <label class="f" id="act_hubLbl">Hub<select id="act_hub"></select></label>
+      <label class="f" id="act_vendorRow" hidden>Vendor<select id="act_vendor"></select></label>
+      <label class="f" id="act_toHubRow" hidden>To hub<select id="act_to_hub"></select></label>
+      <label class="f" id="act_typeRow"><span id="act_typeLbl">Type, for serials not in the register</span><select id="act_type"></select></label>
+      <label class="f" id="act_ownerRow" hidden>Owner<select id="act_owner"></select></label>
+      <label class="f" id="act_fillRow" hidden>Fill<select id="act_fill"><option value="unknown">unknown</option><option value="full">full</option><option value="empty">empty</option></select></label>
+    </div>
+    <label class="perm-chk" id="act_emptyRow" hidden style="margin-top:10px"><input type="checkbox" id="act_empty"> Came back empty</label>
+    <div class="act-entry">
+      <input id="act_serial" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Serial, then Enter" aria-label="Serial">
+      <button class="btn" type="button" id="act_add">Add</button>
+      <label class="btn" id="act_scanLbl" tabindex="0">📷 Scan<input type="file" id="act_photo" accept="image/*" capture="environment" hidden></label>
+    </div>
+    <div id="actPick" class="act-pick" hidden></div>
+    <div id="act_list" class="act-list"></div>
+    <button class="bigbtn primary" id="act_confirm" style="margin-top:12px" disabled>Confirm</button>
+    <div id="actResults" class="act-results"></div>
+  </div>
+</div>
+
+<div id="cylSheet" hidden role="dialog" aria-modal="true" aria-labelledby="cylTitle">
+  <div class="sheet">
+    <div style="display:flex;align-items:flex-start;gap:8px">
+      <div style="flex:1"><h2 id="cylTitle">Cylinders</h2><div class="sub" id="cylSub"></div></div>
+      <button class="btn sm" id="cylClose" aria-label="Close">✕</button>
+    </div>
+    <div id="cylWaiting" class="banner warn" hidden style="margin:0 0 8px"></div>
+    <h3 class="sec-h cyl-h" id="cylSlotsH">Delivering / Entregando</h3>
+    <div id="cylSlots" class="cyl-list"></div>
+    <button class="btn" type="button" id="cylAddSlot" hidden>+ Add a cylinder / Agregar</button>
+    <div id="cylCollectWrap">
+      <h3 class="sec-h cyl-h">Collecting / Recogiendo</h3>
+      <div id="cylCollect" class="cyl-list"></div>
+      <button class="btn sm" type="button" id="cylAddCollect">+ Another cylinder to pick up / Otro</button>
+    </div>
+    <div id="cylPick" class="act-pick" hidden>
+      <div id="cylPickHead" class="cyl-pick-h"></div>
+      <label class="bigbtn" id="cylScanLbl" tabindex="0">📷 Scan the tag / Foto de la etiqueta<input type="file" id="cyl_photo" accept="image/*" capture="environment" hidden></label>
+      <div id="cylCands"></div>
+      <div class="act-entry" style="margin-top:0">
+        <input id="cyl_typed" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Or type the serial / O escriba el número" aria-label="Serial on the tag">
+        <button class="btn" type="button" id="cyl_use">Use</button><button class="btn" type="button" id="cyl_cancel">Cancel</button>
+      </div>
+      <div id="cylPickMsg" class="hint"></div>
+    </div>
+    <div id="cylNew" class="cyl-new" hidden>
+      <div class="cyl-pick-h" id="cylNewHead">Not in the register yet — add it</div>
+      <div class="grid two">
+        <label class="f">Type<select id="cyln_type"></select></label>
+        <label class="f">Owner<select id="cyln_owner"></select></label>
+        <label class="f">Fill<select id="cyln_fill"><option value="full">full</option><option value="empty">empty</option><option value="unknown">unknown</option></select></label>
+      </div>
+      <div class="a-btns"><button class="btn primary" type="button" id="cyln_ok">Add it</button><button class="btn" type="button" id="cyln_cancel">Cancel</button></div>
+    </div>
+    <button class="bigbtn primary" id="cylDone" style="margin-top:12px">Done / Listo</button>
+    <div id="cylStatus"></div>
+  </div>
+</div>
+
 <div id="podSheet" hidden role="dialog" aria-modal="true" aria-labelledby="podTitle">
   <div class="sheet">
     <div style="display:flex;align-items:flex-start;gap:8px">
@@ -740,5 +852,6 @@
 <script src="/customers.js"></script>
 <script src="/import.js"></script>
 <script src="/documents.js"></script>
+<script src="/assets.js"></script>
 </body>
 </html>

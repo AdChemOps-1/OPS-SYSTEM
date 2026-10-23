@@ -811,7 +811,7 @@ function fillStatic(){
 }
 function setTab(t){
   state.tab=t;
-  ["new","bol","open","today","setup","customers","documents","mydocs","users"].forEach(function(k){
+  ["new","bol","open","today","setup","customers","documents","assets","mydocs","users"].forEach(function(k){
     $("tab-"+k).setAttribute("aria-selected",k===t?"true":"false");
     $("panel-"+k).hidden=(k!==t);
   });
@@ -823,6 +823,7 @@ function setTab(t){
   if(t==="users") renderUsers();
   if(t==="customers") renderCustomers();
   if(t==="documents") renderDocsHub();
+  if(t==="assets") renderAssets();
   if(t==="mydocs") renderMyDocs();
 }
 function codeChip(o){
@@ -1019,6 +1020,7 @@ function renderToday(){
     b.onclick=function(){ var o=state.orders.find(function(x){return x.id===b.getAttribute("data-capture");}); if(o) openCapture(o,siteOf(o)); }; });
   todayExtras(siteKeys);
   updatePodQueueNote();
+  if(typeof renderTruckCard==="function") renderTruckCard();
 }
 function updateCounts(){
   $("cntOpen").textContent=state.orders.filter(function(o){return ["Paid","Cancelled","Invoiced"].indexOf(o.status)<0;}).length;
@@ -1039,7 +1041,7 @@ function updateCounts(){
    ============================================================ */
 function renderOrdersOutState(){ var el=$("ordersOutState"); if(!el) return; $("sOrdersOut").value=state.settings.ordersOutSheetId||""; el.innerHTML=state.settings.ordersOutSheetId?'<div class="banner good" style="margin:0"><div><b>Orders Out is set.</b><div>Every scheduled, numbered and delivered order is written to it as it changes; Rebuild rewrites the whole sheet from the database.</div></div></div>':'<div class="banner warn" style="margin:0"><div><b>No Orders Out sheet yet.</b><div>Paste the link to the company\'s <i>Dispatch Orders Out</i> sheet. Until then nothing is reported back to the AR Command Center.</div></div></div>'; }
 function renderCustomersOutState(){ var el=$("customersOutState"); if(!el) return; $("sCustomersOut").value=state.settings.customersOutSheetId||""; el.innerHTML=state.settings.customersOutSheetId?'<div class="banner good" style="margin:0"><div><b>Customers Out is set.</b><div>Each customer\'s rows are rewritten whenever the customer, a site or a contact is saved; Rebuild rewrites the whole tab from the database.</div></div></div>':'<div class="banner warn" style="margin:0"><div><b>No Customers Out sheet yet.</b><div>Paste the link to the company\'s <i>Customers Out</i> sheet. Until then the AR Command Center keeps reading its own directory.</div></div></div>'; }
-function renderSetup(){renderShareState();renderFeedState();renderOrdersOutState();renderCustomersOutState();renderImportCard();renderBolNumState();renderCalState();renderDriveState();renderHubEditor();renderSegTable();renderHealth();renderWarnings();}
+function renderSetup(){renderShareState();renderFeedState();renderOrdersOutState();renderCustomersOutState();renderImportCard();renderBolNumState();renderCalState();renderDriveState();renderHubEditor();renderSegTable();renderHealth();renderWarnings();renderVendors();}
 function renderBolNumState(){
   var n=Number(state.settings.nextBol)||0, used=maxBolUsed();
   $("sNextBol").value=n||"";
@@ -1486,7 +1488,7 @@ async function downloadBol(){
 function clearBanner(k){var el=document.querySelector('[data-bkey="'+k+'"]'); if(el) el.remove();}
 function setConn(kind,text){$("connDot").className="dot"+(kind?" "+kind:"");$("connTxt").textContent=text;}
 function wire(){
-  ["new","bol","open","today","setup","mydocs"].forEach(function(k){ $("tab-"+k).onclick=function(){ if(k==="bol") state.bolOrder=null; setTab(k); }; });
+  ["new","bol","open","today","setup","assets","mydocs"].forEach(function(k){ $("tab-"+k).onclick=function(){ if(k==="bol") state.bolOrder=null; setTab(k); }; });
   wireCustomers(); wireImport(); wireDocuments();
   $("fHub").onchange=function(){refreshId();renderLines();scheduleLive();};
   $("fDate").onchange=function(){refreshId();scheduleLive();};
@@ -1741,9 +1743,12 @@ function podIdb(){
   if(podDb) return Promise.resolve(podDb);
   return new Promise(function(resolve){
     try{
-      var r=indexedDB.open("adchem-pod",3);   // q: BOL photos, d: deposit slips, c: document captures (documents.js)
-      r.onupgradeneeded=function(){ var db=r.result; if(!db.objectStoreNames.contains("q")) db.createObjectStore("q",{keyPath:"orderId"}); if(!db.objectStoreNames.contains("d")) db.createObjectStore("d",{keyPath:"id"}); if(!db.objectStoreNames.contains("c")) db.createObjectStore("c",{keyPath:"id"}); };
-      r.onsuccess=function(){ podDb=r.result; resolve(podDb); };
+      var r=indexedDB.open("adchem-pod",4);   // q: BOL photos, d: deposit slips, c: document captures (documents.js), a: cylinder batches (assets.js)
+      r.onupgradeneeded=function(){ var db=r.result; if(!db.objectStoreNames.contains("q")) db.createObjectStore("q",{keyPath:"orderId"}); if(!db.objectStoreNames.contains("d")) db.createObjectStore("d",{keyPath:"id"}); if(!db.objectStoreNames.contains("c")) db.createObjectStore("c",{keyPath:"id"}); if(!db.objectStoreNames.contains("a")) db.createObjectStore("a",{keyPath:"id"}); };
+      // another tab holding an older version blocks the upgrade: answer null now (every caller falls back to not saving on this
+      // phone) rather than leave the queues waiting; a newer version opened elsewhere closes this one so it never blocks that tab
+      r.onsuccess=function(){ var db=r.result; db.onversionchange=function(){ try{ db.close(); }catch(e){} if(podDb===db) podDb=null; }; podDb=db; resolve(db); };
+      r.onblocked=function(){ resolve(null); };
       r.onerror=function(){ resolve(null); };
     }catch(e){ resolve(null); }
   });
@@ -1767,13 +1772,13 @@ function podQueueRemove(id){
 }
 async function updatePodQueueNote(){
   var host=$("podQueueNote"); if(!host) return;
-  var q=await podQueueAll(), dq=await depQueueAll(), cq=await capQueueAll(), n=q.length+dq.length+cq.length;
+  var q=await podQueueAll(), dq=await depQueueAll(), cq=await capQueueAll(), aq=typeof cylQueueAll==="function"?await cylQueueAll():[], n=q.length+dq.length+cq.length+aq.length;
   if(!n){ host.innerHTML=""; host.hidden=true; return; }
   host.hidden=false;
   host.innerHTML='<div class="banner warn" style="margin:0 0 12px"><div><b>'+n+' photo'+(n===1?"":"s")+' waiting to send</b>'+
-    q.map(function(x){return esc((x.order.bolNo?"BOL "+x.order.bolNo:x.order.id)+" · "+x.order.customer);}).concat(dq.map(function(x){return "Deposit slip"+(x.d&&x.d.amount?" · "+money(x.d.amount):"")+" · "+new Date(x.at).toLocaleDateString();})).concat(cq.map(function(x){return "Document photo · "+esc(x.label||x.orderId);})).join("<br>")+
+    q.map(function(x){return esc((x.order.bolNo?"BOL "+x.order.bolNo:x.order.id)+" · "+x.order.customer);}).concat(dq.map(function(x){return "Deposit slip"+(x.d&&x.d.amount?" · "+money(x.d.amount):"")+" · "+new Date(x.at).toLocaleDateString();})).concat(cq.map(function(x){return "Document photo · "+esc(x.label||x.orderId);})).concat(aq.map(function(x){var k=(x.events||[]).length; return esc("Cylinders · "+(x.label||"")+" · "+k+" cylinder"+(k===1?"":"s"));})).join("<br>")+
     '<div style="margin-top:6px"><button class="btn sm primary" id="podFlush">Send waiting photos</button></div></div></div>';
-  $("podFlush").onclick=async function(){ await podFlush(); await depFlush(); if(typeof capFlush==="function") await capFlush(); };
+  $("podFlush").onclick=async function(){ await podFlush(); await depFlush(); if(typeof capFlush==="function") await capFlush(); if(typeof cylFlush==="function") await cylFlush(); };
 }
 async function podFlush(){
   var q=await podQueueAll();
@@ -2141,7 +2146,8 @@ function readSegTable(){
 // manage_people is still accepted by dispatch_set_permissions (and kept when another switch changes) but has no switch: nothing
 // checks it yet, so offering it would grant nothing
 const MEMBER_PERMS=[["manage_customers","Manage customers"],["approve_driver_notes","Approve driver notes"],["run_imports","Run imports"],
-  ["view_documents","View documents"],["manage_documents","Manage documents"]];
+  ["view_documents","View documents"],["manage_documents","Manage documents"],
+  ["view_assets","View assets"],["manage_assets","Manage assets"]];
 async function renderUsers(){
   if(!state.isOwner) return;
   parkDocForm();   // the document form may sit in a member's Documents section, which is about to be redrawn
@@ -2230,6 +2236,7 @@ function applyAccess(){
   $("healthCard").hidden=!state.isOwner;
   ["tab-new","tab-bol","tab-setup","tab-customers"].forEach(function(k){ $(k).hidden=ro; });
   $("tab-documents").hidden=!canViewDocs(); if(state.tab==="documents"&&!canViewDocs()) state.tab=ro?"today":"new";
+  $("tab-assets").hidden=ro||!canViewAssets(); if(state.tab==="assets"&&$("tab-assets").hidden) state.tab=ro?"today":"new";
   var drv=state.role==="driver"; $("tab-mydocs").hidden=!drv; if(state.tab==="mydocs"&&!drv) state.tab=ro?"today":"new";   // a driver's own CDL and medical card
   if(ro){ $("btnSubmit").textContent="Drivers cannot create orders"; if(state.tab!=="today"&&state.tab!=="open"&&state.tab!=="mydocs") setTab("today"); }
 }
@@ -2276,7 +2283,7 @@ async function renderHealth(){
       '<div style="margin-top:6px">Documents bucket: '+esc((h.checks||{}).docsBucket||"—")+'<br>Expiry email: '+esc((h.checks||{}).expiryCron||"—")+'<br>Last expiry email: '+esc(h.lastExpiryEmail?fmtWhen(h.lastExpiryEmail):"never")+'</div></div></div>'; return; }
     var c=h.checks||{}, ok=function(v){return typeof v==="string"&&(v==="ok"||v.indexOf("ok ")===0||v.indexOf("ok —")===0);};
     host.innerHTML='<div class="banner '+(Object.values(c).every(ok)?"good":"warn")+'" style="margin:0"><div><b>Acting as '+esc(h.impersonate||"(no user set)")+' · mail goes out as '+esc(h.mailFrom)+' · BOLs to '+esc(h.ordersTo)+' · deposit slips to '+esc(h.accountingTo)+'</b>'+
-      '<div>Token: '+esc(c.token||"—")+'<br>AR Command Center: '+esc(c.sheet||"—")+'<br>Calendars: '+esc(c.calendar||"—")+'<br>Drive: '+esc(c.drive||"—")+'<br>Gmail: '+esc(c.gmail||"—")+'<br>Orders Out: '+esc(c.ordersOut||"—")+'<br>Customers Out: '+esc(c.customersOut||"—")+'<br>Import sheet: '+esc(c.importSheet||"—")+'<br>Documents bucket: '+esc(c.docsBucket||"—")+'<br>Expiry email: '+esc(c.expiryCron||"—")+'<br>Last expiry email: '+esc(h.lastExpiryEmail?fmtWhen(h.lastExpiryEmail):"never")+'</div></div></div>';
+      '<div>Token: '+esc(c.token||"—")+'<br>Vision: '+esc(c.vision||"—")+'<br>AR Command Center: '+esc(c.sheet||"—")+'<br>Calendars: '+esc(c.calendar||"—")+'<br>Drive: '+esc(c.drive||"—")+'<br>Gmail: '+esc(c.gmail||"—")+'<br>Orders Out: '+esc(c.ordersOut||"—")+'<br>Customers Out: '+esc(c.customersOut||"—")+'<br>Import sheet: '+esc(c.importSheet||"—")+'<br>Documents bucket: '+esc(c.docsBucket||"—")+'<br>Expiry email: '+esc(c.expiryCron||"—")+'<br>Last expiry email: '+esc(h.lastExpiryEmail?fmtWhen(h.lastExpiryEmail):"never")+'</div></div></div>';
   }catch(e){ host.innerHTML='<div class="banner bad" style="margin:0"><div><b>Server check failed</b><div>'+esc(e.message)+'</div></div></div>'; }
 }
 function wireAuth(){
@@ -2318,7 +2325,7 @@ async function loadCompanyData(){
   if(state.me.role==="driver"&&state.me.hub) lsSet("adchem_myhub",state.me.hub);
   await loadSitesFromDb();   // drivers too: the policy limits them to their hub's sites, which Today's site notes read
   if(state.canEdit) await loadCalendars();
-  closeCustomer(); state.customers=[]; resetDocs();
+  closeCustomer(); state.customers=[]; resetDocs(); resetAssets();
   if(state.canEdit){ try{ state.customers=await CDB.customers(); }catch(e){ banner("bad","Couldn't load customers","<div>"+esc(e.message)+"</div>"); } }
   fillAccounts();
   setConn("ok","Connected");

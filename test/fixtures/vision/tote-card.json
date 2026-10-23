@@ -1,0 +1,57 @@
+{
+  "responses": [
+    {
+      "textAnnotations": [
+        {
+          "description": "TOTE 0042\n525 LB"
+        },
+        {
+          "description": "TOTE 0042",
+          "boundingPoly": {
+            "vertices": [
+              {
+                "x": 100,
+                "y": 100
+              },
+              {
+                "x": 900,
+                "y": 100
+              },
+              {
+                "x": 900,
+                "y": 400
+              },
+              {
+                "x": 100,
+                "y": 400
+              }
+            ]
+          }
+        },
+        {
+          "description": "525 LB",
+          "boundingPoly": {
+            "vertices": [
+              {
+                "x": 100,
+                "y": 600
+              },
+              {
+                "x": 250,
+                "y": 600
+              },
+              {
+                "x": 250,
+                "y": 640
+              },
+              {
+                "x": 100,
+                "y": 640
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

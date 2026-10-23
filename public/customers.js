@@ -7,7 +7,7 @@ state.customers=state.customers||[]; state.customer=null; state.custStatus={}; s
 const CUST_FIELDS=[["cName","name"],["cAka","also_known_as"],["cLegal","legal_name"],["cStatus","account_status"],["cHub","primary_hub"],["cParent","parent_customer_id"],
   ["cBillStreet","billing_street"],["cBillCity","billing_city"],["cBillState","billing_state"],["cBillZip","billing_zip"],["cVerified","last_verified"],["cNotes","notes"]];
 const CUST_NULLABLE={parent_customer_id:true,last_verified:true};
-const CUST_TABS=["profile","sites","contacts","activity","documents","history"];
+const CUST_TABS=["profile","sites","contacts","activity","documents","cylinders","history"];
 const CUST_MUST=15;
 
 function canManageCustomers(){ var me=state.me||{}; return !!(me.isSuper||(me.perms||{}).manage_customers); }
@@ -105,6 +105,7 @@ function drawCustomers(){
 
 /* ---------- customer page ---------- */
 function setCustTab(t){ state.custTab=t;
+  $("ctab-cylinders").hidden=!canViewAssets(); if(t==="cylinders"&&!canViewAssets()) t=state.custTab="profile";
   CUST_TABS.forEach(function(k){ $("ctab-"+k).setAttribute("aria-selected",k===t?"true":"false"); $("cpane-"+k).hidden=(k!==t); });
   if(t!=="profile") loadCustPane(t); }
 function custHeader(){
@@ -195,7 +196,7 @@ async function refreshComplete(){ if(!custSaved()) return;
   catch(e){ banner("warn","Couldn't refresh profile completeness","<div>"+esc(e.message)+"</div>",{autoclose:6000}); } }
 async function loadCustPane(t){
   if(!state.customer) return;
-  try{ if(t==="sites") await renderSites(); else if(t==="contacts") await renderContacts(); else if(t==="activity") await renderActivity(); else if(t==="documents") await renderCustDocs(); else if(t==="history") await renderHistory(); }
+  try{ if(t==="sites") await renderSites(); else if(t==="contacts") await renderContacts(); else if(t==="activity") await renderActivity(); else if(t==="documents") await renderCustDocs(); else if(t==="cylinders") await renderCustAssets(state.customer.id); else if(t==="history") await renderHistory(); }
   catch(e){ banner("bad","Couldn't load "+esc(t),"<div>"+esc(e.message)+"</div>"); }
 }
 
@@ -230,11 +231,12 @@ async function renderSites(){
   $("btnAddSite").disabled=ro||!custSaved();
   if(!custSaved()){ $("siteNew").hidden=true; $("siteList").innerHTML=notSavedYet(); return; }
   var sites=await CDB.sitesFor(c.id)||[]; if(!custStill(c)) return;
-  var notes=await Promise.all(sites.map(function(s){ return CDB.hubNotesFor(s.site_key); })); if(!custStill(c)) return;
+  var both=await Promise.all([Promise.all(sites.map(function(s){ return CDB.hubNotesFor(s.site_key); })),custSiteAssets(sites).catch(function(){ return {}; })]); if(!custStill(c)) return;
+  var notes=both[0], held=both[1];
   state.custSites=sites; state.custHubNotes={}; sites.forEach(function(s,i){ state.custHubNotes[s.site_key]=notes[i]||[]; });
   $("siteList").innerHTML=sites.length?sites.map(function(s){
     return '<details class="site-card"'+(state.openSite===s.site_key?" open":"")+"><summary><b>"+esc(s.site_label||s.site_key)+'</b><span class="chip k-none">'+esc(s.hub||"no hub")+"</span>"+
-      '<span class="hint">'+esc([s.addr,s.city].filter(Boolean).join(", ")||"no address")+"</span></summary>"+siteForm(s,state.custHubNotes[s.site_key],false)+"</details>"; }).join("")
+      '<span class="hint">'+esc([s.addr,s.city].filter(Boolean).join(", ")||"no address")+"</span>"+custSiteHint(held[s.site_key])+"</summary>"+siteForm(s,state.custHubNotes[s.site_key],false)+"</details>"; }).join("")
     :custEmpty("No sites yet",ro?"Someone with the Manage customers permission can add them.":"Press Add site to add the first delivery site.");
 }
 function openNewSite(){
@@ -386,27 +388,42 @@ async function renderHistory(){
 
 /* ---------- Today: the site's notes under each stop ----------
    renderToday (app.js) calls siteNotesHtml(site, hub) per stop from state.todayX, then todayExtras(keys) once per render:
-   one read each of hub notes, site contacts and the driver's own notes for all the stops' sites, re-rendering only if they changed. */
+   one read each of hub notes, site contacts and the driver's own notes for all the stops' sites, re-rendering only if they changed.
+   For a driver, also the containers the register has at each stop's site (assets.js; X.assets by site key, copied to
+   state.todayAssets for the Cylinders sheet) and the container types; a failure there leaves the site notes standing, and a
+   failed read keeps the last containers read for this company. */
 // keyed by company: a site_key is unique only within one company
-function emptyTodayX(){ return {company:state.company,hubNotes:{},contacts:{},mine:{}}; }
-state.todayX=emptyTodayX();
+function emptyTodayX(){ return {company:state.company,hubNotes:{},contacts:{},mine:{},assets:{}}; }
+state.todayX=emptyTodayX(); state.todayAssets={};
 var todaySeq=0, todayHold=false;
 function groupByKey(rows){ var by={}; (rows||[]).forEach(function(r){ (by[r.site_key]=by[r.site_key]||[]).push(r); }); return by; }
+// a driver's containers at the stops' sites (one ADB.assets read per site, as {site_key: rows}) and the container types, for the
+// Cylinders sheet; never throws: on a failure (no signal) it gives null and the site notes still show
+async function todayAssetsFor(keys){
+  try{ var r=await Promise.all([Promise.all(keys.map(function(k){ return ADB.assets({location_kind:"site",location_id:k}); })),ADB.types()]), by={};
+    keys.forEach(function(k,i){ if(r[0][i].length) by[k]=r[0][i]; });
+    return {assets:by,types:r[1]}; }
+  catch(e){ return null; }
+}
 async function todayExtras(keys){
   if(todayHold) return;
   var seq=++todaySeq, co=state.company, X=emptyTodayX();
+  // the register at the stops is kept from the last read when this one fails, so the Cylinders sheet still works with no signal
+  var lastAssets=state.todayX.company===co&&state.todayX.assets||{};
   if(keys.length){
-    try{ var r=await Promise.all([CDB.hubNotesFor(keys),CDB.contactsForSite(keys),CDB.myDriverNotes(keys)]);
-      X={company:co,hubNotes:groupByKey(r[0]),contacts:groupByKey(r[1]),mine:groupByKey(r[2])}; }
-    catch(e){ if(seq===todaySeq) banner("warn","Couldn't load the site notes","<div>"+esc(e.message)+"</div>",{autoclose:8000,key:"sitenotes"}); X=emptyTodayX(); }   // render none rather than stale ones
+    try{ var r=await Promise.all([CDB.hubNotesFor(keys),CDB.contactsForSite(keys),CDB.myDriverNotes(keys),state.role==="driver"?todayAssetsFor(keys):null]);
+      X={company:co,hubNotes:groupByKey(r[0]),contacts:groupByKey(r[1]),mine:groupByKey(r[2]),assets:r[3]?r[3].assets:state.role==="driver"?lastAssets:{}};
+      if(r[3]&&r[3].types&&seq===todaySeq&&co===state.company) state.ctypes=r[3].types; }
+    catch(e){ if(seq===todaySeq) banner("warn","Couldn't load the site notes","<div>"+esc(e.message)+"</div>",{autoclose:8000,key:"sitenotes"}); X=emptyTodayX(); if(state.role==="driver") X.assets=lastAssets; }   // render no notes rather than stale ones
   }
   if(seq!==todaySeq||co!==state.company) return;
-  var same=JSON.stringify(X)===JSON.stringify(state.todayX); state.todayX=X;
+  var same=JSON.stringify(X)===JSON.stringify(state.todayX); state.todayX=X; state.todayAssets=X.assets;
   if(!same&&state.tab==="today"){ todayHold=true; try{ renderToday(); } finally{ todayHold=false; } }
 }
 function noteStatusChip(n){ var s=n.status||"pending"; return '<span class="chip '+(s==="approved"?"k-D":s==="rejected"?"st stop":"warn")+'">'+esc(s)+"</span>"; }
 // orderId (Today's stop): adds the Photo of license / document button (documents.js) next to Add note, for drivers only (the
-// capture is a driver's write; the office files documents on the customer page)
+// capture is a driver's write; the office files documents on the customer page), then the Cylinders button (assets.js) when the
+// order has gas or the register has containers at the site
 function siteNotesHtml(site,hub,orderId){
   if(!site) return "";
   var X=state.todayX.company===state.company?state.todayX:emptyTodayX(), k=site.siteKey;
@@ -420,7 +437,9 @@ function siteNotesHtml(site,hub,orderId){
     ' <a href="'+esc(telHref(c.phone))+'">'+esc(c.phone)+"</a></div>"; }).join("");
   var mine=X.mine[k]||[];
   if(mine.length) h+='<div class="sn-mine">'+mine.map(function(n){ return '<div class="sn-line">'+esc(n.summary)+" "+noteStatusChip(n)+(n.status==="rejected"&&n.rejection_reason?' <span class="hint">'+esc(n.rejection_reason)+"</span>":"")+"</div>"; }).join("")+"</div>";
-  h+=site.customerId?'<div class="sn-act"><button class="btn sm" data-note="'+esc(k)+'">Add note</button>'+(orderId&&state.role==="driver"?captureButtonHtml(orderId):"")+'<span class="hint">The office checks it before it goes on the site.</span></div>':"";
+  var drv=!!orderId&&state.role==="driver", cyl=drv&&typeof cylindersButtonHtml==="function"?cylindersButtonHtml(orderId,site):"";
+  h+=site.customerId?'<div class="sn-act"><button class="btn sm" data-note="'+esc(k)+'">Add note</button>'+(drv?captureButtonHtml(orderId)+cyl:"")+'<span class="hint">The office checks it before it goes on the site.</span></div>'
+    :cyl?'<div class="sn-act">'+cyl+"</div>":"";
   return h?'<div class="site-notes">'+h+"</div>":"";
 }
 async function addDriverNote(siteKey){

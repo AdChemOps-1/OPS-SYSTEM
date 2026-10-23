@@ -73,7 +73,13 @@ const ok = (data) => new Response(JSON.stringify(data), { status: 200, headers: 
 const decode = raw => Buffer.from(raw.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
 const eqParam = (u, k) => { const m = u.match(new RegExp('[?&]' + k + '=eq\\.([^&]+)')); return m ? decodeURIComponent(m[1]) : null; };
 
-async function run({ headers = {}, body = { send: true }, member = {}, env: envExtra = {}, serviceNames = false, waitUntil = false } = {}) {
+// the production code reads "today" from the clock, so the tests pin it: new Date() / Date.now() are 2026-10-20 10:00 Pacific while a run is in flight
+async function run(opts) {
+  const RealDate = globalThis.Date, fixed = RealDate.parse('2026-10-20T10:00:00-07:00');
+  globalThis.Date = class extends RealDate { constructor(...a) { super(...(a.length ? a : [fixed])); } static now() { return fixed; } };
+  try { return await runAt(opts); } finally { globalThis.Date = RealDate; }
+}
+async function runAt({ headers = {}, body = { send: true }, member = {}, env: envExtra = {}, serviceNames = false, waitUntil = false } = {}) {
   const env = { SUPABASE_URL: 'http://sb', SUPABASE_ANON_KEY: 'anon', SUPABASE_SERVICE_ROLE_KEY: 'svc-key', EXPIRY_SECRET: 's3cret-long-random', APP_URL: 'https://ops.adchem.pro', GOOGLE_SA_JSON: await serviceAccount(), ...envExtra };
   const calls = [], real = globalThis.fetch;
   const companies = [...COMPANIES, { id: 'west', name: 'West Co', short_name: 'West', data: {} }];
@@ -170,7 +176,7 @@ test('Send now: a coordinator or a plain admin is 403; nothing read or sent', as
 
 // ---------- health: the documents bucket and the expiry job ----------
 import { onRequestGet as health } from '../../functions/api/health.js';
-async function runHealth({ bucket, cron, log = ok([]) }) {
+async function runHealth({ bucket, cron, log = ok([]), google = false }) {
   const calls = [], real = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
     const u = String(url); calls.push({ url: u, method: init.method || 'GET', headers: init.headers || {} });
@@ -179,13 +185,15 @@ async function runHealth({ bucket, cron, log = ok([]) }) {
     if (u.includes('/rest/v1/dispatch_users')) return ok([{ email: 'boss@adchem.pro', name: 'Boss' }]);
     if (u.includes('/rest/v1/dispatch_company_settings')) return ok([{ data: {} }]);
     if (u.includes('/rest/v1/companies')) return ok([{ id: 'adchem', name: 'AdChem, LLC', short_name: 'AdChem', data: {} }]);
+    if (u === 'https://oauth2.googleapis.com/token') return ok({ access_token: 'gtok', expires_in: 3600 });
+    if (u === 'https://vision.googleapis.com/v1/images:annotate') return ok({ responses: [{}] });
     if (u.endsWith('/rest/v1/rpc/dispatch_docs_bucket_ok')) return bucket;
     if (u.endsWith('/rest/v1/rpc/dispatch_cron_status')) return cron;
     if (u.includes('/rest/v1/dispatch_log')) return log;
     return new Response('nope', { status: 404 });
   };
   try {
-    const res = await health({ request: new Request('http://x/api/health?company=adchem', { headers: { authorization: 'Bearer tok' } }), env: { SUPABASE_URL: 'http://sb', SUPABASE_ANON_KEY: 'anon' } });
+    const res = await health({ request: new Request('http://x/api/health?company=adchem', { headers: { authorization: 'Bearer tok' } }), env: { SUPABASE_URL: 'http://sb', SUPABASE_ANON_KEY: 'anon', ...(google ? { GOOGLE_SA_JSON: await serviceAccount() } : {}) } });
     return { j: await res.json(), calls };
   } finally { globalThis.fetch = real; }
 }
@@ -213,4 +221,7 @@ test('health: docsBucket and expiryCron', async () => {
   assert.equal(off.j.checks.docsBucket, 'bucket is public'); assert.equal(off.j.checks.expiryCron, 'not scheduled', 'an inactive job is not scheduled');
   const other = await runHealth({ bucket: ok('ok'), cron: ok([{ jobname: 'dispatch-expiry-email', schedule: '30 13 * * *', active: true }]) });
   assert.equal(other.j.checks.expiryCron, 'ok — 30 13 * * *', 'another schedule is shown as is');
+  const g = await runHealth({ bucket: ok('ok'), cron: ok([]), google: true });
+  assert.equal(g.j.checks.token, 'ok'); assert.equal(g.j.checks.vision, 'ok', 'Cloud Vision is probed once Google is configured');
+  assert.ok(!('vision' in a.j.checks), 'not probed without Google');
 });

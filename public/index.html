@@ -733,6 +733,33 @@
   </div>
 </div>
 
+<div id="actSheet" hidden role="dialog" aria-modal="true" aria-labelledby="actTitle">
+  <div class="sheet">
+    <div style="display:flex;align-items:flex-start;gap:8px">
+      <div style="flex:1"><h2 id="actTitle">Fill</h2><div class="sub" id="actSub"></div></div>
+      <button class="btn sm" id="actClose" aria-label="Close">✕</button>
+    </div>
+    <div class="grid two">
+      <label class="f" id="act_hubLbl">Hub<select id="act_hub"></select></label>
+      <label class="f" id="act_vendorRow" hidden>Vendor<select id="act_vendor"></select></label>
+      <label class="f" id="act_toHubRow" hidden>To hub<select id="act_to_hub"></select></label>
+      <label class="f" id="act_typeRow"><span id="act_typeLbl">Type, for serials not in the register</span><select id="act_type"></select></label>
+      <label class="f" id="act_ownerRow" hidden>Owner<select id="act_owner"></select></label>
+      <label class="f" id="act_fillRow" hidden>Fill<select id="act_fill"><option value="unknown">unknown</option><option value="full">full</option><option value="empty">empty</option></select></label>
+    </div>
+    <label class="perm-chk" id="act_emptyRow" hidden style="margin-top:10px"><input type="checkbox" id="act_empty"> Came back empty</label>
+    <div class="act-entry">
+      <input id="act_serial" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Serial, then Enter" aria-label="Serial">
+      <button class="btn" type="button" id="act_add">Add</button>
+      <label class="btn" id="act_scanLbl" tabindex="0">📷 Scan<input type="file" id="act_photo" accept="image/*" capture="environment" hidden></label>
+    </div>
+    <div id="actPick" class="act-pick" hidden></div>
+    <div id="act_list" class="act-list"></div>
+    <button class="bigbtn primary" id="act_confirm" style="margin-top:12px" disabled>Confirm</button>
+    <div id="actResults" class="act-results"></div>
+  </div>
+</div>
+
 <div id="podSheet" hidden role="dialog" aria-modal="true" aria-labelledby="podTitle">
   <div class="sheet">
     <div style="display:flex;align-items:flex-start;gap:8px">

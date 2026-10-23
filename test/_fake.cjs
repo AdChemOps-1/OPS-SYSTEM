@@ -232,7 +232,8 @@ function fakeAssets(T,b){
     return {code:200,body:{candidates:[{text:'AB1234',score:0.9},{text:'DOT3AA2015',score:0.2}],raw:'AB1234 DOT3AA2015'}}; }
   if(b.action==='counts'){ if(!hasPerm(m,'view_assets')) return {code:403,body:{error:{code:'forbidden',message:"You don't have the view assets permission."}}};
     const g={}; (T.dispatch_assets||[]).filter(a=>a.company===co).forEach(a=>{ const ct=T.dispatch_container_types.find(c=>c.company===co&&c.id===a.container_type_id)||{};
-      const k=[a.container_type_id,a.fill_state,a.location_kind,a.condition].join('|'); (g[k]=g[k]||{container_type_id:a.container_type_id,product:ct.product||null,size_label:ct.size_label||null,fill_state:a.fill_state,location_kind:a.location_kind,condition:a.condition,n:0}).n++; });
+      const hub=a.location_kind==='hub'?a.location_id:null;   // as the dispatch_asset_counts view: hub when at a hub, else null
+      const k=[a.container_type_id,a.fill_state,a.location_kind,a.condition,hub].join('|'); (g[k]=g[k]||{container_type_id:a.container_type_id,product:ct.product||null,size_label:ct.size_label||null,fill_state:a.fill_state,location_kind:a.location_kind,condition:a.condition,hub,n:0}).n++; });
     return {code:200,body:{rows:Object.values(g)}}; }
   if(b.action==='events'){ if(!m) return {code:403,body:{error:{code:'no_access',message:'You are not a member of that company.'}}};
     const driver=m.role==='driver'&&!hasPerm(m,'manage_assets'); const results=[];

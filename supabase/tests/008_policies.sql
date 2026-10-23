@@ -16,7 +16,7 @@ begin
   insert into public.dispatch_invites (email, name, role, hub, company) values
     ('t008-sa@example.test','T SA','admin','','adchem'), ('t008-mg@example.test','T MG','coordinator','','adchem'),
     ('t008-vw@example.test','T VW','coordinator','','adchem'), ('t008-cn@example.test','T CN','coordinator','','adchem'),
-    ('t008-nm@example.test','T NM','admin','','north')
+    ('t008-dr@example.test','T DR','driver','EB','adchem'), ('t008-nm@example.test','T NM','admin','','north')
     on conflict (email) do update set role = excluded.role, hub = excluded.hub, company = excluded.company, accepted_at = null, revoked_at = null;
   insert into auth.users (id, instance_id, aud, role, email, raw_user_meta_data, raw_app_meta_data, created_at, updated_at)
   select u, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', e, '{}'::jsonb, '{}'::jsonb, now(), now()

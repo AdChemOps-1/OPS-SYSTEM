@@ -31,7 +31,7 @@ https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/cal
 
 4. Authorize.
 
-The documents feature adds no Google scope. Five scopes, and what each one is for: **spreadsheets** — read FEED_ORDERS and write *Dispatch Orders Out* (writes reach only sheets shared to it as editor; the AR Command Center is shared as viewer, so the app cannot write to it); **calendar.events** — the delivery calendars (create, update, and move an event when an order changes hub); **drive.file** — create BOL files in the folder; **gmail.send** — the BOL and deposit-slip emails; **gmail.settings.basic** — lets the health check confirm that orders@ is a verified send-as address, so a mis-sent From never goes unnoticed. It cannot read anyone's inbox or touch other users.
+The documents feature adds no Google scope, and neither does Inventory: the stock alert email rides the same daily expiry job (README, *Expiry email*), sends through the same **gmail.send** scope, and goes to the stock alert addresses on **Setup → Warnings**. Five scopes, and what each one is for: **spreadsheets** — read FEED_ORDERS and write *Dispatch Orders Out* (writes reach only sheets shared to it as editor; the AR Command Center is shared as viewer, so the app cannot write to it); **calendar.events** — the delivery calendars (create, update, and move an event when an order changes hub); **drive.file** — create BOL files in the folder; **gmail.send** — the BOL and deposit-slip emails; **gmail.settings.basic** — lets the health check confirm that orders@ is a verified send-as address, so a mis-sent From never goes unnoticed. It cannot read anyone's inbox or touch other users.
 
 ## D. Share these with `orders@adchem.pro`
 

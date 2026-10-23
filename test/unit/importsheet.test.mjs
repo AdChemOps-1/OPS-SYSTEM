@@ -17,7 +17,8 @@ test('TABS and HEADERS name the five tabs and the spec §8 columns', () => {
     assert.ok(HEADERS.directory.includes(h), 'directory header ' + h);
   assert.deepEqual(HEADERS.customers, ['Customer', 'Also Known As', 'Legal Name', 'Account Status', 'Street', 'City', 'State', 'ZIP', 'Contact', 'Phone', 'Email']);
   assert.equal(HEADERS.delivery.length, 15); assert.ok(HEADERS.delivery.includes('Cylinder / Container Notes (pigs, dewars, bins, swaps)'));
-  assert.deepEqual(HEADERS.licensing, []); assert.deepEqual(HEADERS.terms, []);
+  assert.deepEqual(HEADERS.licensing, ['Customer', 'Licensee Legal Name', 'License #', 'License Type', 'Status', 'Issued', 'Expires', 'County / Premises', 'Owners on the License', 'Entity Status (SOS)', 'Source', 'Checked', 'Notes']);
+  assert.deepEqual(HEADERS.terms, ['Customer', 'Quote Sent', 'Quote Accepted', 'PSA Sent for Signature', 'PSA Signed (Customer)', 'Countersigned (AdChem)', 'Effective Date']);
   for (const t of Object.keys(HEADERS)) assert.ok(!HEADERS[t].some(h => MONEY.test(h)), t + ' reads no money column');
 });
 
@@ -50,7 +51,7 @@ test('readTab + planImport: a renamed Customer ID column is reported missing and
 test('planImport: customers, the LA site, parent, Customers-only row, skipped tabs', () => {
   const plan = planImport(WB, NONE);
   assert.deepEqual(plan.problems, []);
-  assert.deepEqual(plan.missingHeaders, { 'Customer Directory': [], Customers: [], 'Delivery Notes': [] });
+  assert.deepEqual(plan.missingHeaders, { 'Customer Directory': [], Customers: [], 'Delivery Notes': [], 'Licensing & Entity': [], 'Account Terms': [] });
   const t7 = byName(plan, 'Type 7 Manufacturing'), llc = byName(plan, 'VKGL Manufacturing LLC'), la = byName(plan, 'VKGL Manufacturing - LA'),
     costa = byName(plan, 'Costa Cannabis'), bio = byName(plan, 'Bio-Rad');
   assert.deepEqual([t7.action, t7.decision, t7.customer_id, t7.source], ['customer', 'customer', 'ADC-0001', { tab: 'Customer Directory', row: 5 }]);
@@ -62,12 +63,13 @@ test('planImport: customers, the LA site, parent, Customers-only row, skipped ta
   assert.ok(bio.contacts.some(c => c.type === 'other' && c.first_name === 'Dana' && c.email === 'ap@bio-rad.example'), 'a Customers-tab contact is type other (spec §8), not billing (I10c)');
   assert.ok(!bio.contacts.some(c => c.type === 'billing'));
   // the Customers-tab duplicate of Type 7 merges (no own item) and fills only blanks: the Directory's AKA "T7" wins
-  assert.equal(plan.items.filter(i => i.name === 'Type 7 Manufacturing').length, 1);
+  assert.equal(plan.items.filter(i => i.name === 'Type 7 Manufacturing' && i.action === 'customer').length, 1);
   assert.equal(t7.fields.also_known_as, 'T7');
-  // one review row per Directory/Customers source row + one skip per deferred tab
+  // one review row per Directory/Customers source row + one per Licensing & Entity / Account Terms row
   assert.equal(plan.items.length, 7);
-  const skips = plan.items.filter(i => i.action === 'skip');
-  assert.deepEqual(skips.map(s => [s.source.tab, s.detail, s.decision]), [['Licensing & Entity', 'later stage', 'skip'], ['Account Terms', 'later stage', 'skip']]);
+  assert.deepEqual(plan.items.filter(i => i.action === 'license' || i.action === 'psa').map(s => [s.source.tab, s.source.row, s.action, s.decision, s.name]),
+    [['Licensing & Entity', 2, 'license', 'license', 'Costa Cannabis'], ['Account Terms', 2, 'psa', 'psa', 'Type 7 Manufacturing']]);
+  assert.ok(!plan.items.some(i => i.action === 'skip'), 'no tab is deferred any more');
   // field values
   assert.deepEqual({ ...t7.fields }, {
     name: 'Type 7 Manufacturing', also_known_as: 'T7', legal_name: 'Type 7 Manufacturing, Inc.', account_status: 'active', primary_hub: 'EB',
@@ -81,7 +83,8 @@ test('planImport: customers, the LA site, parent, Customers-only row, skipped ta
   assert.equal(costa.fields.gate_code, '#4455'); assert.deepEqual(costa.hubNotes, []);
   // no money anywhere in fields
   for (const i of plan.items) for (const k of Object.keys(i.fields || {})) assert.ok(!MONEY.test(k), i.name + ' field ' + k);
-  assert.ok(!JSON.stringify(plan).includes('5,000.00') && !JSON.stringify(plan).includes('Net 30') && !JSON.stringify(plan).includes('1,250.00'), 'no money value anywhere in the plan');
+  for (const money of ['5,000.00', 'Net 30', '1,250.00', '7,777.77', '1,500.00', 'Balance', 'Credit', 'Deposit'])
+    assert.ok(!JSON.stringify(plan).includes(money), 'no money value anywhere in the plan: ' + money);
 });
 
 test('planImport: contacts from the three blocks, honouring the same-as flags', () => {
@@ -217,10 +220,10 @@ async function serviceAccount() {
   return SA;
 }
 const res = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
-async function route(body, member) {
+async function route(body, member, seed) {
   const env = { SUPABASE_URL: 'https://sb.example', SUPABASE_ANON_KEY: 'anon', GOOGLE_SA_JSON: await serviceAccount() };
   const writes = [], gets = [];
-  const db = { dispatch_customers: [] };
+  const db = { dispatch_customers: [], dispatch_documents: [], ...(seed || {}) };
   const settings = { importSheetId: 'https://docs.google.com/spreadsheets/d/1IMPORTworkbookAAAAAAAAAA/edit', nextCustomerNumber: 3, tz: 'America/Los_Angeles' };
   const tabOf = { 'Customer Directory': 'directory', Customers: 'customers', 'Delivery Notes': 'delivery', 'Account Terms': 'terms' };
   const real = globalThis.fetch;
@@ -242,6 +245,7 @@ async function route(body, member) {
       if (t === 'dispatch_users') return res([{ email: 'jamie@adchem.pro', name: 'Jamie' }]);
       if (t === 'dispatch_company_settings') return res([{ data: settings }]);
       if (t === 'dispatch_customers') return res(db.dispatch_customers);
+      if (t === 'dispatch_documents') { assert.match(u, /source=eq\.import/); return res(db.dispatch_documents); }
       return res([]);
     }
     writes.push({ method, t, q: m[2] || '', body, prefer: init.headers && init.headers.prefer });
@@ -262,7 +266,7 @@ test('/api/import: 403 without run_imports; read returns the plan; a missing tab
   assert.equal(r.status, 200, JSON.stringify(r.json));
   assert.equal(r.json.sheetId, '1IMPORTworkbookAAAAAAAAAA');
   assert.deepEqual(r.json.plan.items.map(i => [i.name, i.action]), [['Type 7 Manufacturing', 'customer'], ['VKGL Manufacturing LLC', 'customer'], ['VKGL Manufacturing - LA', 'site'],
-    ['Costa Cannabis', 'customer'], ['Bio-Rad', 'customer'], ['Account Terms', 'skip']], 'Licensing & Entity tab absent in this workbook');
+    ['Costa Cannabis', 'customer'], ['Bio-Rad', 'customer'], ['Type 7 Manufacturing', 'psa']], 'Licensing & Entity tab absent in this workbook');
   assert.equal(r.writes.length, 0, 'read writes nothing');
   const nm = await route({ company: 'adchem', action: 'commit', plan: r.json.plan }, COORD);
   assert.equal(nm.status, 403, 'commit also needs manage_customers'); assert.match(nm.json.error.message, /manage customers/); assert.equal(nm.writes.length, 0);
@@ -272,14 +276,20 @@ test('/api/import commit: customers first, then sites, hub notes, contacts; log;
   const plan = planImport(WB, NONE);
   const r = await route({ company: 'adchem', action: 'commit', plan }, { ...COORD, is_super_admin: true, permissions: {} });
   assert.equal(r.status, 200, JSON.stringify(r.json));
-  assert.deepEqual(r.json.counts, { customers: 4, sites: 4, hubNotes: 1, contacts: 11, skipped: 2 });
+  assert.deepEqual(r.json.counts, { customers: 4, sites: 4, hubNotes: 1, contacts: 11, licenses: 1, psas: 1, documentsKept: 0, skipped: 0 });
   assert.equal(r.json.nextCustomerNumber, 9);
   assert.match(r.json.customersOut.skipped, /No Customers Out sheet/, 'Customers Out attempted (best effort)');
   const order = r.writes.map(w => w.t + (w.q.includes('on_conflict') ? '?' + w.q.split('on_conflict=')[1] : '') + ' ' + w.method);
   assert.deepEqual(order, ['dispatch_customers?company,customer_id POST', 'dispatch_company_settings?company POST', 'dispatch_customers?company,customer_id POST', 'dispatch_sites?company,site_key POST',
-    'dispatch_site_hub_notes?company,site_key,hub POST', 'dispatch_contacts POST', 'dispatch_log POST']);
+    'dispatch_site_hub_notes?company,site_key,hub POST', 'dispatch_contacts POST', 'dispatch_documents POST', 'dispatch_log POST']);
   assert.ok(order.indexOf('dispatch_company_settings?company POST') < order.indexOf('dispatch_sites?company,site_key POST'), 'numbering moves before any site/note/contact write');
-  const [cust, settings, parent, sites, , contacts, log] = r.writes;
+  const [cust, settings, parent, sites, , contacts, docs, log] = r.writes;
+  assert.deepEqual(docs.body.map(d => [d.doc_type, d.subject_type, d.subject_id, d.review_status, d.source, d.import_source.tab, d.import_source.row, d.import_source.sheetId, d.updated_by]).sort(), [
+    ['cannabis_license', 'customer', 'uuid-ADC-0007', 'live', 'import', 'Licensing & Entity', 2, '1IMPORTworkbookAAAAAAAAAA', 'u1'],
+    ['psa', 'customer', 'uuid-ADC-0001', 'live', 'import', 'Account Terms', 2, '1IMPORTworkbookAAAAAAAAAA', 'u1']]);
+  assert.equal(new Set(docs.body.map(d => Object.keys(d).sort().join())).size, 1, 'document rows share one key set');
+  assert.ok(docs.body.every(d => !('id' in d)), 'new documents are inserted, not upserted on an id');
+  for (const money of ['Net 30', '5,000.00', '7,777.77', '1,500.00', 'Check', 'Good']) assert.ok(!JSON.stringify(docs.body).includes(money), 'no money value in the documents: ' + money);
   assert.ok(cust.body.every(c => c.company === 'adchem' && c.updated_by === 'u1' && c.import_source.sheetId === '1IMPORTworkbookAAAAAAAAAA' && !('id' in c) && !('parent_ref' in c)));
   // parent links: one batched upsert of the linked rows (I9), not a PATCH per row
   assert.equal(r.writes.filter(w => w.method === 'PATCH').length, 0, 'no per-row PATCH');
@@ -291,7 +301,8 @@ test('/api/import commit: customers first, then sites, hub notes, contacts; log;
   assert.ok(contacts.body.every(c => /^uuid-ADC-/.test(c.customer_id)));
   assert.deepEqual(log.body, [{ company: 'adchem', who: 'u1', what: 'import', detail: { counts: r.json.counts, sheetId: '1IMPORTworkbookAAAAAAAAAA' } }]);
   assert.equal(settings.body[0].data.nextCustomerNumber, 9); assert.equal(settings.body[0].data.tz, 'America/Los_Angeles', 'other settings kept');
-  for (const w of r.writes) assert.ok(!/credit|balance|terms|price|deposit|"fee/i.test(JSON.stringify(w.body)), 'no money in ' + w.t);
+  // (the Account Terms tab's name is the documents' import_source, not a money value)
+  for (const w of r.writes) assert.ok(!/credit|balance|terms|price|deposit|"fee/i.test(JSON.stringify(w.body).replace(/"Account Terms"/g, '')), 'no money in ' + w.t);
 });
 
 // ---------- review fixes ----------
@@ -393,4 +404,167 @@ test('planImport: feed sites no customer claims are listed for later linking', (
   const plan = planImport(WB, existing);
   assert.deepEqual(plan.unlinkedSites, [{ site_key: 'Upside — Primary', customer: 'The Upside Group, Inc.', addr: '1 Feed St, Oakland CA 94601' }]);
   assert.deepEqual(planImport(WB, NONE).unlinkedSites, []);
+});
+
+// ---------- Stage 3B: Licensing & Entity and Account Terms ----------
+const lic = (plan) => plan.items.find(i => i.action === 'license');
+const psa = (plan) => plan.items.find(i => i.action === 'psa');
+
+test('planImport: a Licensing & Entity row becomes a license item; Balance (auto) is never read', () => {
+  const r = readTab(WB.licensing, undefined, HEADERS.licensing);
+  assert.deepEqual(r.missing, []);
+  assert.ok(!('Balance (auto)' in r.rows[0]), 'a column the tab does not expect is not read');
+  const plan = planImport(WB, NONE), it = lic(plan);
+  assert.deepEqual([it.key, it.action, it.decision, it.options, it.customer_id, it.name, it.detail], ['lic:2', 'license', 'license', ['license', 'skip'], 'ADC-0007', 'Costa Cannabis', 'C11-0000001-LIC · expires 2027-03-31']);
+  assert.deepEqual(it.doc, { doc_type: 'cannabis_license', number: 'C11-0000001-LIC', status: 'Active', issued: '2026-04-01', expires: '2027-03-31',
+    extra: { licensee_legal_name: 'Costa Cannabis Inc.', license_type: 'Distributor', county_premises: 'Los Angeles', owners: 'Rita Costa', entity_status_sos: 'Active', source_note: 'DCC lookup' },
+    source: 'import', checked_on: '2026-10-01', notes: 'Renewal due spring' });
+  assert.ok(!JSON.stringify(plan).includes('7,777.77') && !/Balance/.test(JSON.stringify(plan)), 'Balance (auto) absent from everything');
+});
+
+test('planImport: an Account Terms row becomes a psa item with the six dates and nothing else', () => {
+  const plan = planImport(WB, NONE), it = psa(plan);
+  assert.deepEqual([it.key, it.action, it.decision, it.options, it.customer_id, it.name, it.detail], ['psa:2', 'psa', 'psa', ['psa', 'skip'], 'ADC-0001', 'Type 7 Manufacturing', 'PSA · signed']);
+  assert.deepEqual(it.doc, { doc_type: 'psa', extra: { quote_sent: '2026-09-01', quote_accepted: '2026-09-05', sent_for_signature: '2026-09-10', signed_customer: '2026-09-12', countersigned: '2026-09-15', effective_date: '2026-10-01' } });
+  for (const money of ['Net 30', '5,000.00', '1,500.00', 'Good', 'Signed"']) assert.ok(!JSON.stringify(it).includes(money), 'no ' + money);
+});
+
+test('planImport: a date typed as "pending" leaves the field empty, keeps the item, and names the cell (Review Focus 5)', () => {
+  const wb = clone(WB); wb.terms[1][6] = 'pending'; wb.terms[1][11] = 'n/a'; wb.terms[1][8] = '46112';
+  const plan = planImport(wb, NONE), it = psa(plan);
+  assert.equal(it.action, 'psa');
+  assert.deepEqual(it.doc.extra, { quote_sent: '', quote_accepted: '2026-09-05', sent_for_signature: '2026-03-31', signed_customer: '2026-09-12', countersigned: '2026-09-15', effective_date: '' }, 'a sheet serial parses');
+  assert.ok(plan.problems.includes('Account Terms row 2, Quote Sent: “pending” is not a date'), plan.problems.join(' | '));
+  assert.ok(plan.problems.includes('Account Terms row 2, Effective Date: “n/a” is not a date'), plan.problems.join(' | '));
+  const wl = clone(WB); wl.licensing[1][6] = '13/45/2026';
+  const pl = planImport(wl, NONE);
+  assert.deepEqual([lic(pl).doc.expires, lic(pl).detail], ['', 'C11-0000001-LIC · expires —']);
+  assert.ok(pl.problems.includes('Licensing & Entity row 2, Expires: “13/45/2026” is not a date'), pl.problems.join(' | '));
+  // PSA stages: no dates → none; some → in progress
+  wb.terms[1].splice(6, 6, '', '', '', '', '', ''); assert.equal(psa(planImport(wb, NONE)).detail, 'PSA · none');
+  wb.terms[1][6] = '09/01/2026'; assert.equal(psa(planImport(wb, NONE)).detail, 'PSA · in progress');
+});
+
+test('planImport: a slice row naming no customer is a problem; an existing customer matches by name or ID', () => {
+  const wb = clone(WB); wb.licensing.push(['Nobody Farms', 'Nobody LLC', 'C11-9', 'Cultivator', 'Active', '', '', '', '', '', '', '', '']);
+  wb.terms.push(['ADC-0042', 'Net 15', '', '', '', '', '10/01/2026', '', '', '', '', '', '', '', '']);
+  const plan = planImport(wb, NONE);
+  const bad = plan.items.filter(i => i.action === 'problem');
+  assert.deepEqual(bad.map(i => [i.key, i.source.tab, i.source.row, i.decision]), [['lic:3', 'Licensing & Entity', 3, 'skip'], ['psa:3', 'Account Terms', 3, 'skip']]);
+  assert.match(bad[0].detail, /^Licensing & Entity row 3: no customer named “Nobody Farms”/);
+  assert.ok(plan.problems.some(p => /^Account Terms row 3: no customer named “ADC-0042”/.test(p)), plan.problems.join(' | '));
+  const existing = { ...NONE, customers: [{ id: 'c-42', company: 'adchem', customer_id: 'ADC-0042', name: 'Nobody Farms', updated_by: 'u9' }] };
+  const p2 = planImport(wb, existing);
+  assert.deepEqual(p2.items.filter(i => i.source.row === 3 && (i.action === 'license' || i.action === 'psa')).map(i => [i.action, i.customer_id, i.name]),
+    [['license', 'ADC-0042', 'Nobody Farms'], ['psa', 'ADC-0042', 'Nobody Farms']]);
+  const out = applyPlan(p2, existing, 'u1');
+  assert.deepEqual(out.documents.filter(d => d.customer_key === 'ADC-0042').map(d => d.doc.doc_type), ['cannabis_license', 'psa']);
+});
+
+test('applyPlan + bindRows: documents for the bound customers; skipping drops them', () => {
+  const plan = planImport(WB, NONE);
+  const out = applyPlan(plan, NONE, 'u1');
+  assert.deepEqual(out.documents.map(d => [d.customer_key, d.doc.doc_type, d.import_source]), [['ADC-0007', 'cannabis_license', { tab: 'Licensing & Entity', row: 2 }], ['ADC-0001', 'psa', { tab: 'Account Terms', row: 2 }]]);
+  const ids = new Map(out.customers.map(c => [c.customer_id, 'uuid-' + c.customer_id]));
+  const b = bindRows(out, ids, 'adchem', '2026-10-20T00:00:00Z');
+  assert.equal(b.documents.length, 2);
+  const l = b.documents.find(d => d.doc_type === 'cannabis_license'), p = b.documents.find(d => d.doc_type === 'psa');
+  assert.deepEqual([l.company, l.subject_type, l.subject_id, l.review_status, l.source, l.import_source, l.updated_by, l.updated_at, l.number, l.expires, l.extra.entity_status_sos],
+    ['adchem', 'customer', 'uuid-ADC-0007', 'live', 'import', { tab: 'Licensing & Entity', row: 2, at: '2026-10-20T00:00:00Z' }, 'u1', '2026-10-20T00:00:00Z', 'C11-0000001-LIC', '2027-03-31', 'Active']);
+  assert.deepEqual([p.subject_id, p.title, p.number, p.status, p.issued, p.expires, p.notes, p.extra.countersigned], ['uuid-ADC-0001', '', '', '', null, null, '', '2026-09-15'], 'a PSA carries the six dates and the defaults');
+  assert.ok(!b.documents.some(d => 'customer_key' in d || 'id' in d));
+  // the importer skips the license line, or the customer it belongs to
+  lic(plan).decision = 'skip';
+  assert.deepEqual(applyPlan(plan, NONE, 'u1').documents.map(d => d.doc.doc_type), ['psa']);
+  lic(plan).decision = 'license'; byName(plan, 'Costa Cannabis').decision = 'skip';
+  const sk = applyPlan(plan, NONE, 'u1');
+  assert.deepEqual(sk.documents.map(d => d.doc.doc_type), ['psa']);
+  assert.ok(sk.problems.some(p => /Licensing & Entity row 2/.test(p) && /skipped/.test(p)), sk.problems.join(' | '));
+  // a forged doc type or column cannot reach the table
+  const f = planImport(WB, NONE); lic(f).doc.doc_type = 'insurance_certificate'; lic(f).doc.credit_limit = '1'; psa(f).doc.number = 'X'; psa(f).doc.extra.balance = '9';
+  const fo = applyPlan(f, NONE, 'u1');
+  assert.deepEqual(fo.documents.map(d => d.doc.doc_type), ['cannabis_license', 'psa']);
+  assert.ok(!JSON.stringify(fo.documents).includes('credit_limit') && !JSON.stringify(fo.documents).includes('balance') && fo.documents[1].doc.number === '');
+});
+
+// a customer the first import wrote (its uuid is what the documents point at)
+const CUST = (cid, name) => ({ id: 'uuid-' + cid, company: 'adchem', customer_id: cid, name, updated_by: 'u1', import_source: { tab: 'Customer Directory', row: 1, at: '2026-10-20T00:00:00Z' }, updated_at: '2026-10-20T00:00:00Z' });
+
+test('re-run: the document the import created is updated in place; one edited in the app since is kept', () => {
+  const at = '2026-10-20T00:00:00Z';
+  const docs = [
+    { id: 'd-lic', company: 'adchem', doc_type: 'cannabis_license', subject_id: 'uuid-ADC-0007', source: 'import', import_source: { tab: 'Licensing & Entity', row: 2, at }, updated_by: 'u1', updated_at: at },
+    { id: 'd-psa', company: 'adchem', doc_type: 'psa', subject_id: 'uuid-ADC-0001', source: 'import', import_source: { tab: 'Account Terms', row: 2, at }, updated_by: 'u9', updated_at: '2026-10-21T00:00:00Z' }];
+  const existing = { ...NONE, customers: [CUST('ADC-0007', 'Costa Cannabis'), CUST('ADC-0001', 'Type 7 Manufacturing')], documents: docs };
+  const plan = planImport(WB, existing, 'u1');
+  assert.deepEqual([lic(plan).kept, psa(plan).kept], [undefined, true]);
+  assert.match(psa(plan).detail, /kept: edited in the app/);
+  const out = applyPlan(plan, existing, 'u1');
+  assert.deepEqual(out.documents.map(d => [d.id, d.doc.doc_type]), [['d-lic', 'cannabis_license']]);
+  assert.deepEqual(out.documentsKept, [{ id: 'd-psa', tab: 'Account Terms', row: 2, name: 'Type 7 Manufacturing' }]);
+  const b = bindRows(out, new Map([['ADC-0007', 'uuid-ADC-0007']]), 'adchem', '2026-10-22T00:00:00Z');
+  assert.deepEqual([b.documents[0].id, b.documents[0].import_source.at], ['d-lic', '2026-10-22T00:00:00Z']);
+  // the importer's own app edit after the import counts too (updated_at after import_source.at)
+  const mineEdited = { ...existing, documents: [{ ...docs[0], updated_at: '2026-10-21T00:00:00Z' }] };
+  assert.deepEqual(applyPlan(planImport(WB, mineEdited, 'u1'), mineEdited, 'u1').documentsKept.map(k => k.id), ['d-lic']);
+});
+
+test('/api/import commit: documents need manage_documents; a re-run upserts on id and keeps the app-edited one', async () => {
+  const plan = planImport(WB, NONE);
+  const coord = { ...COORD, permissions: { run_imports: true, manage_customers: true, view_documents: true } };
+  const no = await route({ company: 'adchem', action: 'commit', plan }, coord);
+  assert.equal(no.status, 403); assert.match(no.json.error.message, /manage documents/); assert.equal(no.writes.length, 0, 'refused before anything is written');
+  const skipped = clone(plan); skipped.items.forEach(i => { if (i.action === 'license' || i.action === 'psa') i.decision = 'skip'; });
+  const ok = await route({ company: 'adchem', action: 'commit', plan: skipped }, coord);
+  assert.equal(ok.status, 200, 'with the documents skipped, no documents permission is needed');
+  assert.ok(!ok.writes.some(w => w.t === 'dispatch_documents'));
+  const at = '2026-10-20T00:00:00Z';
+  const seed = { dispatch_customers: [CUST('ADC-0007', 'Costa Cannabis'), CUST('ADC-0001', 'Type 7 Manufacturing')], dispatch_documents: [
+    { id: 'd-lic', doc_type: 'cannabis_license', subject_id: 'uuid-ADC-0007', import_source: { tab: 'Licensing & Entity', row: 2, at }, updated_by: 'u1', updated_at: at },
+    { id: 'd-psa', doc_type: 'psa', subject_id: 'uuid-ADC-0001', import_source: { tab: 'Account Terms', row: 2, at }, updated_by: 'u9', updated_at: at }] };
+  const again = await route({ company: 'adchem', action: 'commit', plan }, { ...COORD, is_super_admin: true, permissions: {} }, seed);
+  assert.equal(again.status, 200, JSON.stringify(again.json));
+  const dw = again.writes.filter(w => w.t === 'dispatch_documents');
+  assert.deepEqual(dw.map(w => [w.q, w.body.map(d => d.id)]), [['?on_conflict=id', ['d-lic']]]);
+  assert.deepEqual([again.json.counts.licenses, again.json.counts.psas, again.json.counts.documentsKept], [1, 0, 1]);
+});
+
+test('re-run: a row inserted above moves no document to another customer; each follows its customer and type', () => {
+  const at = '2026-10-20T00:00:00Z';
+  const existing = { ...NONE, customers: [CUST('ADC-0007', 'Costa Cannabis'), CUST('ADC-0001', 'Type 7 Manufacturing')],
+    documents: [{ id: 'd-psa', doc_type: 'psa', subject_id: 'uuid-ADC-0001', source: 'import', import_source: { tab: 'Account Terms', row: 2, at }, updated_by: 'u1', updated_at: at }] };
+  const wb = clone(WB); wb.terms.splice(1, 0, ['Costa Cannabis', '', '', '', '', '', '09/01/2026', '', '', '', '', '', '', '', '']);
+  const plan = planImport(wb, existing, 'u1');
+  assert.deepEqual(plan.items.filter(i => i.action === 'psa').map(i => [i.source.row, i.name, /updates the imported document/.test(i.detail)]), [[2, 'Costa Cannabis', false], [3, 'Type 7 Manufacturing', true]]);
+  const out = applyPlan(plan, existing, 'u1');
+  const b = bindRows(out, new Map([['ADC-0007', 'uuid-ADC-0007'], ['ADC-0001', 'uuid-ADC-0001']]), 'adchem', '2026-10-22T00:00:00Z');
+  assert.deepEqual(b.documents.filter(d => d.doc_type === 'psa').map(d => [d.id || '(new)', d.doc_type, d.subject_id, d.import_source.row]), [['(new)', 'psa', 'uuid-ADC-0007', 2], ['d-psa', 'psa', 'uuid-ADC-0001', 3]]);
+  // a document from the same row but of another type is never reused either
+  const lic = { ...existing, documents: [{ ...existing.documents[0], doc_type: 'cannabis_license', import_source: { tab: 'Account Terms', row: 2, at } }] };
+  assert.ok(!applyPlan(planImport(WB, lic, 'u1'), lic, 'u1').documents.some(d => d.id), 'a license id is not reused for a PSA');
+  // bindRows reuses an id only for the customer it already belongs to
+  const forgedBind = bindRows({ documents: [{ id: 'd-psa', subject_id: 'uuid-ADC-0001', customer_key: 'ADC-0007', doc: { doc_type: 'psa', extra: {} }, import_source: { tab: 'Account Terms', row: 2 } }] }, new Map([['ADC-0007', 'uuid-ADC-0007']]), 'adchem', at);
+  assert.equal(forgedBind.documents[0].id, undefined);
+});
+
+test('a forged source tab is ignored server-side; one document id is never written twice in a commit', async () => {
+  const at = '2026-10-20T00:00:00Z';
+  const existing = { ...NONE, customers: [CUST('ADC-0007', 'Costa Cannabis'), CUST('ADC-0001', 'Type 7 Manufacturing')],
+    documents: [{ id: 'd-psa', doc_type: 'psa', subject_id: 'uuid-ADC-0001', source: 'import', import_source: { tab: 'Account Terms', row: 2, at }, updated_by: 'u1', updated_at: at }] };
+  const plan = planImport(WB, existing, 'u1');
+  lic(plan).source = { tab: 'Account Terms', row: 2 };   // a license line posing as the PSA's row
+  const out = applyPlan(plan, existing, 'u1');
+  assert.deepEqual(out.documents.map(d => [d.id, d.doc.doc_type]), [['d-psa', 'psa']], 'the forged license is dropped; the PSA keeps its document');
+  assert.ok(out.problems.some(p => /license line must come from the Licensing & Entity tab/.test(p)), out.problems.join(' | '));
+  // two PSA lines for the same customer and row: the document is updated once, the second line is a new one
+  const twice = planImport(WB, existing, 'u1'); twice.items.push({ ...clone(psa(twice)), key: 'psa:2b' });
+  const o2 = applyPlan(twice, existing, 'u1');
+  assert.deepEqual(o2.documents.filter(d => d.doc.doc_type === 'psa').map(d => d.id || '(new)'), ['d-psa', '(new)']);
+  // the route: the forged plan writes only the PSA, upserted once on its id
+  const seed = { dispatch_customers: existing.customers, dispatch_documents: existing.documents };
+  const r = await route({ company: 'adchem', action: 'commit', plan }, { ...COORD, is_super_admin: true, permissions: {} }, seed);
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  const dw = r.writes.filter(w => w.t === 'dispatch_documents');
+  assert.deepEqual(dw.map(w => [w.q, w.body.map(d => [d.id, d.doc_type])]), [['?on_conflict=id', [['d-psa', 'psa']]]]);
+  const ids = dw.flatMap(w => w.body.map(d => d.id).filter(Boolean)); assert.equal(new Set(ids).size, ids.length);
 });

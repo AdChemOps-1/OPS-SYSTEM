@@ -26,8 +26,8 @@ Seven permissions are switched per person on **People**:
 - **Run imports** — read and commit the spreadsheet import on Setup (committing also needs Manage customers).
 - **View documents** — read document records and open their files.
 - **Manage documents** — add, edit, upload, approve or reject, and delete documents.
-- **View assets** — read the container register, its history and counts.
-- **Manage assets** — hub actions, corrections, vendors and container types.
+- **View assets** — read the container register, its history and counts, and the Inventory tab's on hand.
+- **Manage assets** — hub actions, corrections, vendors and container types; record stock entries and set minimums on Inventory.
 
 Everyone who can take orders can see Customers; without Manage customers it is read-only. Only true counts as granted: any other value in a person's permissions is no.
 
@@ -44,7 +44,15 @@ A site that comes from FEED_ORDERS (it shows a feed code) takes its street addre
 Two Setup cards connect it to the spreadsheets:
 
 - **Customers Out** — the company's *Customers Out* sheet. Each customer's rows are rewritten whenever the customer, a site or a contact is saved (`/api/customers-out`); a row for a site the customer no longer has is blanked, not deleted, so two saves at once never shift each other's rows. **Rebuild Customers Out** rewrites the whole tab and removes the blank rows. A failed write shows a banner; the change is still saved.
-- **Import** — reads the existing spreadsheet's *Customer Directory*, *Customers* and *Delivery Notes* tabs (`/api/import`, needs Run imports). It shows a review of what would be created, changed or skipped; nothing is written until you commit. Run it **before creating customers in the app**: a sheet row whose Customer ID already belongs to a customer added in the app under another name and legal name is shown as a problem and not imported. Re-running it keeps anything changed in the app since the last import (including the importer's own edits) and only fills blanks. The *Customers* tab's contact is imported as type *other*. Feed sites that match no customer are listed in the review and left unlinked; linking them comes in a later stage. Licensing & Entity and Account Terms are left for a later stage.
+- **Import** — reads the existing spreadsheet's *Customer Directory*, *Customers*, *Delivery Notes*, *Licensing & Entity* and *Account Terms* tabs (`/api/import`, needs Run imports). It shows a review of what would be created, changed or skipped; nothing is written until you commit. Run it **before creating customers in the app**: a sheet row whose Customer ID already belongs to a customer added in the app under another name and legal name is shown as a problem and not imported. Re-running it keeps anything changed in the app since the last import (including the importer's own edits) and only fills blanks. The *Customers* tab's contact is imported as type *other*. Feed sites that match no customer are listed in the review and left unlinked; linking them comes in a later stage.
+
+  The two document tabs become records in `dispatch_documents`, one per row, each pointing back to its tab and row:
+  - **Licensing & Entity** → a *cannabis_license* document: License #, License Type, Status, Issued, Expires, Licensee Legal Name, County / Premises, Owners on the License, Entity Status (SOS), Source, Checked and Notes. The review line reads *license · <customer> · <number> · expires <date>* and the action is **Import license**.
+  - **Account Terms** → a *psa* document holding six dates only: Quote Sent, Quote Accepted, PSA Sent for Signature, PSA Signed (Customer), Countersigned (AdChem) and Effective Date. The review line reads *PSA · <customer> · signed / in progress / none* and the action is **Import PSA**.
+
+  **Never read:** *Balance (auto)* on Licensing & Entity, and every money column on Account Terms (Terms, Credit Limit, Payment Method, Card Fee, pricing, fees, deposits, credit). The server keeps only the columns each tab expects, so nothing else reaches a row. A row whose Customer matches no row in the plan and no existing customer (by name or ADC number) is listed as a problem and nothing from it is imported. A date that will not parse is left blank and listed as a problem; the record is still created. Dates read as the Directory's do: `YYYY-MM-DD`, `M/D/YYYY` and sheet serials.
+
+  Committing a plan with license or PSA lines needs **Manage documents** and **View documents** as well (View documents so a re-run can see the earlier records; without it they would be written twice). Switch those lines to **Skip** to commit without them. Re-running the import updates each document from its sheet row, unless someone edited it in the app since the last import — then it is **kept** as it is, the review says so, and the done banner counts it.
 
 ## Documents
 
@@ -62,7 +70,7 @@ Who sees what: **View documents** reads the records and files, **Manage document
 
 **Warnings** are off by default. A super admin switches them per type (cannabis license, PSA, entity status) on **Setup → Warnings**, with a note shown alongside, and sets the expiring window (`warnDays`, default 30). A type that is on shows under the customer on New order and is stamped on the order; it never blocks the order. Everything on that card is written only through `dispatch_set_warnings`. The daily expiry email (below) goes only to the addresses listed there.
 
-Not here yet: intake, and importing the Licensing & Entity and Account Terms tabs.
+Not here yet: intake.
 
 ## Assets
 
@@ -72,10 +80,20 @@ Two switches on **People** control it: **View assets** (read the register, a con
 
 - **Driver flow** — on Today a stop with gas on the order shows **Cylinders / Cilindros**. The sheet lists what to deliver and what is at the site to collect; the driver photographs each tag (or types the serial) and the server reads the serial from the photo (Google Cloud Vision, see GOOGLE-SETUP.md B2) for the driver to confirm. With no signal the events and photos are kept on the phone and **Send waiting photos** on Today sends them later with the times they happened; a resend of the same event is recorded once.
 - **Hub actions** (Manage assets, on the Assets tab) — **Fill**, **To vendor**, **From vendor**, **Move** and **Add assets**: type or scan the serials, then confirm; each serial is recorded on its own. Fill draws the product down by the type's fill weight.
-- **Counts** — containers by type and fill state at each place (each hub, at customers, at vendors) and by condition, so the hubs can see what is full, empty or out. Product on hand (bulk pounds and supplies) is Stage 3B.
+- **Counts** — containers by type and fill state at each place (each hub, at customers, at vendors) and by condition, so the hubs can see what is full, empty or out. Product on hand (bulk pounds, containers and supplies) is on the **Inventory** tab, below.
 - **Customer → Cylinders** tab — the containers at each of the customer's sites with "since" dates; the site card on the Sites tab says "N containers here since <date>". Needs View assets.
 - **Setup → Vendors** — who fills, rents or supplies containers; its **Container types** disclosure holds the sizes and products that serials are filed under.
 - **Serials** are normalised before they are stored or matched: spaces and dashes are removed and letters are upper-cased, so `ab-12 34` and `AB1234` are the same container.
+
+## Inventory
+
+The **Inventory** tab is what each hub has on hand: bulk product in pounds, dry ice and solvent containers, supplies, and full gas containers. Stock lives in `dispatch_stock_movements`, one signed row per entry, and the on-hand view sums them per hub and key. It needs View assets; drivers never see it. **Migration `008_inventory.sql` must be applied before the tab works** (see *Deploy*, step 3).
+
+- **On hand** — pick the hub. Four blocks: **Bulk** (lb), **Containers**, **Supplies** and **Gas containers**. The first three are the movements summed. Gas containers have no movements of their own: the block counts the register's containers that are full, in service and at that hub, by type, so they are read-only here and are recorded on the Assets tab. A strip above the blocks says *N below minimum at <hub>*; a row under its minimum gets a *below min N* chip, and a negative bulk figure gets *negative — enter receipts* (it is never clamped).
+- **Record** (Manage assets) — five entries, each at the hub chosen under On hand: **Receive** (stock in from a vendor or a transfer, with an optional vendor), **Produce** (containers made at the hub; adds the containers and draws the bulk product down by the pounds per unit, default 50 lb of Carbon Dioxide), **Adjust** (a correction up or down; the note is required), **Count** (enter the physical count; the sheet shows *On hand now* and the difference is what gets recorded, so a matching count records nothing) and **Use supplies** (supplies used up; the note is required). Counting needs View assets as well as Manage assets, because the difference is worked out against what the counter can read. Fills come from the Assets tab's **Fill**, and delivered rows come from orders; no one types either by hand.
+- **Minimums** — one per hub and key (a bulk product, a container, or a supply item), with a unit and **Alert when below**. Managers add, edit and delete them; a minimum set for a key with nothing on hand shows as 0 and counts as below while the minimum is above zero. A row below its minimum is flagged under On hand; with the alert on it goes in the daily stock email.
+- **Stock alerts** — on **Setup → Warnings**, *Stock alerts — one address per line* (super admins, written only through `dispatch_set_stock_alerts`). The daily expiry job (below) also sends each company one email listing everything below its minimum, hub by hub, to those addresses and nowhere else. No addresses, or nothing below, means no email. Each one sent is logged (`stock_alert`).
+- **Deliveries draw stock down by themselves.** When an order enters Delivered or POD Received, each counted line (not gas; the register's full containers already cover those) leaves the hub's stock once, under *delivered*. If the order later leaves both statuses (back to Scheduled, say), the same quantity comes back as an *undelivered* adjustment at the hub it left. Going from Delivered to POD Received, or saving the same status again, draws nothing more; going Delivered → Scheduled → Delivered draws, reverses, and draws again. An order with no hub draws nothing. Line quantities edited while the order is delivered are not re-drawn; use **Adjust**. Delivered draw-downs follow order edits, not the stock switches, so stock integrity rests on who may edit orders at a hub — drivers included, since a driver may update their hub's orders and sending the signed BOL marks the order POD Received.
 
 ## Expiry email
 
@@ -85,7 +103,7 @@ Every morning at 06:00 Pacific (07:00 during daylight time; `0 14 * * *` UTC) a 
 select dispatch_schedule_expiry('<app url>/api/expiry', '<EXPIRY_SECRET>');
 ```
 
-**Setup → Warnings → Send expiry email now** sends the same email for the current company straight away. **Setup → Google connection** shows *Expiry email: ok — daily 06:00 Pacific* once the job is scheduled. Each email sent is logged (`expiry_email`), and *Last expiry email* on the same card shows the newest one for the company (a morning with nothing due sends and logs nothing). The job's call is answered at once (`202`) and the emails go out in the background, so a slow Gmail never times the job out.
+**Setup → Warnings → Send expiry email now** sends the same email for the current company straight away. **Setup → Google connection** shows *Expiry email: ok — daily 06:00 Pacific* once the job is scheduled. Each email sent is logged (`expiry_email`), and *Last expiry email* on the same card shows the newest one for the company (a morning with nothing due sends and logs nothing). The job's call is answered at once (`202`) and the emails go out in the background, so a slow Gmail never times the job out. The same run sends the stock alert email (see *Inventory*) to the stock alert addresses on the same card; **Send expiry email now** sends both.
 
 ## Deploy (first time)
 
@@ -101,7 +119,7 @@ Create a repository under the **AdChemOps-1** account (e.g. `Ops`) and upload th
 ### 3. Supabase — one setting
 Supabase dashboard → project **adchem-hours** → **Authentication → URL Configuration → Redirect URLs**: add the app's address (the `pages.dev` URL and, later, the custom domain). The Site URL can stay as AdChem Time's.
 
-The database objects through `006` are already created (`supabase/migrations/` is the record; `005_customers.sql` was applied as version `20261020170155`). **Only `007_assets.sql` is to be applied, followed by a re-run of the security advisor** (record the result at the foot of the file; `007` creates the asset register, its history, vendors, container types and stock tables, the two asset permissions and the asset photo storage rules in the existing `dispatch-docs` bucket). The existing admin account already holds admin for AdChem.
+The database objects through `007` are already created (`supabase/migrations/` is the record; `005_customers.sql` was applied as version `20261020170155`, `007_assets.sql` on 10/23/26). **Only `008_inventory.sql` is to be applied, followed by a re-run of the security advisor** (record the result at the foot of the file, under *Applied*; `008` adds the stock on-hand view and function, the delivered draw-down trigger on orders, the stock alert recipients setting and its RPC, and tightens the stock insert policy; it is safe to run twice and drops nothing). Until it is applied the Inventory tab cannot load and the daily job skips the stock email. The existing admin account already holds admin for AdChem.
 
 ### 4. Google setup (Workspace admin, about 25 minutes)
 See **`GOOGLE-SETUP.md`**. It starts with the dedicated user `ops-system@adchem.pro`.
@@ -118,6 +136,7 @@ See **`GOOGLE-SETUP.md`**. It starts with the dedicated user `ops-system@adchem.
 7. **Setup → BOL numbering** — on the day SmartBOL stops, enter its last number plus one.
 8. **People** — set the super admins, grant each person's permissions, and add each driver individually (one account per person, with their hub).
 9. **Expiry email** — on **Setup → Warnings** enter the recipients and **Save warnings**, then schedule the daily job (see *Expiry email* above) and press **Send expiry email now** once to check.
+10. **Inventory** — on the Inventory tab **Receive** what each hub has on hand (or **Count** it), add the minimums, and on **Setup → Warnings** enter the stock alert addresses. The daily job from step 9 sends the stock email too.
 
 ## Hubs
 
@@ -128,7 +147,7 @@ Each hub on **Setup → Hubs** has its shipper address, emergency number, **loca
 ```
 phone / laptop ──(sign-in, orders, BOLs)──► Supabase (dispatch_* tables, dispatch-pods photos, dispatch-docs files)
        │
-       └──(/api/feed, /api/calendar, /api/drive, /api/pod, /api/deposit, /api/orderlog, /api/docs, /api/expiry, /api/health)──► Cloudflare Function ──► Google
+       └──(/api/feed, /api/calendar, /api/drive, /api/pod, /api/deposit, /api/orderlog, /api/docs, /api/expiry, /api/assets, /api/stock, /api/health)──► Cloudflare Function ──► Google
                                                                                        (service account acting as ops-system@, sending as orders@)
 ```
 
@@ -141,11 +160,11 @@ Every `/api` call carries the caller's sign-in token and the company it is actin
 ## Files
 
 ```
-public/            the app (index.html, app.js, customers.js, documents.js, assets.js, import.js, styles.css, config.js, icons, vendor/supabase.js)
-functions/api/     feed.js · calendar.js · drive.js · pod.js · deposit.js · orderlog.js · customers-out.js · import.js · docs.js · expiry.js · assets.js · health.js
-functions/_lib/    google.js (service-account token) · auth.js (who is calling, in which company) · orderlog.js (the Orders Out writer) · customersout.js (the Customers Out writer) · expiry.js (what is due, and the email body) · vision.js (the serial reader) · mail.js (the Gmail sender) · importsheet.js (the spreadsheet reader) · calendars.js (which calendar a hub's events go on)
+public/            the app (index.html, app.js, customers.js, documents.js, assets.js, inventory.js, import.js, styles.css, config.js, icons, vendor/supabase.js)
+functions/api/     feed.js · calendar.js · drive.js · pod.js · deposit.js · orderlog.js · customers-out.js · import.js · docs.js · expiry.js · assets.js · stock.js · health.js
+functions/_lib/    google.js (service-account token) · auth.js (who is calling, in which company) · orderlog.js (the Orders Out writer) · customersout.js (the Customers Out writer) · expiry.js (what is due, the email body, and the stock alert email) · stock.js (stock entries and the below-minimum list) · email.js (the address check) · vision.js (the serial reader) · serials.js (serial normalising) · mail.js (the Gmail sender) · importsheet.js (the spreadsheet reader) · calendars.js (which calendar a hub's events go on)
 api/               [route].js — adapter so the same server code could run on Vercel; not used by Cloudflare
-supabase/          001_dispatch.sql … 006_documents.sql as applied; 007_assets.sql to be applied (safe to run twice); tests/005_policies.sql, tests/006_policies.sql, tests/007_policies.sql (run inside begin … rollback)
-test/              ui.test.cjs · customers.test.cjs · documents.test.cjs · assets.test.cjs (headless UI suites) · _fake.cjs (the fake Supabase and /api routes they share) · unit/ (auth, customersout, importsheet, docs.test.mjs, expiry.test.mjs) · fixtures/ · run.cjs (runs everything)
+supabase/          001_dispatch.sql … 007_assets.sql as applied; 008_inventory.sql to be applied (safe to run twice); tests/005_policies.sql … tests/008_policies.sql (run inside begin … rollback)
+test/              ui.test.cjs · customers.test.cjs · documents.test.cjs · assets.test.cjs · inventory.test.cjs (headless UI suites) · _fake.cjs (the fake Supabase and /api routes they share) · unit/ (auth, customersout, importsheet, docs, expiry, assets, stock, serials, vision .test.mjs) · fixtures/ · run.cjs (runs everything)
 GOOGLE-SETUP.md    the Workspace / Google Cloud steps
 ```

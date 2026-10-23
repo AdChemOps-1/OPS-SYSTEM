@@ -2,12 +2,13 @@
 // Setup → Warnings (settings.expiryEmailRecipients). buildExpiryEmails is pure; sendExpiryEmails does the reads, the mail and the log.
 import { mailFromOf } from "./auth.js";
 import { sendMail } from "./mail.js";
+import { buildStockAlerts, stockRecipientsOf } from "./stock.js";
 
 // the app's DOC_TYPES (public/documents.js), which the server cannot import
 export const DOC_TYPE_LABEL = { cannabis_license: "Cannabis license", resale_certificate: "Resale certificate", psa: "PSA", chp_hazmat_license: "CHP HazMat license",
   dot_registration: "DOT registration", insurance_certificate: "Insurance certificate", cdl: "CDL", medical_card: "Medical card", other: "Other" };
-const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;   // dispatch_set_warnings' rule for a recipient
-export const isEmail = s => typeof s === "string" && EMAIL.test(s.trim());
+import { isEmail } from "./email.js";   // dispatch_set_warnings' rule for a recipient
+export { isEmail };
 
 // valid, trimmed, de-duplicated recipients from a company's settings; nothing else is ever added (no orders@ default)
 export function recipientsOf(settings) {
@@ -97,6 +98,38 @@ export async function sendExpiryEmails(env, db, { company, who, mailFrom, today,
     catch (e) { skipped.push({ company: co.id, reason: "send_failed", message: String(e.message || e) }); continue; }
     sent.push({ company: co.id, to: mail.to, count: mail.count });
     try { await db.insert("dispatch_log", [{ company: co.id, who: who || null, what: "expiry_email", detail: { count: mail.count, to: mail.to } }], true); }
+    catch (e) { /* the mail went out; a failed audit row does not undo it */ }
+  }
+  // the stock-below-minimum email rides the same run; nothing it does can change the documents result above
+  let stock;
+  try { stock = await sendStockAlerts(env, db, { company, who, mailFrom, today, appUrl, companies, settingsByCompany }); }
+  catch (e) { stock = { sent: [], skipped: companies.map(co => ({ company: co.id, reason: "read_failed", message: String((e && e.message) || e) })) }; }
+  return { sent, skipped, stock };
+}
+
+// The daily stock email (migration 008): per company with stockAlertRecipients, the dispatch_stock_onhand_for rows below their
+// minimum whose minimum has its alert on (alert = false rows are flagged on the screen only). db: the caller's client (Send now) or the service role (cron; the 008 grant lets it read every company). companies and
+// settingsByCompany may be passed in (sendExpiryEmails has just read them); otherwise they are read the same way.
+// → {sent:[{company,to,count}], skipped:[{company, reason: no_recipients|nothing_below|send_failed|read_failed[, message]}]}
+export async function sendStockAlerts(env, db, { company, who, mailFrom, today, appUrl, companies, settingsByCompany }) {
+  if (!companies) companies = await db.get("companies?select=id,name,short_name,data" + (company ? "&id=eq." + enc(company) : "&active=eq.true") + "&order=id");
+  if (!settingsByCompany) {
+    settingsByCompany = {};
+    (await db.get("dispatch_company_settings?select=company,data" + (company ? "&company=eq." + enc(company) : ""))).forEach(s => { settingsByCompany[s.company] = s.data || {}; });
+  }
+  const sent = [], skipped = [];
+  for (const co of companies) {
+    const s = settingsByCompany[co.id] || {};
+    if (!stockRecipientsOf(s).length) { skipped.push({ company: co.id, reason: "no_recipients" }); continue; }
+    let rows;
+    try { rows = await db.rpc("dispatch_stock_onhand_for", { c: co.id }); }
+    catch (e) { skipped.push({ company: co.id, reason: "read_failed", message: String((e && e.message) || e) }); continue; }
+    const [mail] = buildStockAlerts([co], { [co.id]: (Array.isArray(rows) ? rows : []).filter(r => r && r.alert !== false) }, { [co.id]: s }, today, appUrl || s.appUrl || "");
+    if (!mail) { skipped.push({ company: co.id, reason: "nothing_below" }); continue; }
+    try { await sendMail(env, { from: (company && mailFrom) || mailFromOf(co.data, env), to: mail.to, subject: mail.subject, text: mail.text }); }
+    catch (e) { skipped.push({ company: co.id, reason: "send_failed", message: String(e.message || e) }); continue; }
+    sent.push({ company: co.id, to: mail.to, count: mail.count });
+    try { await db.insert("dispatch_log", [{ company: co.id, who: who || null, what: "stock_alert", detail: { count: mail.count, to: mail.to } }], true); }
     catch (e) { /* the mail went out; a failed audit row does not undo it */ }
   }
   return { sent, skipped };

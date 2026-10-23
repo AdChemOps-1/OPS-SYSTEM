@@ -4,6 +4,7 @@ import { requireUser, sb, json, handle, companyFrom, companyContext } from "../_
 import { TAB, sheetIdFrom } from "../_lib/orderlog.js";
 import { TAB as CUSTOMERS_TAB } from "../_lib/customersout.js";
 import { probeCalendar } from "../_lib/calendars.js";
+import { probe as probeVision } from "../_lib/vision.js";
 
 export async function onRequestGet({ request, env }) {
   return handle(async () => {
@@ -27,6 +28,7 @@ export async function onRequestGet({ request, env }) {
     } catch (e) { out.lastExpiryEmail = null; }
     if (!env.GOOGLE_SA_JSON) return json(out);
     try { await googleToken(env); out.checks.token = "ok"; } catch (e) { out.checks.token = e.message; return json(out); }
+    out.checks.vision = await probeVision(env);   // Cloud Vision (asset serial photos): enabled and billed?
     const sheetId = ctx.settings.sheetId || (company === "adchem" ? env.AR_SHEET_ID : "");
     if (sheetId) { try { const r = await gfetch(env, `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent("'FEED_ORDERS (publish)'!A1:B2")}`); out.checks.sheet = (r.values && r.values[0] && r.values[0][0] === "Customer") ? "ok" : "unexpected layout"; } catch (e) { out.checks.sheet = e.message; } }
     else out.checks.sheet = "no sheet ID set on Setup";

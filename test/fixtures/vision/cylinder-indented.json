@@ -1,0 +1,95 @@
+{
+  "responses": [
+    {
+      "textAnnotations": [
+        {
+          "description": "DOT-3AA2015\nTW 48.2\nAB1234\n2019"
+        },
+        {
+          "description": "DOT-3AA2015",
+          "boundingPoly": {
+            "vertices": [
+              {
+                "y": 100
+              },
+              {
+                "x": 300,
+                "y": 100
+              },
+              {
+                "x": 300,
+                "y": 140
+              },
+              {
+                "y": 140
+              }
+            ]
+          }
+        },
+        {
+          "description": "TW 48.2",
+          "boundingPoly": {
+            "vertices": [
+              {
+                "y": 300
+              },
+              {
+                "x": 200,
+                "y": 300
+              },
+              {
+                "x": 200,
+                "y": 340
+              },
+              {
+                "y": 340
+              }
+            ]
+          }
+        },
+        {
+          "description": "AB1234",
+          "boundingPoly": {
+            "vertices": [
+              {
+                "y": 500
+              },
+              {
+                "x": 250,
+                "y": 500
+              },
+              {
+                "x": 250,
+                "y": 550
+              },
+              {
+                "y": 550
+              }
+            ]
+          }
+        },
+        {
+          "description": "2019",
+          "boundingPoly": {
+            "vertices": [
+              {
+                "y": 700
+              },
+              {
+                "x": 120,
+                "y": 700
+              },
+              {
+                "x": 120,
+                "y": 740
+              },
+              {
+                "y": 740
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

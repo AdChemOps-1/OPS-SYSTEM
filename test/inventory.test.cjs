@@ -43,21 +43,36 @@ async function signIn(page, base){
     T.dispatch_members[0].is_super_admin = false; T.dispatch_members[0].permissions = {view_assets:true};
     assert.equal((await api('/api/stock', {action:'move', company:'adchem', entry:{kind:'received', hub:'EB', item:'Pallet', qty:1, unit:'count'}})).status, 403, 'manage_assets needed');
     assert.equal((await api('/api/stock', {action:'onhand', company:'adchem'})).status, 200, 'view_assets reads');
+    T.dispatch_members[0].permissions = {};
+    assert.equal((await api('/api/stock', {action:'below', company:'adchem'})).status, 403, 'no view_assets, no read');
+    T.dispatch_members[0].permissions = {view_assets:true};
     T.dispatch_members[0].is_super_admin = true;
 
     // orders: entering Delivered draws the non-gas lines down once; leaving reverses
-    const co2 = () => find2('Carbon Dioxide','','');
     const find2 = (p, c, i) => T.dispatch_stock_movements.filter(m => m.product === p && m.container === c && m.item === i).reduce((n, m) => n + m.qty, 0);
     T.dispatch_orders.push({id:'o1', company:'adchem', hub:'EB', status:'Scheduled', data:{lines:[{category:'Dry Ice', product:'Dry Ice - Pellet', container:'Bin', qty:3}, {category:'Gases', product:'Carbon Dioxide', container:'50lb Cylinder', qty:2}, {category:'Dry Ice', product:'Dry Ice - Pellet', container:'Box', qty:0}]}});
     const rest = (method, q, body) => fetch(base+'/rest/v1/dispatch_orders'+q, {method, headers:{'content-type':'application/json'}, body:JSON.stringify(body)});
-    await rest('PATCH', '?id=eq.o1', {status:'Delivered'});
-    assert.deepEqual(T.dispatch_stock_movements.filter(m => m.order_id === 'o1').map(m => [m.reason, m.product, m.container, m.qty]), [['delivered','Dry Ice - Pellet','Bin',-3]]);
-    await rest('PATCH', '?id=eq.o1', {status:'POD Received'});
-    assert.equal(T.dispatch_stock_movements.filter(m => m.order_id === 'o1').length, 1, 'Delivered -> POD Received writes nothing');
-    await rest('PATCH', '?id=eq.o1', {status:'Scheduled'});
-    const back = T.dispatch_stock_movements.filter(m => m.order_id === 'o1' && m.reason === 'adjusted');
-    assert.deepEqual([back.length, back[0].qty, back[0].note], [1, 3, 'undelivered o1']);
-    assert.equal(find2('Dry Ice - Pellet','Bin',''), 8, 'net zero after the reversal');
+    const o1 = () => T.dispatch_stock_movements.filter(m => m.order_id === 'o1');
+    const step = async st => { await rest('PATCH', '?id=eq.o1', {status:st}); };
+    await step('Delivered');
+    assert.deepEqual(o1().map(m => [m.reason, m.product, m.container, m.qty]), [['delivered','Dry Ice - Pellet','Bin',-3]]);
+    await step('POD Received'); assert.equal(o1().length, 1, 'Delivered -> POD Received writes nothing');
+    await step('Scheduled');
+    assert.deepEqual(o1().slice(1).map(m => [m.reason, m.qty, m.note]), [['adjusted', 3, 'undelivered o1']]);
+    await step('Delivered');
+    assert.deepEqual(o1().slice(2).map(m => [m.reason, m.qty]), [['delivered', -3]], 're-entering draws again');
+    await step('POD Received'); assert.equal(o1().length, 3, 'POD Received again writes nothing');
+    assert.equal(o1().reduce((n, m) => n + m.qty, 0), -3, 'net -3');
+    // /api/pod only moves the pre-delivery statuses
+    T.dispatch_orders.push({id:'o2', company:'adchem', hub:'EB', status:'Cancelled', data:{lines:[{category:'Dry Ice', product:'Dry Ice - Pellet', container:'Bin', qty:1}]}});
+    await api('/api/pod', {orderId:'o2', photoPath:'adchem/EB/pod/o2/x.jpg'});
+    assert.equal(T.dispatch_orders.find(o => o.id === 'o2').status, 'Cancelled', 'pod leaves other statuses alone');
+
+    // a minimum with no stock rows still shows, at zero and below
+    T.dispatch_stock_settings.push({id:'min-pal', company:'adchem', hub:'EB', product:'', container:'', item:'Pallet', min_qty:2, unit:'count'});
+    const pal = (await api('/api/stock', {action:'onhand', company:'adchem'})).body.rows.find(r => r.item === 'Pallet');
+    assert.deepEqual([pal.qty, pal.below], [0, true]);
+    T.dispatch_stock_settings.pop();
 
     // minimum rows through REST need manage_assets; filled / delivered cannot be inserted by a client
     const bad = await fetch(base+'/rest/v1/dispatch_stock_movements', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({company:'adchem', hub:'EB', product:'x', container:'', item:'', qty:-1, unit:'lb', reason:'delivered'})});
@@ -89,7 +104,7 @@ async function signIn(page, base){
     const docs = T.dispatch_documents.filter(d => d.source === 'import');
     assert.deepEqual(docs.map(d => [d.doc_type, d.subject_type, d.review_status, d.import_source.tab, d.import_source.row]).sort(), [['cannabis_license','customer','live','Licensing & Entity',2], ['psa','customer','live','Account Terms',2]]);
     const lic = docs.find(d => d.doc_type === 'cannabis_license');
-    assert.deepEqual([lic.number, lic.expires, lic.extra.entity_status_sos], ['C11-0000001-LIC', '2027-03-31', 'Active']);
+    assert.deepEqual([lic.number, lic.expires, lic.extra.entity_status_sos, lic.extra.source_note], ['C11-0000001-LIC', '2027-03-31', 'Active', 'DCC lookup']);
     assert.equal(docs.find(d => d.doc_type === 'psa').extra.countersigned, '2026-09-15');
     assert.ok(!/7,777|1,500|Net 30|Balance/.test(JSON.stringify(docs)), 'no money in documents');
     const again = await api('/api/import', {company:'adchem', action:'commit', plan:(await api('/api/import', {company:'adchem', action:'read'})).body.plan});

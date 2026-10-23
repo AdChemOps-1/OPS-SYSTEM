@@ -321,10 +321,13 @@ const DELIVERED=['Delivered','POD Received'], isDelivered=s=>DELIVERED.includes(
 // the orders trigger of 008: entering the delivered pair draws the non-gas lines down once; leaving it writes reversing rows
 function orderStatusHook(T,o,prevStatus){ if(isDelivered(prevStatus)===isDelivered(o.status)) return; const mv=T.dispatch_stock_movements, now=vDate().toISOString();
   const base={company:o.company,item:'',unit:'count',vendor_id:null,order_id:o.id,asset_event_id:null,occurred_at:now,recorded_by:'u1'};
-  if(isDelivered(o.status)){ ((o.data&&o.data.lines)||[]).forEach(l=>{ const qty=Number(l.qty); if(!l||l.category==='Gases'||!(qty>0)) return;
-      if(mv.some(m=>m.company===o.company&&m.reason==='delivered'&&m.order_id===o.id&&m.product===l.product&&m.container===l.container)) return;   // the partial unique index
-      mv.push({...base,id:uuid(),hub:o.hub,product:l.product,container:l.container,qty:-qty,reason:'delivered',note:''}); }); }
-  else mv.filter(m=>m.company===o.company&&m.reason==='delivered'&&m.order_id===o.id).forEach(m=>{ mv.push({...base,id:uuid(),hub:m.hub,product:m.product,container:m.container,item:m.item,unit:m.unit,qty:-m.qty,reason:'adjusted',note:'undelivered '+o.id}); }); }
+  // net semantics: a (product, container) is "drawn" when the order's delivered + 'undelivered <id>' rows sum to non-zero
+  const mine=mv.filter(m=>m.company===o.company&&m.order_id===o.id&&(m.reason==='delivered'||(m.reason==='adjusted'&&m.note==='undelivered '+o.id)));
+  const drawn=(p,c)=>mine.filter(m=>m.product===p&&m.container===c).reduce((n,m)=>n+Number(m.qty),0);
+  if(isDelivered(o.status)){ ((o.data&&o.data.lines)||[]).forEach(l=>{ const qty=Number(l&&l.qty); if(!l||l.category==='Gases'||!(qty>0)||drawn(l.product,l.container)!==0) return;
+      const r={...base,id:uuid(),hub:o.hub,product:l.product,container:l.container,qty:-qty,reason:'delivered',note:''}; mv.push(r); mine.push(r); }); }
+  else { const seen=new Set(); mine.slice().forEach(m=>{ const k=m.product+'|'+m.container; if(seen.has(k)) return; seen.add(k); const d=drawn(m.product,m.container);
+      if(d!==0) mv.push({...base,id:uuid(),hub:m.hub,product:m.product,container:m.container,qty:-d,reason:'adjusted',note:'undelivered '+o.id}); }); } }
 // movementsFor (functions/_lib/stock.js) as the fake's /api/stock applies it; throws Error(message) on a bad entry
 function fakeMovementsFor(e,co,onhandQty){ const fail=m=>{ throw new Error(m); };
   if(!e||!['received','produced','adjusted','counted','consumed'].includes(e.kind)) fail('kind must be received, produced, adjusted, counted or consumed');
@@ -351,7 +354,7 @@ function fakeStock(T,b){
       rows=fakeMovementsFor(e,co,cur?cur.qty:0); }catch(err){ return {code:400,body:{error:{code:'bad_entry',message:err.message}}}; }
     rows.forEach(r=>T.dispatch_stock_movements.push(r)); return {code:200,body:{ok:true,ids:rows.map(r=>r.id)}}; }
   if(b.action==='onhand'||b.action==='below'){ if(!m) return deny('no_access','You are not a member of that company.');
-    if(!(hasPerm(m,'view_assets')||['admin','coordinator'].includes(m.role))) return deny('forbidden',"You don't have the view assets permission.");
+    if(!hasPerm(m,'view_assets')) return deny('forbidden',"You don't have the view assets permission.");
     const rows=onhandOf(T,co); return {code:200,body:{rows:b.action==='below'?rows.filter(r=>r.below):rows}}; }
   return {code:400,body:{error:{code:'bad_request',message:'unknown action'}}}; }
 
@@ -367,14 +370,14 @@ function sliceItems(wb,names,problems){ const out=[], lc=v=>String(v||'').trim()
   const LIC=['Customer','Licensee Legal Name','License #','License Type','Status','Issued','Expires','County / Premises','Owners on the License','Entity Status (SOS)','Source','Checked','Notes'];   // Balance (auto) is never read
   const TERMS=['Customer','Quote Sent','Quote Accepted','PSA Sent for Signature','PSA Signed (Customer)','Countersigned (AdChem)','Effective Date'];   // money columns are never read
   const cell=(tab,row,col,v)=>{ const d=sheetDate(v); if(d.bad) problems.push(tab+' row '+row+', '+col+': "'+v+'" is not a date, so it was left empty.'); return d.iso; };
-  const base=(tab,pre,r)=>{ const hit=names.get(lc(r.Customer)); if(!hit){ problems.push(tab+' row '+r._row+': customer "'+r.Customer+'" matches no customer.');
+  const base=(tab,pre,r)=>{ const hit=names.has(lc(r.Customer))?(names.get(lc(r.Customer))||'-'):''; if(!hit){ problems.push(tab+' row '+r._row+': customer "'+r.Customer+'" matches no customer.');
       return {bad:{key:'problem:'+pre+r._row,source:{tab,row:r._row},action:'problem',decision:'skip',options:['skip'],customer_id:'',name:r.Customer,detail:tab+' row '+r._row+': customer matches no customer',fields:{},contacts:[],hubNotes:[],merged:[]}}; }
-    return {it:{key:pre+r._row,source:{tab,row:r._row},customer_id:hit,name:r.Customer,fields:{},contacts:[],hubNotes:[],merged:[]}}; };
+    return {it:{key:pre+r._row,source:{tab,row:r._row},customer_id:hit==='-'?'':hit,name:r.Customer,fields:{},contacts:[],hubNotes:[],merged:[]}}; };
   read(wb.licensing,LIC,'License #').forEach(r=>{ const b=base('Licensing & Entity','lic:',r); if(b.bad) return out.push(b.bad);
     const exp=cell('Licensing & Entity',r._row,'Expires',r.Expires);
     out.push({...b.it,action:'license',decision:'license',options:['license','skip'],detail:r['License #']+' · expires '+exp,
       doc:{doc_type:'cannabis_license',number:String(r['License #']),status:String(r.Status),issued:cell('Licensing & Entity',r._row,'Issued',r.Issued),expires:exp,
-        extra:{licensee_legal_name:r['Licensee Legal Name'],license_type:r['License Type'],county_premises:r['County / Premises'],owners:r['Owners on the License'],entity_status_sos:r['Entity Status (SOS)']},
+        extra:{licensee_legal_name:r['Licensee Legal Name'],license_type:r['License Type'],county_premises:r['County / Premises'],owners:r['Owners on the License'],entity_status_sos:r['Entity Status (SOS)'],source_note:String(r.Source)},
         source:String(r.Source),checked_on:cell('Licensing & Entity',r._row,'Checked',r.Checked),notes:String(r.Notes)}}); });
   read(wb.terms,TERMS,'Quote Sent').forEach(r=>{ const b=base('Account Terms','psa:',r); if(b.bad) return out.push(b.bad);
     const x={quote_sent:cell('Account Terms',r._row,'Quote Sent',r['Quote Sent']),quote_accepted:cell('Account Terms',r._row,'Quote Accepted',r['Quote Accepted']),sent_for_signature:cell('Account Terms',r._row,'PSA Sent for Signature',r['PSA Sent for Signature']),
@@ -445,7 +448,7 @@ function makeFake(seed){
       else { id='ev'+(Object.keys(EVENTS).length+1); EVENTS[id]=to; }
       calls.push(['calendar',{hub:b.hub,cal:to,moved,update:!!b.eventId,tz:b.timeZone}]); return send(200,{ok:true,eventId:id,calendarId:to,moved}); }
     if(u.pathname==='/api/drive') return send(200,{ok:true,id:'f1',webViewLink:''});
-    if(u.pathname==='/api/pod'){ const b=JSON.parse(body); calls.push(['pod',b]); if(gmailFail) return send(502,{error:{code:gmailFail,message:'Gmail: boom'}}); const o=T.dispatch_orders.find(x=>x.id===b.orderId); if(!o||!b.photoPath.startsWith('adchem/'+o.hub+'/pod/'+o.id+'/')) return send(400,{error:{code:'bad_path',message:'path '+b.photoPath}}); const was=o.status; o.status='Delivered'; orderStatusHook(T,o,was); o.data.pod={collected:b.collected,issue:b.issue,note:b.note}; return send(200,{ok:true,sentAt:vDate().toISOString(),to:'orders@adchem.pro',cc:b.cc,msgId:'m1',status:'Delivered'}); }
+    if(u.pathname==='/api/pod'){ const b=JSON.parse(body); calls.push(['pod',b]); if(gmailFail) return send(502,{error:{code:gmailFail,message:'Gmail: boom'}}); const o=T.dispatch_orders.find(x=>x.id===b.orderId); if(!o||!b.photoPath.startsWith('adchem/'+o.hub+'/pod/'+o.id+'/')) return send(400,{error:{code:'bad_path',message:'path '+b.photoPath}}); const was=o.status; if(['Intake','Confirmed','Scheduled','BOL Created','Out for Delivery'].includes(was)){ o.status='Delivered'; orderStatusHook(T,o,was); } o.data.pod={collected:b.collected,issue:b.issue,note:b.note}; return send(200,{ok:true,sentAt:vDate().toISOString(),to:'orders@adchem.pro',cc:b.cc,msgId:'m1',status:'Delivered'}); }
     if(u.pathname==='/api/deposit'){ const b=JSON.parse(body); calls.push(['deposit',b]); if(!b.photoPath.startsWith('adchem/'+b.hub+'/deposits/')) return send(400,{error:{code:'bad_path',message:'path '+b.photoPath}}); return send(200,{ok:true,sentAt:vDate().toISOString(),to:'accounting@adchem.pro',msgId:'d1'}); }
     if(u.pathname==='/api/orderlog'){ const b=JSON.parse(body); calls.push(['orderlog',b]); return send(200,b.rebuild?{ok:true,rebuilt:T.dispatch_orders.length}:{ok:true,updated:0,appended:(b.orderIds||[]).length}); }
     if(u.pathname==='/api/customers-out'){ const {company,...b}=JSON.parse(body||'{}'); if(!company) return send(400,{error:{code:'no_company',message:'company required'}}); calls.push(['customers-out',b]);

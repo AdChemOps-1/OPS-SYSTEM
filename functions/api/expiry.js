@@ -3,6 +3,8 @@
 // super admin pressing Send expiry email now on Setup → Warnings (their company only, as themselves; RLS applies).
 // The cron path answers 202 at once and sends under waitUntil, so pg_net's request never waits on Gmail; each sent email leaves an
 // expiry_email row in dispatch_log, which Health reports as the last run. Send now stays synchronous so the result shows on Setup.
+// The same run sends the stock-below-minimum email (sendStockAlerts): its result is {stock:{sent, skipped}} beside the documents'
+// sent / skipped, and a stock failure never turns Send now into an error (it shows in stock.skipped).
 import { requireUser, sb, sbService, json, fail, handle, companyFrom, companyContext } from "../_lib/auth.js";
 import { sendExpiryEmails, todayIn } from "../_lib/expiry.js";
 
@@ -27,7 +29,10 @@ export async function onRequestPost(context) {
       const secret = env.EXPIRY_SECRET || "";
       if (!secret || !header || !(await sameSecret(header, secret))) return fail("Not allowed.", 403, "forbidden");
       const work = sendExpiryEmails(env, sbService(env), { company: null, who: null, today, appUrl: env.APP_URL || "" })
-        .then(r => { r.skipped.filter(s => s.reason === "send_failed").forEach(s => console.error("expiry email " + s.company + ": " + s.message)); },
+        .then(r => {
+          r.skipped.filter(s => s.reason === "send_failed").forEach(s => console.error("expiry email " + s.company + ": " + s.message));
+          ((r.stock && r.stock.skipped) || []).filter(s => s.message).forEach(s => console.error("stock alert " + s.company + " " + s.reason + ": " + s.message));
+        },
               e => { console.error("expiry email: " + String((e && e.message) || e)); });
       if (typeof context.waitUntil === "function") context.waitUntil(work); else await work;   // no waitUntil outside the Pages runtime
       return json({ ok: true, accepted: true }, 202);

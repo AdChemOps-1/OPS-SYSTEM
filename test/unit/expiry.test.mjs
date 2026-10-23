@@ -79,18 +79,27 @@ async function run(opts) {
   globalThis.Date = class extends RealDate { constructor(...a) { super(...(a.length ? a : [fixed])); } static now() { return fixed; } };
   try { return await runAt(opts); } finally { globalThis.Date = RealDate; }
 }
-async function runAt({ headers = {}, body = { send: true }, member = {}, env: envExtra = {}, serviceNames = false, waitUntil = false } = {}) {
+// stock: {settings: {company: extra settings data}, onhand: {company: rows}, onhandFails: true, gmailFailFor: subject regex}
+async function runAt({ headers = {}, body = { send: true }, member = {}, env: envExtra = {}, serviceNames = false, waitUntil = false, stock = {} } = {}) {
   const env = { SUPABASE_URL: 'http://sb', SUPABASE_ANON_KEY: 'anon', SUPABASE_SERVICE_ROLE_KEY: 'svc-key', EXPIRY_SECRET: 's3cret-long-random', APP_URL: 'https://ops.adchem.pro', GOOGLE_SA_JSON: await serviceAccount(), ...envExtra };
   const calls = [], real = globalThis.fetch;
   const companies = [...COMPANIES, { id: 'west', name: 'West Co', short_name: 'West', data: {} }];
-  const settings = [{ company: 'adchem', data: SETTINGS.adchem }, { company: 'north', data: SETTINGS.north }, { company: 'west', data: { expiryEmailRecipients: ['w@west.example'] } }];
+  const settings = [{ company: 'adchem', data: SETTINGS.adchem }, { company: 'north', data: SETTINGS.north }, { company: 'west', data: { expiryEmailRecipients: ['w@west.example'] } }]
+    .map(s => ({ ...s, data: { ...s.data, ...((stock.settings || {})[s.company] || {}) } }));
   // as the service role the view's subject names are null (no auth.uid())
   const due = serviceNames ? DUE.map(r => ({ ...r, subject_name: null })) : DUE;
   globalThis.fetch = async (url, init = {}) => {
     const u = String(url), method = init.method || 'GET';
     calls.push({ url: u, method, body: init.body ? (typeof init.body === 'string' ? JSON.parse(init.body) : String(init.body)) : null, headers: init.headers || {} });
     if (u.startsWith('https://oauth2.googleapis.com/token')) return ok({ access_token: 'gt', expires_in: 3600 });
-    if (u.startsWith('https://gmail.googleapis.com/gmail/v1/users/me/messages/send')) return ok({ id: 'm' + calls.length });
+    if (u.startsWith('https://gmail.googleapis.com/gmail/v1/users/me/messages/send')) {
+      if (stock.gmailFailFor && stock.gmailFailFor.test(decode(JSON.parse(init.body).raw))) return new Response('{"error":{"message":"quota"}}', { status: 429 });
+      return ok({ id: 'm' + calls.length });
+    }
+    if (u.endsWith('/rest/v1/rpc/dispatch_stock_onhand_for')) {
+      if (stock.onhandFails) return new Response('{"code":"PGRST202","message":"Could not find the function public.dispatch_stock_onhand_for"}', { status: 404 });
+      return ok(((stock.onhand || {})[JSON.parse(init.body).c]) || []);
+    }
     if (u.includes('/auth/v1/user')) return ok({ id: 'u1', email: 'boss@adchem.pro' });
     if (u.includes('/rest/v1/dispatch_members')) return ok([{ company: 'adchem', role: 'admin', active: true, is_super_admin: true, permissions: {}, ...member }]);
     if (u.includes('/rest/v1/dispatch_users')) return ok(u.includes('user_id=in.') ? [{ user_id: 'a1000000-0000-4000-8000-000000000001', name: 'Dana Driver' }] : [{ email: 'boss@adchem.pro', name: 'Boss' }]);
@@ -147,7 +156,8 @@ test('cron: the right secret answers 202 at once, then mails every company with 
 test('Send now: a super admin mails their company only, as themselves, and the log row is theirs', async () => {
   const { res, j, gmail, sbCalls } = await run({ headers: { authorization: 'Bearer tok' }, body: { send: true, company: 'adchem' } });
   assert.equal(res.status, 200);
-  assert.deepEqual(j, { ok: true, sent: [{ company: 'adchem', to: ['ops@adchem.pro', 'billing@adchem.pro'], count: 4 }], skipped: [] });
+  assert.deepEqual(j, { ok: true, sent: [{ company: 'adchem', to: ['ops@adchem.pro', 'billing@adchem.pro'], count: 4 }], skipped: [],
+    stock: { sent: [], skipped: [{ company: 'adchem', reason: 'no_recipients' }] } });
   assert.equal(gmail.length, 1); assert.match(gmail[0], /^From: orders@adchem\.pro\r\nTo: ops@adchem\.pro, billing@adchem\.pro\r\n/);
   for (const c of sbCalls) { assert.equal(c.headers.apikey, 'anon', c.url); assert.equal(c.headers.authorization, 'Bearer tok', c.url); }
   const due = sbCalls.find(c => c.url.includes('dispatch_documents_due'));
@@ -159,7 +169,8 @@ test('Send now: a super admin mails their company only, as themselves, and the l
 
 test('Send now: a company with no recipients is skipped, nothing sent', async () => {
   const { res, j, gmail } = await run({ headers: { authorization: 'Bearer tok' }, body: { send: true, company: 'north' }, member: { company: 'north' } });
-  assert.equal(res.status, 200); assert.deepEqual(j, { ok: true, sent: [], skipped: [{ company: 'north', reason: 'no_recipients' }] }); assert.equal(gmail.length, 0);
+  assert.equal(res.status, 200); assert.deepEqual(j, { ok: true, sent: [], skipped: [{ company: 'north', reason: 'no_recipients' }], stock: { sent: [], skipped: [{ company: 'north', reason: 'no_recipients' }] } });
+  assert.equal(gmail.length, 0);
 });
 
 test('Send now: a coordinator or a plain admin is 403; nothing read or sent', async () => {
@@ -172,6 +183,58 @@ test('Send now: a coordinator or a plain admin is 403; nothing read or sent', as
   assert.equal(anon.res.status, 401, 'no session and no secret');
   const nosend = await run({ headers: { authorization: 'Bearer tok' }, body: { company: 'adchem' } });
   assert.equal(nosend.res.status, 400);
+});
+
+// ---------- the stock-below-minimum email rides the same run ----------
+const subjectOf = m => Buffer.from(m.match(/Subject: =\?UTF-8\?B\?([^?]+)\?=/)[1], 'base64').toString('utf8');
+const STOCK_ROWS = {
+  adchem: [{ company: 'adchem', hub: 'EB', product: 'Carbon Dioxide', container: '', item: '', unit: 'lb', qty: 450, min_qty: 500, below: true },
+    { company: 'adchem', hub: 'EB', product: '', container: '', item: 'Regulator', unit: 'count', qty: 3, min_qty: 4, below: true },
+    { company: 'adchem', hub: 'EB', product: 'Dry Ice - Pellet', container: 'Bin', item: '', unit: 'count', qty: 6, min_qty: null, below: false }],
+  north: [{ company: 'north', hub: 'N1', product: 'Acetone', container: '55gal Drum', item: '', unit: 'count', qty: 3, min_qty: 1, below: false }],
+};
+const STOCK_SETTINGS = { adchem: { stockAlertRecipients: ['yard@adchem.pro', 'bad'] }, north: { stockAlertRecipients: ['n@north.example'] } };
+
+test('cron: a company with stockAlertRecipients and a row below minimum gets a second mail; the other is nothing_below', async () => {
+  const { res, gmail, sbCalls } = await run({ headers: { 'x-expiry-secret': 's3cret-long-random' }, serviceNames: true, waitUntil: true, stock: { settings: STOCK_SETTINGS, onhand: STOCK_ROWS } });
+  assert.equal(res.status, 202);
+  assert.equal(gmail.length, 2, 'the documents mail and one stock mail');
+  const m = gmail.find(g => /stock below minimum/.test(subjectOf(g)));
+  assert.equal(subjectOf(m), 'AdChem — stock below minimum: 2 item(s)');
+  assert.match(m, /^From: orders@adchem\.pro\r\nTo: yard@adchem\.pro\r\n/, 'stock recipients only, never orders@ or the expiry list');
+  const text = m;   // 8bit body
+  assert.match(text, /EB: Carbon Dioxide 450 lb \(min 500\)/); assert.match(text, /EB: Regulator 3 count \(min 4\)/); assert.ok(!/Dry Ice/.test(text));
+  assert.match(text, /Open AdChem Ops: https:\/\/ops\.adchem\.pro/);
+  const rpcs = sbCalls.filter(c => c.url.endsWith('/rpc/dispatch_stock_onhand_for'));
+  assert.deepEqual(rpcs.map(c => c.body.c).sort(), ['adchem', 'north'], 'west has no stock recipients: not read');
+  for (const c of rpcs) assert.equal(c.headers.authorization, 'Bearer svc-key', 'the cron reads as the service role');
+  const logs = sbCalls.filter(c => c.url.includes('/rest/v1/dispatch_log')).map(c => c.body[0]);
+  assert.deepEqual(logs.find(l => l.what === 'stock_alert'), { company: 'adchem', who: null, what: 'stock_alert', detail: { count: 2, to: ['yard@adchem.pro'] } });
+});
+
+test('Send now: the result carries stock {sent, skipped} beside the documents; read as the caller', async () => {
+  const { res, j, gmail, sbCalls } = await run({ headers: { authorization: 'Bearer tok' }, body: { send: true, company: 'adchem' }, stock: { settings: STOCK_SETTINGS, onhand: STOCK_ROWS } });
+  assert.equal(res.status, 200);
+  assert.deepEqual(j.sent, [{ company: 'adchem', to: ['ops@adchem.pro', 'billing@adchem.pro'], count: 4 }]); assert.deepEqual(j.skipped, []);
+  assert.deepEqual(j.stock, { sent: [{ company: 'adchem', to: ['yard@adchem.pro'], count: 2 }], skipped: [] });
+  assert.equal(gmail.length, 2);
+  const rpc = sbCalls.find(c => c.url.endsWith('/rpc/dispatch_stock_onhand_for'));
+  assert.deepEqual(rpc.body, { c: 'adchem' }); assert.equal(rpc.headers.authorization, 'Bearer tok');
+  const log = sbCalls.map(c => c.body && c.body[0]).find(b => b && b.what === 'stock_alert');
+  assert.deepEqual(log, { company: 'adchem', who: 'u1', what: 'stock_alert', detail: { count: 2, to: ['yard@adchem.pro'] } });
+  const north = await run({ headers: { authorization: 'Bearer tok' }, body: { send: true, company: 'north' }, member: { company: 'north' }, stock: { settings: STOCK_SETTINGS, onhand: STOCK_ROWS } });
+  assert.deepEqual(north.j.stock, { sent: [], skipped: [{ company: 'north', reason: 'nothing_below' }] }); assert.equal(north.gmail.length, 0);
+});
+
+test('stock email: a failed send or a failed read is skipped and never spoils the documents result', async () => {
+  const f = await run({ headers: { authorization: 'Bearer tok' }, body: { send: true, company: 'adchem' }, stock: { settings: STOCK_SETTINGS, onhand: STOCK_ROWS, gmailFailFor: /stock below minimum/ } });
+  assert.equal(f.res.status, 200, 'a stock send failure is not a 502');
+  assert.equal(f.j.sent.length, 1);
+  assert.equal(f.j.stock.sent.length, 0); assert.equal(f.j.stock.skipped[0].company, 'adchem'); assert.equal(f.j.stock.skipped[0].reason, 'send_failed');
+  assert.ok(!f.sbCalls.some(c => c.body && c.body[0] && c.body[0].what === 'stock_alert'), 'no log row for a mail that did not go');
+  const r = await run({ headers: { authorization: 'Bearer tok' }, body: { send: true, company: 'adchem' }, stock: { settings: STOCK_SETTINGS, onhandFails: true } });
+  assert.equal(r.res.status, 200); assert.equal(r.j.sent.length, 1);
+  assert.equal(r.j.stock.skipped[0].reason, 'read_failed'); assert.match(r.j.stock.skipped[0].message, /dispatch_stock_onhand_for/);
 });
 
 // ---------- health: the documents bucket and the expiry job ----------

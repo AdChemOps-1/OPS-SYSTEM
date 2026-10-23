@@ -71,6 +71,8 @@ test('movementsFor: bad shapes throw', () => {
   assert.throws(() => mf({ kind: 'received', hub: 'EB', product: 'Acetone', container: '', item: 'Regulator', unit: 'count', qty: 1 }), /supply/);
   assert.throws(() => mf(null), /entry/);
   assert.throws(() => mf({ ...REG, kind: 'received', qty: 1, note: 5 }), /note/);
+  assert.throws(() => mf({ ...REG, kind: 'adjusted', qty: 1, note: 'undelivered o1' }), /undelivered/, 'the trigger\'s reversal marker is reserved');
+  assert.throws(() => mf({ ...REG, kind: 'counted', qty: 1, onhand: 0, note: 'Undelivered o1' }), /undelivered/);
 });
 
 const CO = [{ id: 'adchem', name: 'AdChem, LLC', short_name: 'AdChem' }, { id: 'north', name: 'North Supply Co', short_name: 'North' }];
@@ -161,10 +163,24 @@ test('/api/stock move: counted re-reads on-hand on the server and ignores the cl
   const rpc = calls.find(c => c.url.endsWith('/rpc/dispatch_stock_onhand_for'));
   assert.deepEqual(rpc.body, { c: 'adchem' });
   assert.equal(inserts[0].body[0].qty, -2); assert.equal(inserts[0].body[0].reason, 'counted');
+  const nulls = await run({ action: 'move', entry: { kind: 'counted', ...REG, qty: 5 } }, { member: MANAGER,
+    onhand: [{ company: 'adchem', hub: 'EB', product: null, container: null, item: 'Regulator', unit: 'count', qty: 3, min_qty: 4, below: true }] });
+  assert.equal(nulls.inserts[0].body[0].qty, 2, 'null key parts match as empty');
   const first = await run({ action: 'move', entry: { kind: 'counted', ...REG, qty: 4 } }, { member: MANAGER, onhand: [] });
   assert.equal(first.inserts[0].body[0].qty, 4, 'no prior movements: the delta is the count');
   const same = await run({ action: 'move', entry: { kind: 'counted', ...BIN, qty: 7 } }, { member: MANAGER, onhand });
   assert.deepEqual(same.j, { ok: true, ids: [], note: 'no change' }); assert.equal(same.inserts.length, 0);
+});
+
+test('/api/stock move: counted refuses a manage_assets-only member who cannot read on-hand; nothing read or inserted', async () => {
+  const { res, j, calls, inserts } = await run({ action: 'move', entry: { kind: 'counted', ...REG, qty: 5 } }, { member: { role: 'driver', permissions: { manage_assets: true } },
+    onhand: [{ company: 'adchem', ...REG, qty: 3, min_qty: 4, below: true }] });
+  assert.equal(res.status, 403); assert.equal(j.error.code, 'forbidden'); assert.equal(j.error.message, 'counting needs View assets');
+  assert.ok(!calls.some(c => c.url.includes('/rpc/')), 'on-hand not read'); assert.equal(inserts.length, 0);
+  const ok2 = await run({ action: 'move', entry: { kind: 'received', ...REG, qty: 1 } }, { member: { role: 'driver', permissions: { manage_assets: true } } });
+  assert.equal(ok2.res.status, 200, 'the same member may still receive');
+  const vw = await run({ action: 'move', entry: { kind: 'counted', ...REG, qty: 5 } }, { member: { role: 'driver', permissions: { manage_assets: true, view_assets: true } }, onhand: [{ company: 'adchem', ...REG, qty: 3 }] });
+  assert.equal(vw.inserts[0].body[0].qty, 2, 'with view_assets the count goes in');
 });
 
 test('/api/stock move: produced records even when bulk is already below zero (never clamped)', async () => {

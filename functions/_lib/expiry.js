@@ -7,8 +7,8 @@ import { buildStockAlerts, stockRecipientsOf } from "./stock.js";
 // the app's DOC_TYPES (public/documents.js), which the server cannot import
 export const DOC_TYPE_LABEL = { cannabis_license: "Cannabis license", resale_certificate: "Resale certificate", psa: "PSA", chp_hazmat_license: "CHP HazMat license",
   dot_registration: "DOT registration", insurance_certificate: "Insurance certificate", cdl: "CDL", medical_card: "Medical card", other: "Other" };
-const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;   // dispatch_set_warnings' rule for a recipient
-export const isEmail = s => typeof s === "string" && EMAIL.test(s.trim());
+import { isEmail } from "./email.js";   // dispatch_set_warnings' rule for a recipient
+export { isEmail };
 
 // valid, trimmed, de-duplicated recipients from a company's settings; nothing else is ever added (no orders@ default)
 export function recipientsOf(settings) {

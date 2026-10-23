@@ -333,7 +333,8 @@ function fakeMovementsFor(e,co,onhandQty){ const fail=m=>{ throw new Error(m); }
   if(!e||!['received','produced','adjusted','counted','consumed'].includes(e.kind)) fail('kind must be received, produced, adjusted, counted or consumed');
   const qty=Number(e.qty); if(e.qty===''||e.qty==null||!Number.isFinite(qty)) fail('qty must be a number');
   if(!hasVal(e.hub)) fail('hub required');
-  const product=e.product||'', container=e.container||'', item=e.item||'', note=e.note||'';
+  const product=e.product||'', container=e.container||'', item=e.item||'', note=String(e.note||'').trim();
+  if(/^undelivered /i.test(note)) fail('a note cannot start with "undelivered " (reserved for order reversals)');
   const bulk=hasVal(product)&&!hasVal(container)&&!hasVal(item), unit=e.unit;
   if(!hasVal(product)&&!hasVal(item)) fail('product or item required');
   if(unit!==(bulk?'lb':'count')) fail('unit must be '+(bulk?'lb':'count')+' for this item');
@@ -341,20 +342,24 @@ function fakeMovementsFor(e,co,onhandQty){ const fail=m=>{ throw new Error(m); }
   if(e.kind==='received'){ if(!(qty>0)) fail('qty must be above zero'); return [row(product,container,item,unit,qty,'received')]; }
   if(e.kind==='consumed'){ if(!(qty>0)) fail('qty must be above zero'); if(!hasVal(note)) fail('a note is required'); return [row(product,container,item,unit,-qty,'consumed')]; }
   if(e.kind==='adjusted'){ if(!qty) fail('qty must not be zero'); if(!hasVal(note)) fail('a note is required'); return [row(product,container,item,unit,qty,'adjusted')]; }
-  if(e.kind==='counted'){ if(qty<0) fail('a count cannot be negative'); return [row(product,container,item,unit,qty-onhandQty,'counted')]; }
+  if(e.kind==='counted'){ if(qty<0) fail('a count cannot be negative'); const d=qty-onhandQty; return d===0?[]:[row(product,container,item,unit,d,'counted')]; }
   // produced: + containers, − bulk pounds of the bulk product
   if(!(qty>0)) fail('qty must be above zero'); if(bulk||!hasVal(container)) fail('produced needs a counted container');
   const bp=e.bulkProduct||'Carbon Dioxide', lb=e.lbPerUnit==null?50:Number(e.lbPerUnit); if(!Number.isFinite(lb)||lb<=0) fail('lbPerUnit must be above zero');
-  return [row(product,container,item,'count',qty,'produced'),row(bp,'','','lb',-(qty*lb),'produced')]; }
+  const pr=[row(product,container,item,'count',qty,'produced'),row(bp,'','','lb',-(qty*lb),'produced')]; if(!hasVal(note)) pr.forEach(r=>{ r.note='produced'; }); return pr; }
 function fakeStock(T,b){
   const co=b.company||'adchem', m=memberOf(T,co);
   const deny=(c,msg)=>({code:403,body:{error:{code:c,message:msg}}});
   if(b.action==='move'){ const d=permCheck(T,'u1',co,null,'manage_assets'); if(d) return {code:d.status,body:{error:d.error}};
-    const e=b.entry||{}; let rows; try{ const cur=onhandOf(T,co).find(r=>r.hub===e.hub&&r.product===(e.product||'')&&r.container===(e.container||'')&&r.item===(e.item||'')&&r.unit===e.unit);
+    const e=b.entry||{}, reads=m&&(hasPerm(m,'view_assets')||['admin','coordinator'].includes(m.role));
+    // as the server: a count's delta comes from on-hand, so a caller who cannot read it may not count
+    if(e.kind==='counted'&&!reads) return deny('forbidden','counting needs View assets');
+    let rows; try{ const cur=onhandOf(T,co).find(r=>r.hub===e.hub&&(r.product||'')===(e.product||'')&&(r.container||'')===(e.container||'')&&(r.item||'')===(e.item||'')&&r.unit===e.unit);
       rows=fakeMovementsFor(e,co,cur?cur.qty:0); }catch(err){ return {code:400,body:{error:{code:'bad_entry',message:err.message}}}; }
+    if(!rows.length) return {code:200,body:{ok:true,ids:[],note:'no change'}};
     rows.forEach(r=>T.dispatch_stock_movements.push(r)); return {code:200,body:{ok:true,ids:rows.map(r=>r.id)}}; }
   if(b.action==='onhand'||b.action==='below'){ if(!m) return deny('no_access','You are not a member of that company.');
-    if(!hasPerm(m,'view_assets')) return deny('forbidden',"You don't have the view assets permission.");
+    if(!(hasPerm(m,'view_assets')||['admin','coordinator'].includes(m.role))) return deny('forbidden',"You don't have the view assets permission.");   // view_assets or an editor, as the server
     const rows=onhandOf(T,co); return {code:200,body:{rows:b.action==='below'?rows.filter(r=>r.below):rows}}; }
   return {code:400,body:{error:{code:'bad_request',message:'unknown action'}}}; }
 

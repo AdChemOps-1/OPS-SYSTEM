@@ -37,9 +37,11 @@ export async function onRequestPost({ request, env }) {
     let v = shape(entry && typeof entry === "object" && !Array.isArray(entry) ? { ...entry, onhand: 0 } : entry);
     if (v.why) return fail(v.why, 400, "bad_entry");
     if (entry.kind === "counted") {
+      // the count's delta is taken from on-hand, so a caller who cannot read on-hand (no rows ≠ zero) may not count
+      if (!(hasPerm(me, "view_assets") || EDITORS.includes(me.role))) return fail("counting needs View assets", 403, "forbidden");
       const k = stockKeyOf(entry);
       const all = await db.rpc("dispatch_stock_onhand_for", { c: company });
-      const cur = (Array.isArray(all) ? all : []).find(r => r.hub === k.hub && r.product === k.product && r.container === k.container && r.item === k.item && r.unit === k.unit);
+      const cur = (Array.isArray(all) ? all : []).find(r => (r.hub || "") === k.hub && (r.product || "") === k.product && (r.container || "") === k.container && (r.item || "") === k.item && r.unit === k.unit);
       v = shape({ ...entry, onhand: cur ? Number(cur.qty) : 0 });
       if (v.why) return fail(v.why, 400, "bad_entry");
     }

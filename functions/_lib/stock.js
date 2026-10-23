@@ -1,7 +1,7 @@
 // Stock movements and the stock-below-minimum email (migration 008). Both functions here are pure: movementsFor turns one entry
 // from the Inventory screen into dispatch_stock_movements rows (or throws Error(message) on a bad shape), buildStockAlerts turns
 // dispatch_stock_onhand_for rows into one email per company. sendStockAlerts (expiry.js) does the reads, the mail and the log.
-import { isEmail } from "./expiry.js";
+import { isEmail } from "./email.js";
 
 export const KINDS = ["received", "produced", "adjusted", "counted", "consumed"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -44,6 +44,8 @@ export function movementsFor(entry, company, who, now) {
   const k = stockKeyOf(entry);
   const qty = num(entry.qty, "qty");
   const note = text(entry.note, "note", MAX_NOTE);
+  // 'undelivered <order id>' is the orders trigger's reversal marker (008 net rule); a hand entry must never look like one
+  if (/^undelivered /i.test(note)) bad("a note cannot start with \"undelivered \" (reserved for order reversals)");
   let vendor = null;
   if (entry.vendorId !== undefined && entry.vendorId !== null && entry.vendorId !== "") {
     if (entry.kind !== "received") bad("vendorId is only for received");

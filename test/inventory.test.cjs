@@ -44,8 +44,14 @@ async function signIn(page, base){
     assert.equal((await api('/api/stock', {action:'move', company:'adchem', entry:{kind:'received', hub:'EB', item:'Pallet', qty:1, unit:'count'}})).status, 403, 'manage_assets needed');
     assert.equal((await api('/api/stock', {action:'onhand', company:'adchem'})).status, 200, 'view_assets reads');
     T.dispatch_members[0].permissions = {};
-    assert.equal((await api('/api/stock', {action:'below', company:'adchem'})).status, 403, 'no view_assets, no read');
-    T.dispatch_members[0].permissions = {view_assets:true};
+    assert.equal((await api('/api/stock', {action:'below', company:'adchem'})).status, 200, 'an editor (admin) reads without view_assets');
+    T.dispatch_members[0].role = 'driver'; T.dispatch_members[0].permissions = {manage_assets:true};
+    assert.equal((await api('/api/stock', {action:'below', company:'adchem'})).status, 403, 'a non-editor without view_assets cannot read');
+    const before = T.dispatch_stock_movements.length;
+    r = await api('/api/stock', {action:'move', company:'adchem', entry:{kind:'counted', hub:'EB', item:'Regulator', qty:9, unit:'count'}});
+    assert.deepEqual([r.status, r.body.error.message], [403, 'counting needs View assets'], 'a manage-only member cannot count');
+    assert.equal(T.dispatch_stock_movements.length, before, 'nothing written');
+    T.dispatch_members[0].role = 'admin'; T.dispatch_members[0].permissions = {view_assets:true};
     T.dispatch_members[0].is_super_admin = true;
 
     // orders: entering Delivered draws the non-gas lines down once; leaving reverses

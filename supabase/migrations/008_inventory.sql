@@ -23,7 +23,8 @@ select a.company, a.location_id as hub, t.product, t.size_label as container, ''
  group by a.company, a.location_id, t.product, t.size_label;
 revoke all on public.dispatch_stock_onhand from anon;
 
--- The view's rows of company c with the key's minimum (null when none is set) and below = qty under the minimum. Through the owner,
+-- The view's rows of company c with the key's minimum (null when none is set) and below = qty under the minimum, plus every minimum
+-- of c whose key has no on-hand row (qty 0, below when the minimum is above 0). Through the owner,
 -- for view_assets holders and editors of c (a coordinator without switches sees on-hand, as with dispatch_asset_counts_for), and for
 -- the service role (the daily stock email's cron path reads every company).
 create or replace function public.dispatch_stock_onhand_for(c text)
@@ -35,6 +36,14 @@ language sql stable security definer set search_path = public as $fn$
     left join public.dispatch_stock_settings s
       on s.company = v.company and s.hub = v.hub and s.product = v.product and s.container = v.container and s.item = v.item
    where v.company = c
+     and (current_setting('role', true) = 'service_role' or public.dispatch_perm_in(c, 'view_assets') or public.dispatch_can_edit_in(c))
+  union all
+  -- a minimum whose key has no on-hand row (nothing ever received or counted there) reads as qty 0, below while the minimum is above 0
+  select s.company, s.hub, s.product, s.container, s.item, s.unit, 0::numeric, s.min_qty, s.min_qty > 0
+    from public.dispatch_stock_settings s
+   where s.company = c
+     and not exists (select 1 from public.dispatch_stock_onhand v where v.company = s.company and v.hub = s.hub and v.product = s.product
+                       and v.container = s.container and v.item = s.item)
      and (current_setting('role', true) = 'service_role' or public.dispatch_perm_in(c, 'view_assets') or public.dispatch_can_edit_in(c)) $fn$;
 
 -- ---------- the delivered draw-down ----------
@@ -46,13 +55,14 @@ create index if not exists dispatch_stock_movements_order_idx on public.dispatch
 -- leaving the pair writes a reversing adjusted row only for drawn keys, at the hub it was drawn from. So Delivered twice draws once,
 -- Delivered → Scheduled → Delivered draws, reverses, draws again, and a second leave with nothing drawn writes nothing. Gas lines
 -- (category Gases) never count here: the register's full containers do. A line with no product or a qty that is not a positive
--- number is skipped (a malformed line never blocks the order's save). Inserts run as the owner (security definer), so RLS and
+-- number is skipped (a malformed line never blocks the order's save); an order with no hub draws nothing. Inserts run as the owner (security definer), so RLS and
 -- dstock_insert do not apply; recorded_by is the member who changed the status (null under the service role).
 create or replace function public.dispatch_orders_stock_out() returns trigger language plpgsql security definer set search_path = public as $fn$
 declare pair text[] := array['Delivered','POD Received'];
 begin
   if old.status is not distinct from new.status then return null; end if;
   if new.status = any(pair) and not (coalesce(old.status, '') = any(pair)) then
+    if coalesce(new.hub, '') = '' then return null; end if;   -- no hub, no stock to draw from: nothing is written
     insert into public.dispatch_stock_movements (company, hub, product, container, item, qty, unit, reason, order_id, recorded_by, created_by, occurred_at)
     select new.company, new.hub, l.product, l.container, '', -l.qty, 'count', 'delivered', new.id, auth.uid(), auth.uid(), now()
       from (select btrim(coalesce(e->>'product', '')) as product, btrim(coalesce(e->>'container', '')) as container, sum(case when coalesce(e->>'qty', '') ~ '^\s*\d+(\.\d+)?\s*$' then (e->>'qty')::numeric end) as qty
@@ -110,9 +120,9 @@ begin
   return new;
 end $fn$;
 
--- ---------- stock insert policy: clients never write a fill or a delivered row (altered in place, re-runnable) ----------
+-- ---------- stock insert policy: clients never write a fill, a delivered row or an 'undelivered' reversal (altered in place) ----------
 alter policy dstock_insert on public.dispatch_stock_movements
-  with check (public.dispatch_perm_in(company, 'manage_assets') and reason not in ('filled','delivered'));
+  with check (public.dispatch_perm_in(company, 'manage_assets') and reason not in ('filled','delivered') and note not like 'undelivered %');
 
 -- ---------- execute: RPCs to authenticated (and the on-hand function to the service role); the trigger functions to no one ----------
 grant execute on function public.dispatch_stock_onhand_for(text), public.dispatch_set_stock_alerts(text,text[]) to authenticated;

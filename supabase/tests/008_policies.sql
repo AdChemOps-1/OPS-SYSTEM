@@ -41,7 +41,8 @@ begin
   -- an order with a counted line and a gas line, not yet delivered
   insert into public.dispatch_orders (company, id, hub, date, customer, status, data) values
     ('adchem', 'T008-EB-1', 'EB', current_date, 'T008 Customer', 'Scheduled',
-     '{"lines":[{"category":"Dry Ice","product":"Dry Ice - Pellet","container":"Bin","qty":2},{"category":"Gases","product":"Carbon Dioxide","container":"50lb Cylinder","qty":1}]}');
+     '{"lines":[{"category":"Dry Ice","product":"Dry Ice - Pellet","container":"Bin","qty":2},{"category":"Gases","product":"Carbon Dioxide","container":"50lb Cylinder","qty":1}]}'),
+    ('adchem', 'T008-NH-1', '', current_date, 'T008 Customer', 'Scheduled', '{"lines":[{"category":"Dry Ice","product":"Dry Ice - Pellet","container":"Bin","qty":1}]}');
   -- north's own stock (for isolation)
   insert into public.dispatch_stock_movements (company, hub, product, qty, unit, reason) values ('north', 'T8N', 'Carbon Dioxide', 123, 'lb', 'received');
 
@@ -56,6 +57,8 @@ begin
   insert into public.dispatch_stock_movements (company, hub, product, container, qty, unit, reason) values ('adchem', 'EB', 'Dry Ice - Pellet', 'Bin', 6, 'count', 'produced');
   insert into public.dispatch_stock_movements (company, hub, product, item, qty, unit, reason) values ('adchem', 'EB', '', 'Regulator', 3, 'count', 'received');
   insert into public.dispatch_stock_settings (company, hub, product, item, min_qty, unit) values ('adchem', 'EB', '', 'Regulator', 4, 'count');
+  -- minimums on keys with no movements: Pallet 2 (below at qty 0), Strap 0 (not below)
+  insert into public.dispatch_stock_settings (company, hub, product, item, min_qty, unit) values ('adchem', 'EB', '', 'Pallet', 2, 'count'), ('adchem', 'EB', '', 'Strap', 0, 'count');
   insert into public.dispatch_asset_events (id, company, asset_id, event_type) values (e_f, 'adchem', a_f, 'filled');   -- draws 50 lb at EB
   ok := false;
   begin insert into public.dispatch_stock_movements (company, hub, product, container, qty, unit, reason, order_id) values ('adchem', 'EB', 'Dry Ice - Pellet', 'Bin', -1, 'count', 'delivered', 'T008-EB-1');
@@ -65,6 +68,10 @@ begin
   begin insert into public.dispatch_stock_movements (company, hub, product, qty, unit, reason) values ('adchem', 'EB', 'Carbon Dioxide', -50, 'lb', 'filled');
   exception when insufficient_privilege then ok := true; end;
   if not ok then raise exception 'the manager wrote a filled stock row'; end if;
+  ok := false;
+  begin insert into public.dispatch_stock_movements (company, hub, product, container, qty, unit, reason, order_id, note) values ('adchem', 'EB', 'Dry Ice - Pellet', 'Bin', 2, 'count', 'adjusted', 'T008-EB-1', 'undelivered T008-EB-1');
+  exception when insufficient_privilege then ok := true; end;
+  if not ok then raise exception 'the manager wrote an undelivered reversal row'; end if;
   -- on-hand: 800 received − a 50 lb fill = 750 lb; the now-full 50lb cylinder at EB counts 1; Regulator 3 against a minimum of 4
   select qty into q from public.dispatch_stock_onhand where company = 'adchem' and hub = 'EB' and product = 'Carbon Dioxide' and container = '' and item = '' and unit = 'lb';
   if q is distinct from 750::numeric then raise exception 'bulk Carbon Dioxide at EB on-hand % (want 750)', q; end if;
@@ -77,6 +84,14 @@ begin
   if not found or r.qty <> 4 or r.below is not false then raise exception 'Regulator at EB: qty % below % (want 4, false)', r.qty, r.below; end if;
   select * into r from public.dispatch_stock_onhand_for('adchem') x where x.hub = 'EB' and x.product = 'Carbon Dioxide' and x.container = '';
   if not found or r.min_qty is not null or r.below is not false then raise exception 'bulk with no minimum: min % below % (want null, false)', r.min_qty, r.below; end if;
+  select * into r from public.dispatch_stock_onhand_for('adchem') x where x.hub = 'EB' and x.item = 'Pallet';
+  if not found or r.qty is distinct from 0::numeric or r.min_qty is distinct from 2::numeric or r.below is not true or r.unit <> 'count' then
+    raise exception 'Pallet minimum with no movements: qty % min % below % (want 0, 2, true)', r.qty, r.min_qty, r.below; end if;
+  select * into r from public.dispatch_stock_onhand_for('adchem') x where x.hub = 'EB' and x.item = 'Strap';
+  if not found or r.qty is distinct from 0::numeric or r.below is not false then
+    raise exception 'Strap minimum 0 with no movements: qty % below % (want 0, false)', r.qty, r.below; end if;
+  if (select count(*) from public.dispatch_stock_onhand_for('adchem') x where x.hub = 'EB' and x.item = 'Regulator') <> 1 then
+    raise exception 'a minimum with on-hand rows appears twice'; end if;
   select count(*) into n_onhand from public.dispatch_stock_onhand_for('adchem');
   if exists (select 1 from public.dispatch_stock_onhand_for('adchem') x where x.company <> 'adchem') then raise exception 'on-hand for adchem returned another company'; end if;
   if (select count(*) from public.dispatch_stock_onhand where company = 'north') <> 0 then raise exception 'manager sees north on-hand'; end if;
@@ -90,7 +105,10 @@ begin
   perform set_config('request.jwt.claims', json_build_object('sub', cn, 'role', 'authenticated')::text, true);
   set local role authenticated;
   update public.dispatch_orders set status = 'Delivered' where company = 'adchem' and id = 'T008-EB-1';
+  update public.dispatch_orders set status = 'Delivered' where company = 'adchem' and id = 'T008-NH-1';
   reset role;
+  if exists (select 1 from public.dispatch_stock_movements where order_id = 'T008-NH-1') then raise exception 'an order with no hub wrote a stock row'; end if;
+  if (select status from public.dispatch_orders where company = 'adchem' and id = 'T008-NH-1') <> 'Delivered' then raise exception 'the no-hub order did not reach Delivered'; end if;
   if (select count(*) from public.dispatch_stock_movements where order_id = 'T008-EB-1') <> 1
      or (select count(*) from public.dispatch_stock_movements where order_id = 'T008-EB-1' and reason = 'delivered' and product = 'Dry Ice - Pellet'
            and container = 'Bin' and item = '' and qty = -2 and unit = 'count' and hub = 'EB' and recorded_by = cn) <> 1 then

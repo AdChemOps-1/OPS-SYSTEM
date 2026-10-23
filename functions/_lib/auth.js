@@ -94,6 +94,13 @@ function client(base, anon, token) {
       const r = await fetch(base + "/storage/v1/object/" + bucket + "/" + path, { headers: { apikey: anon, authorization: "Bearer " + token } });
       if (!r.ok) throw new Error("photo not found: " + r.status); return r;
     },
+    // One private object's bytes, read as the caller (storage RLS applies); null when it is not there (or not the caller's to see).
+    async storageRead(bucket, path) {
+      const r = await fetch(base + "/storage/v1/object/authenticated/" + bucket + "/" + path.split("/").map(encodeURIComponent).join("/"), { headers: { apikey: anon, authorization: "Bearer " + token } });
+      if (r.status === 404 || r.status === 400) return null;
+      if (!r.ok) throw new Error("storage read failed: " + r.status);
+      return new Uint8Array(await r.arrayBuffer());
+    },
     // A short-lived URL for one private object, signed as the caller (storage RLS applies).
     async storageSign(bucket, path, expiresIn) {
       const r = await fetch(base + "/storage/v1/object/sign/" + bucket + "/" + path.split("/").map(encodeURIComponent).join("/"), { method: "POST", headers: h, body: JSON.stringify({ expiresIn }) });
